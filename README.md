@@ -46,7 +46,9 @@ Ready-to-use installers are published on the GitHub Releases page:
   public APIs, plus each company's own career page with a headless browser
   when there is no public ATS API.
 - **Classifies every job** — EU Blue Card eligibility, relocation / visa
-  support and remote-work type are detected from the job description.
+  support and remote-work type are detected from the job description, and the
+  **experience required** (years / level) is extracted from the title, the
+  employer's own seniority field and the full job description.
 - **Keeps everything local** — all data is stored in a SQLite database on your
   own computer. Nothing is uploaded anywhere.
 - **Tracks your applications** — a simple pipeline: Saved → Applied →
@@ -148,9 +150,15 @@ to scan.
   its own career page with a headless browser, so career-page-only companies
   are never skipped.
 - **Detail-page enrichment** — each job is then verified against its own job
-  page (JSON-LD + page text) to fill in location, sponsorship, relocation
-  and EU Blue Card evidence. Nothing is guessed: a verdict is only upgraded
-  when the page provides explicit evidence.
+  page (JSON-LD + page text) to fill in location, sponsorship, relocation,
+  EU Blue Card evidence and the **experience requirement**. Nothing is guessed:
+  a verdict is only upgraded when the page provides explicit evidence, and a
+  weaker source (e.g. title wording) never overwrites a stronger one (e.g. the
+  employer's own seniority field).
+- **Light on your machine** — pages are fetched with images, fonts, media and
+  analytics hosts blocked, and simple boards that publish their jobs as plain
+  HTML are read directly, so the browser is only launched when a page really
+  needs JavaScript.
 
 > **Why is Full the default?** The old **Quick** option never found *more* or
 > *fewer* jobs — it only skipped the detail-page pass, leaving more verdicts
@@ -194,8 +202,8 @@ not saved between runs — **Scan Now** always covers everything.
    API** (fast).
 3. Companies without a public ATS are crawled through their **career page**
    with a headless browser.
-4. Every job is classified (Blue Card / relocation / remote) and
-   deduplicated.
+4. Every job is classified (Blue Card / relocation / remote), its **experience
+   requirement** is extracted, and it is deduplicated.
 5. Results are stored in the local SQLite database and appear immediately in
    the Dashboard and Search tabs. The progress bar counts one step per
    finished company (ATS phase first, then career pages), so it always ends
@@ -243,12 +251,15 @@ in the scan log.
 **The scan is slow, or the PC feels heavy.**
 That is the detail-page pass, and it is bounded by design. SponsorScout sizes
 its own worker/browser pool from your CPU and RAM (a single browser on a 2-core
-/ 8 GB machine), runs at below-normal process priority, and disables images,
-GPU and background networking while crawling. The Dashboard stays usable.
+/ 8 GB machine), runs at below-normal process priority, and blocks images,
+fonts, media and analytics hosts while crawling. Boards that publish plain HTML
+are read without a browser at all. The Dashboard stays usable.
 **You don't have to sit through it:** press **Stop (keep progress)** any time
 — everything found so far is already saved — and press **Resume** later to
 continue exactly the remaining companies. Stopping closes all browsers, so
 other apps run smoothly again; resuming works even after restarting the app.
+If you only need a few companies refreshed, use **Tools → Custom Scan**
+(see [Scan Modes](#-scan-modes--full--custom)) instead of a full campaign.
 
 **A job shows `?` for Sponsor / Blue Card / Relocation.**
 `?` means *unknown*, never *no*. The listing did not contain explicit evidence
@@ -260,6 +271,15 @@ Yes. Open **Data Management** and use the `ATS Portals` / `Career Portals`
 editors: add a company name and its careers URL and the ATS type is detected
 automatically. Changes apply on the next scan. **Reset to bundled defaults**
 brings back the shipped lists.
+
+**Can I scan only some companies instead of the whole list?**
+Yes — use **Tools → Custom Scan**. Tick *ATS portals* and/or *Career portals*,
+untick the companies you don't want (or filter and *Select all*), then start.
+It runs the exact same pipeline as a full scan, so result quality is identical;
+only the run time changes, in proportion to how many companies you picked.
+This is the fast way to re-scan a few companies you just added or edited.
+Custom runs appear as `custom` in **Scan History**, and **Stop** / **Resume**
+work on the selected companies only.
 
 **How do I search with a regular expression?**
 In the **Search** tab tick **Regex**, then type a pattern in the title, company
@@ -348,7 +368,7 @@ MIT — see [LICENSE](LICENSE).
 - [Avvio Rapido](#-avvio-rapido)
 - [Le Cinque Schede](#-le-cinque-schede)
 - [Cambio Lingua](#-cambio-lingua)
-- [Una Sola Modalità di Scansione — Sempre quella Completa](#-una-sola-modalità-di-scansione--sempre-quella-completa)
+- [Modalità di Scansione — Completa e Personalizzata](#-modalità-di-scansione--completa-e-personalizzata)
 - [Come Funziona la Scansione](#-come-funziona-la-scansione)
 - [Dove Sono i Tuoi Dati](#-dove-sono-i-tuoi-dati)
 - [Risoluzione Problemi e Domande Frequenti](#-risoluzione-problemi-e-domande-frequenti)
@@ -381,7 +401,9 @@ I programmi di installazione pronti all'uso sono pubblicati nella pagina GitHub 
   headless quando non esiste un'API ATS pubblica.
 - **Classifica ogni lavoro** — l'idoneità alla Carta Blu UE, il supporto al
   trasferimento / visto e il tipo di lavoro remoto vengono rilevati dalla
-  descrizione del lavoro.
+  descrizione del lavoro, e l'**esperienza richiesta** (anni / livello) viene
+  estratta dal titolo, dal campo di seniority pubblicato dall'azienda e dalla
+  descrizione completa.
 - **Mantiene tutto in locale** — tutti i dati sono salvati in un database
   SQLite sul tuo computer. Nulla viene caricato online.
 - **Gestisce le tue candidature** — un semplice percorso: Salvata →
@@ -433,15 +455,17 @@ aggiungere note.
 
 ### 4. Strumenti (Tools)
 Il centro di controllo:
-- **Scanner** — **Scansiona Ora** avvia la campagna completa; **Ferma
-  (mantieni progresso)** la interrompe in qualsiasi momento mantenendo tutto
-  ciò che è stato trovato; **Riprendi** continua esattamente le aziende
+- **Scanner** — **Scansiona Ora** avvia la campagna completa; **Scansione
+  Personalizzata** ti permette di scegliere aziende e/o tipi di fonte specifici
+  (bacheche ATS e/o pagine carriera) invece di tutte le aziende negli elenchi;
+  **Ferma (mantieni progresso)** la interrompe in qualsiasi momento mantenendo
+  tutto ciò che è stato trovato; **Riprendi** continua esattamente le aziende
   restanti (anche dopo aver riavviato l'app), con la barra di avanzamento che
   riparte da dove si era fermata. Una barra di avanzamento sotto i pulsanti
   mostra il progresso live (`ATS 12/46`, `Carriere 88/162`) e arriva al 100%
   a scansione finita; l'output completo per azienda appare nella finestra di
-  log. Non c'è alcuna modalità da scegliere — vedi
-  [Una Sola Modalità di Scansione](#-una-sola-modalità-di-scansione--sempre-quella-completa).
+  log. Vedi
+  [Modalità di Scansione](#-modalità-di-scansione--completa-e-personalizzata).
 - **Cronologia Scansioni** — ogni scansione passata; selezionane una per
   visualizzare o scaricare un registro dettagliato per azienda, errori
   inclusi. Le scansioni interrotte mostrano `cancelled`; quando una ripresa
@@ -470,11 +494,14 @@ ripristinata al prossimo avvio.
 
 ---
 
-## 🔍 Una Sola Modalità di Scansione — Sempre quella Completa
+## 🔍 Modalità di Scansione — Completa e Personalizzata
 
-SponsorScout ha **una sola modalità di scansione**: premendo **Scansiona Ora**
-si esegue sempre la campagna completa, perché una scansione parziale
-nasconderebbe dei lavori senza alcun avviso.
+### Scansione completa (predefinita)
+
+Premendo **Scansiona Ora** (o **Riscansiona Aziende** nel Pannello) si esegue
+sempre la campagna completa su tutte le aziende negli elenchi, perché una
+scansione parziale nasconderebbe in silenzio dei lavori che non hai chiesto.
+Questo è il modo consigliato di scansionare.
 
 ### Cosa fa una scansione
 - **Bacheche ATS (API)** — ogni azienda nell'elenco con un ATS noto (Ashby,
@@ -485,20 +512,55 @@ nasconderebbe dei lavori senza alcun avviso.
   sola pagina carriera non vengono mai saltate.
 - **Arricchimento dalla pagina di dettaglio** — ogni lavoro viene poi
   verificato sulla propria pagina (JSON-LD + testo della pagina) per ricavare
-  località, sponsorizzazione, trasferimento e Carta Blu UE. Nulla viene
-  ipotizzato: un verdetto viene aggiornato solo se la pagina fornisce
-  un'evidenza esplicita.
+  località, sponsorizzazione, trasferimento, Carta Blu UE e l'**esperienza
+  richiesta**. Nulla viene ipotizzato: un verdetto viene aggiornato solo se la
+  pagina fornisce un'evidenza esplicita, e una fonte più debole (es. il testo
+  del titolo) non sovrascrive mai una più forte (es. il campo di seniority
+  pubblicato dall'azienda).
+- **Leggera sul tuo PC** — le pagine vengono scaricate bloccando immagini,
+  font, media e host di analytics, e le bacheche che pubblicano i lavori come
+  semplice HTML vengono lette direttamente: il browser viene avviato solo
+  quando una pagina richiede davvero JavaScript.
 
-> **Perché una sola modalità?** La vecchia opzione **Veloce** non trovava né
-> *più* né *meno* lavori — saltava solo la fase di dettaglio, lasciando più
-> verdetti come `?` e alcune località vuote. Per una ricerca di
-> sponsorizzazione è un compromesso sbagliato, quindi l'app non ti chiede più
-> di scegliere.
+> **Perché la Completa è quella predefinita?** La vecchia opzione **Veloce**
+> non trovava né *più* né *meno* lavori — saltava solo la fase di dettaglio,
+> lasciando più verdetti come `?` e alcune località vuote. Per una ricerca di
+> sponsorizzazione è un compromesso sbagliato, quindi la scansione estrae
+> sempre tutti i dettagli.
+
+### Scansione personalizzata (mirata)
+
+**Strumenti → Scansione Personalizzata** apre un selettore con cui scegli
+esattamente cosa scansionare:
+
+- **Tipi di fonte** — spunta *Portali ATS* (via API, veloce) e/o *Portali
+  Career* (esplorati con browser headless, più lenti). Togliendo la spunta a
+  uno dei due si salta semplicemente quella fase.
+- **Aziende** — ogni selettore elenca tutte le aziende dei tuoi file seed (con
+  la relativa industria) come caselle da spuntare. Usa il campo di filtro per
+  trovare rapidamente un'azienda, oppure *Seleziona tutto* / *Pulisci* per
+  attivare o disattivare in blocco.
+- Un riepilogo live mostra quante aziende sono selezionate per fase, così vedi
+  l'ampiezza prima di iniziare.
+
+Le scansioni personalizzate usano la **stessa pipeline completa** di una
+scansione normale — l'unica differenza è *quali* obiettivi vengono
+scansionati, quindi i risultati hanno la stessa qualità mentre la durata è
+proporzionale alla selezione (es. una scansione di 10 aziende solo carriera
+richiede minuti invece di un'ora). Casi d'uso:
+
+- ri-scansionare solo le aziende che hai aggiunto o modificato in
+  **Gestione Dati**;
+- aggiornare poche aziende interessanti senza aspettare un'ora intera;
+- provare una nuova riga seed prima di lanciare una campagna completa.
+
+Le scansioni personalizzate sono etichettate `custom` in **Cronologia
+Scansioni**. **Ferma (mantieni progresso)** e **Riprendi** funzionano come per
+una scansione completa: la ripresa continua solo le aziende *selezionate*
+restanti. La selezione non viene salvata tra un run e l'altro — **Scansiona
+Ora** copre sempre tutto.
 
 ---
-
----
-
 
 ## 🔧 Come Funziona la Scansione
 
@@ -508,8 +570,8 @@ nasconderebbe dei lavori senza alcun avviso.
    della bacheca** (veloce).
 3. Le aziende senza ATS pubblico vengono esplorate attraverso la loro
    **pagina carriera** con un browser headless.
-4. Ogni lavoro viene classificato (Carta Blu / trasferimento / remoto) e
-   deduplicato.
+4. Ogni lavoro viene classificato (Carta Blu / trasferimento / remoto), la sua
+   **esperienza richiesta** viene estratta e il lavoro viene deduplicato.
 5. I risultati vengono salvati nel database SQLite locale e appaiono
    immediatamente nelle schede Pannello e Cerca. La barra di avanzamento
    conta un passo per azienda finita (prima la fase ATS, poi le pagine
@@ -559,13 +621,18 @@ ogni esito è registrato nel log della scansione.
 **La scansione è lenta o il PC diventa pesante.**
 È la fase di dettaglio, ed è limitata per progettazione. SponsorScout
 dimensiona i propri worker/browser in base a CPU e RAM (un solo browser su un PC
-con 2 core / 8 GB), gira con priorità di processo inferiore al normale e
-disattiva immagini, GPU e rete in background durante l'esplorazione. Il
+con 2 core / 8 GB), gira con priorità di processo inferiore al normale e blocca
+immagini, font, media e host di analytics durante l'esplorazione. Le bacheche
+che pubblicano semplice HTML vengono lette senza alcun browser. Il
 Pannello resta utilizzabile. **Non devi aspettare tutto il tempo:** premi
 **Ferma (mantieni progresso)** quando vuoi — tutto ciò che è stato trovato è
 già salvato — e premi **Riprendi** più tardi per continuare esattamente le
 aziende restanti. Fermando si chiudono tutti i browser, così le altre app
 tornano fluide; la ripresa funziona anche dopo aver riavviato l'app.
+Se ti servono solo poche aziende aggiornate, usa
+**Strumenti → Scansione Personalizzata**
+(vedi [Modalità di Scansione](#-modalità-di-scansione--completa-e-personalizzata))
+invece di una campagna completa.
 
 **Un lavoro mostra `?` per Sponsor / Carta Blu / Trasferimento.**
 `?` significa *sconosciuto*, mai *no*. L'annuncio non conteneva un'evidenza
@@ -577,6 +644,16 @@ Sì. Apri **Gestione Dati** e usa gli editor `Portali ATS` / `Portali Career`:
 inserisci il nome dell'azienda e l'URL carriera, il tipo di ATS viene rilevato
 automaticamente. Le modifiche si applicano alla scansione successiva.
 **Ripristina predefiniti** riporta gli elenchi forniti.
+
+**Posso scansionare solo alcune aziende invece dell'intero elenco?**
+Sì — usa **Strumenti → Scansione Personalizzata**. Spunta *Portali ATS* e/o
+*Portali Career*, togli la spunta alle aziende che non vuoi (oppure filtra e
+usa *Seleziona tutto*), poi avvia. Usa esattamente la stessa pipeline di una
+scansione completa, quindi la qualità dei risultati è identica; cambia solo la
+durata, proporzionale al numero di aziende scelte. È il modo veloce per
+ri-scansionare poche aziende appena aggiunte o modificate. Le scansioni
+personalizzate appaiono come `custom` in **Cronologia Scansioni**, e
+**Ferma** / **Riprendi** agiscono solo sulle aziende selezionate.
 
 **Come si cerca con un'espressione regolare?**
 Nella scheda **Cerca** spunta **Regex**, poi digita un pattern nel campo

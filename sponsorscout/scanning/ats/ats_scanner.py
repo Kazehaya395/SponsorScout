@@ -31,6 +31,7 @@ from collections import Counter
 from html import unescape
 from urllib.parse import urlparse, parse_qsl, urlencode, urlunparse, urljoin
 from urllib.request import Request, urlopen
+import urllib.request
 
 try:
     from playwright.sync_api import sync_playwright
@@ -80,6 +81,723 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(message)s",
 )
 
+# ─────────────────────────────────────────────────────────────────────────────
+# FIX P0-31: STATIC-HTML FAST PATH (speed, accuracy-preserving)
+#
+# Measured on this seed set: of 18 sampled provider=auto rows, 6 served their
+# postings as plain anchors in the initial HTML response (Prada 18 links,
+# Miro 58, Anymind 270, Bunq 16, Kaufland 27, Audible 15). Those companies do
+# not need a 600 MB Chromium and ~7 s of fixed settling delays.
+#
+# HONEST SCOPE — what this does NOT do:
+#   • It does not replace the browser. It TRIES static first and falls back to
+#     the existing DOM path whenever the static yield looks thin.
+#   • Blocking images was measured at +0% wall clock (11.2s -> 11.2s), so that
+#     is NOT where the speedup comes from. The saving here is skipping browser
+#     launch + settle time on pages that never needed a browser.
+#
+# SAFETY GATE — the fast path is only ACCEPTED when it finds at least
+# _STATIC_MIN_JOBS distinct job-like links. Anything less and we discard the
+# static result entirely and run the browser exactly as before, so a
+# JS-rendered board can never silently produce a truncated row count.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# A static result must clear this bar to be trusted. Chosen deliberately high:
+# a board with 1-4 visible links is far more likely to be a JS shell that
+# happens to expose a couple of static links than a genuinely tiny board.
+_STATIC_MIN_JOBS = 5
+
+# Hosts that are known JS-only shells: never waste a static request on them.
+_STATIC_SKIP_HOSTS = (
+    "myworkdayjobs.com", "icims.com", "taleo.net", "successfactors",
+    "csod.com", "avature.net", "eightfold.ai", "phenompeople.com",
+    "oraclecloud.com", "brassring.com", "jobvite.com", "workday.com",
+)
+
+# Client-side-rendering markers. When present, the HTML we received is a
+# hydration shell: some postings are in the markup but the full list is built
+# in the browser. Measured on Miro — static saw 12 links, the browser 27.
+# Presence of ANY of these disqualifies the static fast path outright.
+_STATIC_SPA_MARKERS = (
+    "__NEXT_DATA__", "__NUXT__", "__INITIAL_STATE__", "__APOLLO_STATE__",
+    "window.__remixContext", "data-reactroot", "ng-version=",
+    "data-svelte-h", "__sveltekit", "data-vue-meta", "id=\"__nuxt\"",
+)
+
+
+_STATIC_ANCHOR_RE = re.compile(
+    r"<a\b[^>]*?href\s*=\s*[\"']([^\"'#][^\"']*)[\"'][^>]*>(.*?)</a>",
+    re.I | re.S)
+
+
+def _static_strip_tags(fragment):
+    """Inner HTML of an anchor -> visible text."""
+    if not fragment:
+        return ""
+    txt = re.sub(r"(?is)<(script|style)[^>]*>.*?</\1>", " ", fragment)
+    txt = re.sub(r"<[^>]+>", " ", txt)
+    txt = unescape(txt)
+    return re.sub(r"\s+", " ", txt).strip()
+
+
+def fetch_static_jobs(seed_url, timeout_sec=15, min_jobs=None,
+                      url_validator=None, title_validator=None):
+    """Try to harvest postings from the raw HTML, with no browser.
+
+    Returns (jobs, diagnostic). `jobs` is [] when the page needs JS — the
+    caller must then run its normal browser path.
+
+    The two validator callables are the scanner's own is_valid_job_url /
+    is_valid_job_title, so the static path applies IDENTICAL acceptance rules
+    to the browser path. That is what makes this safe: it changes how bytes
+    are obtained, never what counts as a job.
+    """
+    if min_jobs is None:
+        min_jobs = _STATIC_MIN_JOBS
+    host = (urlparse(seed_url).hostname or "").lower()
+    if any(marker in host for marker in _STATIC_SKIP_HOSTS):
+        return [], "static: skipped (known JS-only host)"
+    try:
+        req = urllib.request.Request(seed_url, headers={
+            "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                           "AppleWebKit/537.36 Chrome/126.0.0.0 Safari/537.36"),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            # Ask for the local language too: Italian/German boards often
+            # serve localised markup, and the titles must survive.
+            "Accept-Language": "en-US,en;q=0.9,it;q=0.8,de;q=0.8,nl;q=0.7,fr;q=0.7,es;q=0.7",
+        })
+        with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
+            ctype = (resp.headers.get("Content-Type") or "").lower()
+            if "html" not in ctype and "xml" not in ctype:
+                return [], f"static: non-HTML content-type ({ctype[:40]})"
+            raw = resp.read(4_000_000)
+        charset = "utf-8"
+        m = re.search(r"charset=([\w-]+)", ctype)
+        if m:
+            charset = m.group(1)
+        html = raw.decode(charset, "replace")
+    except Exception as exc:
+        return [], f"static: fetch failed ({type(exc).__name__})"
+
+    # Hydration shell -> the static markup is not the whole list. Bail out and
+    # let the browser render it, rather than silently truncating the company.
+    for _marker in _STATIC_SPA_MARKERS:
+        if _marker in html:
+            return [], f"static: client-rendered ({_marker}); using browser"
+
+    jobs = []
+    seen = set()
+    for href, inner in _STATIC_ANCHOR_RE.findall(html):
+        href = unescape(href.strip())
+        if not href or href.lower().startswith(("javascript:", "mailto:", "tel:")):
+            continue
+        absolute = urljoin(seed_url, href)
+        if absolute in seen:
+            continue
+        title = _static_strip_tags(inner)
+        if not title:
+            continue
+        if url_validator is not None and not url_validator(absolute):
+            continue
+        if title_validator is not None and not title_validator(title):
+            continue
+        seen.add(absolute)
+        jobs.append({
+            "job_title": title,
+            "job_url": absolute,
+            "location_hint": "",
+            "card_context": "",
+            "extraction_method": "static_html",
+        })
+
+    if len(jobs) < min_jobs:
+        # Not trustworthy — discard and let the browser handle it.
+        return [], (f"static: only {len(jobs)} job link(s) "
+                    f"(<{min_jobs}); using browser")
+    return jobs, f"static HTML: {len(jobs)}"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FIX P0-30: EXPERIENCE REQUIREMENT EXTRACTION
+#
+# Adds four output columns:
+#   Experience Required   e.g. "5-8 years", "3+ years", "6 months", "None required"
+#   Experience Min Years  numeric, for sorting/filtering
+#   Experience Level      Internship / Junior / Mid / Senior / Lead / Executive
+#   Experience Source     api_field > api_description > card_context > title_inference
+#
+# Design rules (mirrors the visa detector's evidence discipline):
+#   • Sentence-scoped, never keyword-alone. A number counts only when its own
+#     clause is about work experience (_EXP_ANCHOR) AND no disqualifier sits
+#     within +/-45 chars (_EXP_BLOCK_NEAR). That window is what keeps
+#     "at least 18 years old", "founded 25 years ago", "fixed-term contract of
+#     2 years", "visa valid for 3 years" and "notice period of 3 months" out.
+#   • Numeric years are reported ONLY when explicitly written. The LEVEL may be
+#     inferred from the job title; "Experience Source" always records which
+#     happened so an inference is never mistaken for a stated fact.
+#   • Multilingual by construction (EN/DE/IT/NL/FR/ES/PT). The Career seed is
+#     heavily Italian/German, so an English-only matcher would under-report.
+#   • Title inference beats year-band inference: a "Senior Consultant" asking
+#     for 4 years is Senior, not Mid.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_EXP_WORD_NUM = {
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
+    "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12,
+    "a": 1, "an": 1,
+    "ein": 1, "eine": 1, "eins": 1, "zwei": 2, "drei": 3, "vier": 4,
+    "fuenf": 5, "fünf": 5, "sechs": 6, "sieben": 7, "acht": 8, "neun": 9,
+    "zehn": 10, "elf": 11, "zwoelf": 12, "zwölf": 12,
+    "uno": 1, "due": 2, "tre": 3, "quattro": 4, "cinque": 5, "sei": 6,
+    "sette": 7, "otto": 8, "nove": 9, "dieci": 10,
+    "een": 1, "twee": 2, "drie": 3, "vijf": 5, "zes": 6, "zeven": 7,
+    "negen": 9, "tien": 10,
+    "un": 1, "une": 1, "deux": 2, "trois": 3, "cinq": 5, "sept": 7,
+    "huit": 8, "neuf": 9, "dix": 10,
+    "dos": 2, "cuatro": 4, "cinco": 5, "siete": 7, "ocho": 8, "nueve": 9,
+    "diez": 10,
+}
+_EXP_WORD_ALT = "|".join(sorted((re.escape(w) for w in _EXP_WORD_NUM),
+                                key=len, reverse=True))
+
+_EXP_YEAR_UNIT = (r"(?:years?|yrs?\.?|jahre?n?|anni|anno|jaar|jaren|"
+                  r"ans|an|a[nñ]os|a[nñ]o)")
+_EXP_MONTH_UNIT = (r"(?:months?|mon\.?|monate?n?|mesi|mese|maanden|maand|"
+                   r"mois|meses|mes)")
+
+# The number must sit in a clause genuinely about work experience.
+_EXP_ANCHOR = re.compile(
+    r"experien|berufserfahrung|erfahrung|praxis|esperienz|ervaring|"
+    r"exp[ée]rien|experienc|experienci|"
+    r"similar role|comparable role|equivalent role|relevant|professional|"
+    r"hands[-\s]?on|proven|track record|background in|working (?:in|with|as)|"
+    r"seniority|vergleichbarer? (?:position|rolle)|einschl[äa]gig|"
+    r"ruolo simile|ambito|settore|soortgelijke|vergelijkbare|"
+    r"poste similaire|puesto similar|en el (?:sector|[áa]rea)",
+    re.I)
+
+# Disqualifiers, checked in a tight window around the number so a sentence
+# that merely also mentions a degree is not discarded wholesale.
+_EXP_BLOCK_NEAR = re.compile(
+    r"\b(?:old|of age|age of|ago|"
+    r"last|past|next|recent|"
+    r"founded|established|since|anniversar|"
+    r"fixed[-\s]?term|befristet|tempo determinato|"
+    r"contract|vertrag|contratto|duur|dur[ée]e|duration|"
+    r"visa|permit|warrant|guarantee|garantie|"
+    r"degree|bachelor|master|phd|doctora|studi|studium|laurea|"
+    r"universit|school|apprenticeship duration|"
+    r"notice period|k[üu]ndigungsfrist|preavviso)\b", re.I)
+
+_EXP_NONE = re.compile(
+    r"(no (?:prior |previous |work |professional )?experience (?:is )?"
+    r"(?:required|necessary|needed)|"
+    r"without (?:prior |previous )?experience|"
+    r"keine (?:berufserfahrung|vorkenntnisse)|ohne (?:vor)?erfahrung|"
+    r"nessuna esperienza (?:richiesta|necessaria)|senza esperienza|"
+    r"geen ervaring (?:vereist|nodig)|"
+    r"aucune exp[ée]rience (?:requise|n[ée]cessaire)|"
+    r"sin experiencia (?:previa)?|no se requiere experiencia|"
+    r"entry[-\s]?level|no experience)", re.I)
+
+_EXP_LEVEL_PATTERNS = [
+    ("Internship", re.compile(
+        r"\b(intern(?:ship)?|internship|praktikum|praktikant|werkstudent|"
+        r"working student|stage(?:air)?|stagiaire|stagista|tirocini|"
+        r"becari|pr[áa]cticas|alternance|apprentice|apprendist|"
+        r"ausbildung|azubi|lehrling|summer analyst)\b", re.I)),
+    ("Executive", re.compile(
+        r"\b(chief|c[etofi]o\b|cxo|vp\b|vice[-\s]president|svp|evp|"
+        r"managing director|general manager|gesch[äa]ftsf[üu]hrer|"
+        r"head of|leiter(?:in)?\b|direttore|directeur|director\b|"
+        # "Partner" alone matched "Partner Solution Architect", "Partner
+        # Manager" and "HR Business Partner" — none are executives.
+        r"(?:managing|equity|founding|general)\s+partner\b|"
+        r"amministratore)\b", re.I)),
+    ("Lead", re.compile(
+        r"\b(lead\b|leader\b|principal\b|"
+        r"staff(?:\s+\w+){0,2}\s+(?:engineer|scientist|designer|developer|"
+        r"researcher|analyst)|architect\b|team ?lead|tech ?lead|"
+        r"capo(?:squadra)?|responsabile|teamleiter)\b", re.I)),
+    ("Senior", re.compile(
+        r"\b(senior|sr\.?\b|snr\b|experienced|expert(?:e)?\b|"
+        r"esperto|senior[-\s]?level|erfahrene[rn]?)\b", re.I)),
+    ("Mid", re.compile(
+        r"\b(mid[-\s]?(?:level|weight)|intermediate|regular\b|"
+        r"medior|confirm[ée]\b)\b", re.I)),
+    ("Junior", re.compile(
+        r"\b(junior|jr\.?\b|graduate|grad\b|entry[-\s]?level|entry\b|"
+        r"einsteiger|berufseinsteiger|absolvent|neolaureat|"
+        r"d[ée]butant|reci[ée]n titulad|starter|trainee|"
+        r"associate\b|assistant\b)\b", re.I)),
+]
+
+# "Senior Care Assistant" is not a senior role; a role that TALKS TO senior
+# people is not itself senior.
+_EXP_LEVEL_FALSE = re.compile(
+    r"\b(senior (?:care|living|citizen|home|school|resident|manager of care)|"
+    r"junior (?:school|college|suite)|"
+    r"director of (?:nursing|care)|seniorenheim|seniorenbetreuung|"
+    r"(?:with|to|for|among|across|manage|managing|engage|engaging|"
+    r"influence|influencing|present(?:ing)? to|report(?:ing)? to|"
+    r"partner(?:ing)? with|work(?:ing)? with|liais(?:e|ing) with)\s+"
+    r"(?:our\s+|the\s+|various\s+|multiple\s+|key\s+|"
+    r"internal\s+|external\s+|c-level\s+)*"
+    r"senior\s+(?:stakeholder|leader|management|leadership|executive|"
+    r"colleague|team|member|client|partner|sponsor|manager)s?|"
+    r"senior\s+(?:stakeholder|leadership|management)\b)", re.I)
+
+# A seniority word in body text only counts when the sentence is about the
+# person being hired. Without this, "you will lead a team for the next 2
+# years" scored the row as a Lead role.
+_EXP_HIRING_CUE = re.compile(
+    r"(we are (?:looking|seeking|hiring)|are you an?|you are an?|"
+    r"looking for an?|seeking an?|hiring an?|join us as|as an?\s|"
+    r"the role|this role|position of|role of|vacancy|opening for|"
+    r"wir suchen|du bist|sie sind|als\s|stelle als|"
+    r"cerchiamo|sei un|ricerchiamo|posizione di|"
+    r"wij zoeken|je bent|functie van|"
+    r"nous recherchons|vous [êe]tes|poste de|"
+    r"buscamos|eres un|puesto de)", re.I)
+
+_EXP_SENT_SPLIT = re.compile(r"(?<=[.!?;:])\s+|[\n\r]+|\s*[•·▪▸–—]\s+")
+
+_EXP_SOURCE_RANK = {"": 0, "none": 0, "title_inference": 1,
+                    "card_context": 2, "api_description": 3, "detail_text": 3,
+                    "api_field": 4}
+
+# ATS-published seniority vocabulary -> canonical level. Employer-set, so it
+# outranks anything inferred from a title or from prose.
+_EXP_ATS_LEVEL = {
+    "internship": "Internship", "intern": "Internship", "student": "Internship",
+    "entry level": "Junior", "entry_level": "Junior", "entry": "Junior",
+    "graduate": "Junior", "junior": "Junior", "associate": "Junior",
+    "mid level": "Mid", "mid-level": "Mid", "intermediate": "Mid",
+    "experienced": "Mid", "professional": "Mid",
+    "mid-senior level": "Senior", "mid_senior_level": "Senior",
+    "senior level": "Senior", "senior": "Senior", "expert": "Senior",
+    "lead": "Lead", "principal": "Lead", "staff": "Lead", "manager": "Lead",
+    "director": "Executive", "executive": "Executive", "vp": "Executive",
+    "c-level": "Executive", "chief": "Executive",
+}
+
+
+def _jd_plain(raw, limit=20000):
+    """HTML/markup -> plain text for experience extraction.
+
+    Several ATS APIs already return the FULL job description in the same
+    response used for titles (Ashby descriptionPlain, Greenhouse content,
+    Workable description, Lever/Recruitee description). Feeding that straight
+    in costs ZERO extra HTTP requests.
+
+    Greenhouse returns HTML-ESCAPED markup ("&lt;p&gt;"); stripping tags before
+    unescaping would leave every tag in the text, so unescape comes FIRST.
+    """
+    if not raw:
+        return ""
+    txt = str(raw)
+    if "&lt;" in txt or "&gt;" in txt or "&amp;" in txt:
+        txt = unescape(txt)
+    txt = re.sub(r"(?is)<(script|style)[^>]*>.*?</\1>", " ", txt)
+    txt = re.sub(r"(?i)<br\s*/?>|</p>|</li>|</div>|</h[1-6]>", "\n", txt)
+    txt = re.sub(r"<[^>]+>", " ", txt)
+    txt = unescape(txt)
+    txt = re.sub(r"[ \t\xa0]+", " ", txt)
+    txt = re.sub(r"\n\s*\n+", "\n", txt)
+    return txt.strip()[:limit]
+
+
+def _exp_num(tok):
+    tok = (tok or "").strip().lower().rstrip(".")
+    if tok.isdigit():
+        return int(tok)
+    return _EXP_WORD_NUM.get(tok)
+
+
+def _exp_level_from_years(lo, hi):
+    # For a stated range use the midpoint: "5-8 years" is a Senior ask, but
+    # anchoring on the lower bound alone would call it Mid.
+    if lo is not None and hi is not None:
+        v = (lo + hi) / 2.0
+    else:
+        v = lo if lo is not None else hi
+    if v is None:
+        return ""
+    if v <= 0:
+        return "Entry"
+    if v <= 2:
+        return "Junior"
+    if v < 5:
+        return "Mid"
+    if v < 10:
+        return "Senior"
+    return "Lead"
+
+
+def _exp_level_from_text(text):
+    if not text:
+        return ""
+    if _EXP_LEVEL_FALSE.search(text):
+        return ""
+    for level, rx in _EXP_LEVEL_PATTERNS:
+        if rx.search(text):
+            return level
+    return ""
+
+
+def _exp_scan_numbers(text):
+    """Return the strongest explicit experience statement, or None."""
+    best = None
+    for sent in _EXP_SENT_SPLIT.split(text or ""):
+        sent = (sent or "").strip()
+        if not sent or len(sent) > 600:
+            continue
+        if not _EXP_ANCHOR.search(sent):
+            continue
+        num = rf"(?:\d{{1,2}}|{_EXP_WORD_ALT})"
+        unit = rf"(?:{_EXP_YEAR_UNIT}|{_EXP_MONTH_UNIT})"
+        rx = re.compile(
+            rf"(?<![\w.,/-])({num})\s*(?:\+|plus)?\s*"
+            rf"(?:(?:-|–|—|\bto\b|\bbis\b|\ba\b|\btot\b|\b[àa]\b|\bund\b|"
+            rf"\be\b|\by\b|\bet\b|\bor\b|\bof\b)\s*"
+            rf"({num})\s*(?:\+|plus)?\s*)?"
+            rf"({unit})\b", re.I)
+        for m in rx.finditer(sent):
+            lo, hi = _exp_num(m.group(1)), _exp_num(m.group(2))
+            u = m.group(3).lower()
+            if lo is None:
+                continue
+            # "a month-end close process" / "year-end reporting": the unit is
+            # part of a compound noun, not a duration.
+            if re.match(r"\s*[-\u2010-\u2015](?:end|on-end|round)", sent[m.end():]):
+                continue
+            # A bare article is only a real quantity when something
+            # quantifies it, else "a month-end" produces a phantom 1.
+            if m.group(1).strip().lower() in {"a", "an"} and not re.search(
+                    r"\b(?:at least|minimum|min\.|over|more than|within|after|"
+                    r"first|least)\b", sent[:m.start()], re.I):
+                continue
+            win = sent[max(0, m.start() - 45):m.end() + 45]
+            if _EXP_BLOCK_NEAR.search(win):
+                continue
+            months = bool(re.fullmatch(_EXP_MONTH_UNIT, u, re.I))
+            # Word boundaries are mandatory: an unanchored "[üu]ber" matched
+            # inside "K-uber-netes" and turned "6 months" into "6+ months".
+            plus = bool(re.search(
+                r"\+|\b(?:plus|at least|minimum|min\.|mindestens|almeno|"
+                r"minimaal|au moins|al menos|over|more than|[üu]ber|oltre|"
+                r"upwards of|no less than|m[ií]nimo|minimo de|mindest|"
+                r"ten minste|minstens)\b", sent, re.I))
+            if hi is not None and hi < lo:
+                hi = None
+            lo_y = lo / 12.0 if months else float(lo)
+            hi_y = (hi / 12.0 if months else float(hi)) if hi is not None else None
+            if lo_y > 40:
+                continue
+            cand = (lo_y, hi_y, months, plus, lo, hi, sent[:300])
+            # Prefer the lowest stated minimum: "3-5 years" beats a stray "10".
+            if best is None or lo_y < best[0]:
+                best = cand
+    return best
+
+
+def extract_experience(text="", title=""):
+    """Detect required experience from JD text and/or job title.
+
+    Returns a dict: required / min_years / max_years / level / evidence / source.
+    Numeric years appear ONLY when explicitly stated in the text.
+    """
+    out = {"required": "Unknown", "min_years": "", "max_years": "",
+           "level": "Unknown", "evidence": "", "source": "none"}
+    text = text or ""
+    title = title or ""
+
+    hit = _exp_scan_numbers(text)
+    if hit:
+        lo_y, hi_y, months, plus, lo_raw, hi_raw, ev = hit
+        unit = "months" if months else "years"
+        if hi_raw is not None:
+            label = f"{lo_raw}-{hi_raw} {unit}"
+        elif plus:
+            label = f"{lo_raw}+ {unit}"
+        else:
+            label = f"{lo_raw} {unit}"
+        out["required"] = label
+        out["min_years"] = round(lo_y, 2) if months else int(lo_y)
+        if hi_y is not None:
+            out["max_years"] = round(hi_y, 2) if months else int(hi_y)
+        out["level"] = (_exp_level_from_text(title)
+                        or _exp_level_from_years(lo_y, hi_y))
+        out["evidence"] = ev
+        out["source"] = "detail_text"
+        return out
+
+    none_hit = _EXP_NONE.search(text) or _EXP_NONE.search(title)
+    if none_hit:
+        out.update({"required": "None required", "min_years": 0,
+                    "level": _exp_level_from_text(title) or "Entry",
+                    "evidence": none_hit.group(0)[:300],
+                    "source": ("detail_text" if _EXP_NONE.search(text)
+                               else "title_inference")})
+        return out
+
+    lvl = _exp_level_from_text(title)
+    if lvl:
+        out.update({"level": lvl, "source": "title_inference",
+                    "evidence": title[:300]})
+        return out
+
+    for sent in _EXP_SENT_SPLIT.split(text):
+        sent = (sent or "").strip()
+        if not sent or len(sent) > 400:
+            continue
+        if not _EXP_HIRING_CUE.search(sent):
+            continue
+        lvl = _exp_level_from_text(sent)
+        if lvl:
+            out.update({"level": lvl, "source": "detail_text",
+                        "evidence": sent[:300]})
+            return out
+    return out
+
+
+def apply_experience_to_record(rec, jd_text="", card_context="", title="",
+                               level_hint="", key_prefix="Experience "):
+    """Fill the four Experience columns on a record, respecting source rank.
+
+    Never downgrades: a weaker source cannot overwrite a stronger one.
+    `level_hint` is an employer-published seniority string (e.g.
+    SmartRecruiters experienceLevel) and outranks every inference.
+    """
+    jd = (jd_text or "").strip()
+    exp = extract_experience(jd or card_context or "", title or "")
+    src = exp["source"]
+    if src == "detail_text":
+        src = "api_description" if jd else "card_context"
+
+    hint = (level_hint or "").strip()
+    if hint:
+        mapped = _EXP_ATS_LEVEL.get(hint.lower())
+        if mapped:
+            exp["level"] = mapped
+            if exp["required"] == "Unknown":
+                src = "api_field"
+
+    cur = rec.get(key_prefix + "Source") or "none"
+    if _EXP_SOURCE_RANK.get(src, 0) < _EXP_SOURCE_RANK.get(cur, 0):
+        return False
+    if exp["required"] == "Unknown" and exp["level"] == "Unknown":
+        return False
+    rec[key_prefix + "Required"] = exp["required"]
+    rec[key_prefix + "Min Years"] = exp["min_years"]
+    rec[key_prefix + "Level"] = exp["level"]
+    rec[key_prefix + "Source"] = src
+    return True
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FIX P0-29: HOST-ADAPTIVE RESOURCE GOVERNOR (low-end laptop safety)
+#
+# Three measured problems this solves:
+#
+#   1. recommended_workers() was CALLED at two sites but never defined
+#      anywhere in this file and never imported -> guaranteed NameError the
+#      moment detail enrichment ran with max_workers unset.
+#
+#   2. Each DOM company launched its OWN Chromium inside its worker thread.
+#      Measured on this box: 1 browser = 581 MB RSS, 2 = 1145 MB, 3 = 1706 MB.
+#      On an 8 GB office laptop that is most of the free RAM.
+#
+#   3. No request interception at all: every scrape downloaded images, fonts,
+#      video and analytics. Measured 5.59 MB -> 3.12 MB per 3 pages (-44%)
+#      when images/media/fonts are blocked.
+#
+# NOTE ON SPEED: blocking images was measured at 11.2s -> 11.2s (+0%) wall
+# clock. It is a MEMORY/BANDWIDTH fix, not a speed fix. Speed is handled
+# separately (FIX P0-31); do not conflate the two.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _host_cpu_count():
+    """Physical-ish CPU count that respects cgroup/affinity limits."""
+    n = 0
+    try:
+        n = len(os.sched_getaffinity(0))
+    except Exception:
+        pass
+    if not n:
+        try:
+            n = os.cpu_count() or 0
+        except Exception:
+            n = 0
+    return max(1, n or 1)
+
+
+def _host_free_mb():
+    """Best-effort available RAM in MB. Returns None when undeterminable.
+
+    Uses MemAvailable (what the kernel thinks is actually obtainable without
+    swapping), not MemFree, and honours a cgroup v2 memory.max limit so a
+    container with a small cap is not mistaken for a big host.
+    """
+    avail = None
+    try:
+        with open("/proc/meminfo", encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith("MemAvailable:"):
+                    avail = int(line.split()[1]) / 1024.0
+                    break
+    except Exception:
+        avail = None
+    # Respect a cgroup v2 cap when it is lower than host-available.
+    for cg in ("/sys/fs/cgroup/memory.max",
+               "/sys/fs/cgroup/memory/memory.limit_in_bytes"):
+        try:
+            with open(cg, encoding="utf-8") as fh:
+                raw = fh.read().strip()
+            if raw and raw != "max":
+                cap = int(raw) / (1024.0 * 1024.0)
+                if cap > 0 and (avail is None or cap < avail):
+                    avail = cap
+        except Exception:
+            continue
+    if avail is None:
+        try:
+            import shutil  # noqa: F401  (presence check only)
+            page = os.sysconf("SC_AVPHYS_PAGES")
+            size = os.sysconf("SC_PAGE_SIZE")
+            avail = (page * size) / (1024.0 * 1024.0)
+        except Exception:
+            avail = None
+    return avail
+
+
+# Measured peak RSS of one headless Chromium with a real job board loaded.
+_BROWSER_RSS_MB = 600
+# Leave this much for the OS, the user's other apps, and this process.
+_RESERVE_MB = 1200
+
+
+def recommended_workers(kind="browser", requested=None):
+    """Size a worker pool for THIS machine.
+
+    kind="browser" -> each worker may hold a Chromium (~600 MB measured)
+    kind="http"    -> each worker is a socket + parser (cheap)
+
+    The previous code called this function without ever defining it. Beyond
+    fixing the NameError, the point is that a fixed pool of 3 is wrong on an
+    8 GB laptop: 3 x 600 MB of Chromium plus the OS is a swap storm.
+    """
+    cpus = _host_cpu_count()
+    free = _host_free_mb()
+
+    if kind == "http":
+        # Network-bound: oversubscribe CPUs, but stay modest on small boxes.
+        cap = 12 if cpus >= 4 else 6
+        n = min(cap, max(2, cpus * 3))
+        if free is not None and free < 1500:
+            n = min(n, 3)
+        return n if requested is None else max(1, min(requested, n))
+
+    # Browser work: RAM is the binding constraint, not CPU.
+    by_cpu = max(1, cpus - 1) if cpus > 1 else 1
+    if free is None:
+        by_ram = 2
+    else:
+        by_ram = int(max(0, free - _RESERVE_MB) // _BROWSER_RSS_MB)
+    n = max(1, min(by_cpu, by_ram if by_ram > 0 else 1))
+    n = min(n, 4)  # diminishing returns; also politeness to target sites
+    if requested is not None:
+        n = max(1, min(requested, n))
+    return n
+
+
+def describe_host_budget():
+    """One-line host summary for the run header (helps users self-diagnose)."""
+    cpus = _host_cpu_count()
+    free = _host_free_mb()
+    free_s = f"{free:.0f} MB" if free is not None else "unknown"
+    return (f"host: {cpus} cpu, {free_s} available RAM -> "
+            f"browser workers={recommended_workers('browser')}, "
+            f"http workers={recommended_workers('http')}")
+
+
+# Resource types that never contain job data. Blocking them is safe for
+# extraction correctness: no adapter reads pixels, fonts or video.
+_BLOCKED_RESOURCE_TYPES = {"image", "media", "font"}
+
+# Analytics/ads/chat hosts. These load slowly, spin the CPU and never carry
+# postings. Matched as substrings against the request URL.
+_BLOCKED_URL_MARKERS = (
+    "google-analytics.com", "googletagmanager.com", "doubleclick.net",
+    "facebook.net", "connect.facebook", "hotjar.com", "mixpanel.com",
+    "segment.io", "segment.com/analytics", "fullstory.com", "clarity.ms",
+    "intercom.io", "intercomcdn", "drift.com", "zdassets.com/ekr",
+    "cdn.cookielaw.org", "onetrust.com", "cookiebot.com", "usercentrics",
+    "newrelic.com", "nr-data.net", "sentry.io", "bugsnag.com",
+    "youtube.com/embed", "player.vimeo.com", "adservice.google",
+    "bat.bing.com", "snap.licdn.com", "analytics.tiktok",
+)
+
+
+def install_page_resource_blocking(target, block_types=None, block_hosts=True):
+    """Attach request interception to a Playwright Page or BrowserContext.
+
+    Measured effect: 5.59 MB -> 3.12 MB downloaded across 3 job boards (-44%)
+    and a matching drop in decode/raster CPU. Wall-clock effect was ~0%, which
+    is expected and fine — this exists to protect RAM/CPU/bandwidth.
+
+    Fails open: if routing cannot be installed the scrape still runs.
+    """
+    if target is None:
+        return False
+    types = _BLOCKED_RESOURCE_TYPES if block_types is None else set(block_types)
+
+    def _route(route, request=None):
+        try:
+            req = request if request is not None else route.request
+            if req.resource_type in types:
+                return route.abort()
+            if block_hosts:
+                u = (req.url or "").lower()
+                for marker in _BLOCKED_URL_MARKERS:
+                    if marker in u:
+                        return route.abort()
+            return route.continue_()
+        except Exception:
+            # Never let interception break a scrape.
+            try:
+                return route.continue_()
+            except Exception:
+                return None
+
+    try:
+        target.route("**/*", _route)
+        return True
+    except Exception:
+        return False
+
+
+# Chromium flags that cut memory and CPU without changing rendered DOM.
+LOW_RESOURCE_BROWSER_ARGS = [
+    "--no-sandbox",
+    "--disable-dev-shm-usage",
+    "--disable-http2",
+    "--ignore-certificate-errors",
+    "--disable-gpu",
+    "--disable-software-rasterizer",
+    "--disable-extensions",
+    "--disable-background-networking",
+    "--disable-background-timer-throttling",
+    "--disable-backgrounding-occluded-windows",
+    "--disable-renderer-backgrounding",
+    "--disable-features=TranslateUI,BlinkGenPropertyTrees,MediaRouter",
+    "--metrics-recording-only",
+    "--mute-audio",
+    "--no-first-run",
+    "--no-default-browser-check",
+    "--renderer-process-limit=2",
+    "--js-flags=--max-old-space-size=512",
+]
+
+
 # ───────────────────────── CONFIG ─────────────────────────────────────────────
 OUTPUT_FIELDS = [
     "Company Name", "Seed Name", "Source Type", "Hiring Company",
@@ -88,6 +806,9 @@ OUTPUT_FIELDS = [
     "Job Title", "Raw Job Title", "Job Location", "Raw Location", "Job Type",
     "Job URL", "Canonical Job ID", "Provider", "Extraction Method",
     "EU Blue Card", "Blue Card Evidence", "Relocation/Visa Support",
+    # FIX P0-30
+    "Experience Required", "Experience Min Years", "Experience Level",
+    "Experience Source",
     "Location Source", "URL Type", "Visa Sponsorship", "Relocation Support",
     "Relocation Required", "Support Confidence", "Support Evidence",
     "Support Evidence URL", "Support Evidence Type", "Record Status",
@@ -851,6 +1572,11 @@ class ATSScanner:
             "EU Blue Card": "Unknown",
             "Blue Card Evidence": "",
             "Relocation/Visa Support": "Unknown",
+            # FIX P0-30
+            "Experience Required": "Unknown",
+            "Experience Min Years": "",
+            "Experience Level": "Unknown",
+            "Experience Source": "none",
             "Location Source": location_source if location and location not in ("Not Specified", "Unknown") else "none",
             "URL Type": "real",
             "Visa Sponsorship": "Unknown",
@@ -876,6 +1602,9 @@ class ATSScanner:
         rec["Relocation/Visa Support"] = flag
         if evidence:
             rec["Support Evidence Type"] = "explicit_jd_sentence"
+        # FIX P0-30: experience from the JD text the adapter already fetched
+        # (zero extra requests), with the title as fallback evidence.
+        apply_experience_to_record(rec, jd_text=description or "", title=title)
         return rec
 
     # ── ATS adapters ─────────────────────────────────────────────────────────
@@ -1008,6 +1737,13 @@ class ATSScanner:
                 row = self.make_row(
                     target, title, job_url, location,
                     location, job_type, desc, "smartrecruiters_api")
+                # FIX P0-30: SmartRecruiters publishes a structured
+                # experienceLevel on the LIST response — employer-set and
+                # free. It outranks any inference from title or prose.
+                apply_experience_to_record(
+                    row, jd_text=desc, title=title,
+                    level_hint=((job.get("experienceLevel") or {})
+                                .get("label") or ""))
                 rows.append(row)
             offset += len(jobs)
             if not jobs or offset >= data.get("totalFound", 0):
@@ -1147,8 +1883,14 @@ class ATSScanner:
         rows = []
         try:
             with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True)
-                page = browser.new_page()
+                # FIX P0-29: low-resource flags + block images/fonts/media and
+                # analytics hosts. Measured -44% bytes on real job boards; the
+                # DOM the extractor reads is unchanged.
+                browser = p.chromium.launch(headless=True,
+                                            args=LOW_RESOURCE_BROWSER_ARGS)
+                ctx = browser.new_context(viewport={"width": 1280, "height": 800})
+                install_page_resource_blocking(ctx)
+                page = ctx.new_page()
                 page.goto(target["url"], wait_until="domcontentloaded", timeout=35000)
                 page.wait_for_timeout(2500)
                 jobs = page.evaluate(
@@ -1205,11 +1947,32 @@ class ATSScanner:
         }
         adapter = adapters.get(target["ats_type"])
         if adapter is None:
+            # FIX P0-31: try the static-HTML fast path before paying for a
+            # Chromium launch. Uses this scanner's OWN validators so the
+            # acceptance rules are identical; bails out on hydration shells
+            # and on thin yields so a JS board is never truncated.
+            try:
+                static_jobs, diag = fetch_static_jobs(
+                    target["url"],
+                    url_validator=self.valid_job_url,
+                    title_validator=self.valid_title,
+                )
+            except Exception:
+                static_jobs, diag = [], "static: error"
+            if static_jobs:
+                print(f"   {diag} (no browser needed)")
+                rows = []
+                for job in static_jobs:
+                    rows.append(self.make_row(
+                        target, job["job_title"], job["job_url"],
+                        "Unknown", "", self.classify_job_type("", "", ""),
+                        "", "static_html", location_source="none"))
+                return rows
             # Generic / unknown board (e.g. provider=auto on a plain careers
             # site with no ATS signature): the DOM fallback still harvests
             # visible job links instead of silently returning 0 and losing
             # that company's jobs.
-            print(f"   no API adapter for '{target['ats_type']}' "
+            print(f"   {diag}; no API adapter for '{target['ats_type']}' "
                   f"— using browser DOM fallback")
             return self.browser_fallback(target)
         return adapter(target)

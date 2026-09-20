@@ -64,6 +64,10 @@ def _apply_migrations(conn):
         ("has_relocation", "ALTER TABLE jobs ADD COLUMN has_relocation INTEGER DEFAULT 0"),
         # BUGFIX: support the new "Experience" filter (v0.1.1).
         ("experience_level", "ALTER TABLE jobs ADD COLUMN experience_level TEXT DEFAULT ''"),
+        # FIX P0-30: experience requirement columns from the scanners.
+        ("experience_required", "ALTER TABLE jobs ADD COLUMN experience_required TEXT DEFAULT ''"),
+        ("experience_min_years", "ALTER TABLE jobs ADD COLUMN experience_min_years REAL"),
+        ("experience_source", "ALTER TABLE jobs ADD COLUMN experience_source TEXT DEFAULT ''"),
         # BUGFIX: support Phase 3 source subtype migration
         ("source_subtype", "ALTER TABLE jobs ADD COLUMN source_subtype TEXT DEFAULT 'direct'"),
         # NEW: industry tag sourced from company registry (v0.2.0)
@@ -221,7 +225,7 @@ def search_jobs(db_path, title="", company="", location="", country="All", sourc
                 verified_only=True, sponsorship_only=False, active_only=True,
                 remote_filter="All", eu_blue_card_only=False, relocation_only=False,
                 sponsorship_filter="All", blue_card_filter="All", relocation_filter="All",
-                regex=False):
+                experience_filter="All", regex=False):
     conn = None
     try:
         conn = get_connection(db_path)

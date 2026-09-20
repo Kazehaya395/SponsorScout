@@ -1,50 +1,14 @@
 """Shared constants and tiny helpers for the scanning package.
 
-Extracted from ats_portal_scannerv5.py / career_portal_scanner_v7.py.
-The 35-column output schema and 15-column scan-log schema are the contract
-both scanners emit; keeping them in one place avoids drift.
+Extracted from ats_portal_scanner.py / career_scanner.py.
+
+Only what both scanners genuinely share lives here: the lean low-resource
+Chromium flag set (``BROWSER_ARGS`` / ``LOW_RESOURCE_BROWSER_ARGS``) and
+host-adaptive pool sizing (``recommended_workers``).  Each scanner keeps its
+own text helpers and CSV schemas next to the code that uses them (39-column
+output / 15-column scan log / error log), so ``tools/check_dev_sync.py`` can
+keep every copy honest against its dev script.
 """
-
-import re
-from html import unescape
-from urllib.parse import urlparse
-
-OUTPUT_FIELDS = [
-    "Company Name", "Seed Name", "Source Type", "Hiring Company",
-    "Target Country", "Scope Policy", "Industry Type",
-    "Sponsorship History Score", "English Friendly Score", "Remote Score",
-    "Job Title", "Raw Job Title", "Job Location", "Raw Location", "Job Type",
-    "Job URL", "Canonical Job ID", "Provider", "Extraction Method",
-    "EU Blue Card", "Blue Card Evidence", "Relocation/Visa Support",
-    "Location Source", "URL Type", "Visa Sponsorship", "Relocation Support",
-    "Relocation Required", "Support Confidence", "Support Evidence",
-    "Support Evidence URL", "Support Evidence Type", "Record Status",
-    "Quarantine Reason", "Run ID", "Scanned At",
-]
-
-LOG_FIELDS = [
-    "Run ID", "Seed Name", "Company", "Source Type", "Target Country", "Status",
-    "Provider", "Jobs Found", "Quarantined", "Duplicates", "Rejected Scope",
-    "Error", "Diagnostics", "Duration Sec", "Seed URL",
-]
-
-
-def clean(value):
-    """Unescape, fix mojibake, unwrap markdown links, and collapse whitespace."""
-    value = unescape(str(value or ""))
-    value = value.replace("\ufeff", "")
-    match = re.fullmatch(
-        r"\[[^\]]*\]\((https?://[^)]+)\)",
-        value.strip(),
-    )
-    if match:
-        value = match.group(1)
-    if any(x in value for x in ("\ufffd",)):
-        try:
-            value = value.encode("latin1").decode("utf-8")
-        except (UnicodeError, UnicodeEncodeError):
-            pass
-    return re.sub(r"\s+", " ", value).strip()
 
 
 def host_workers_limits() -> tuple[int, int]:
@@ -121,7 +85,9 @@ def recommended_workers(kind: str = "browser") -> int:
 # Lean Chromium flags.  ``--blink-settings=imagesEnabled=false`` alone removes
 # the bulk of the download/render work on image-heavy career pages, and the
 # remaining flags stop background networking that costs CPU and bandwidth
-# without contributing a single job row.
+# without contributing a single job row.  The last three cap the renderer's
+# process count and V8 old-space so a stray heavy board cannot balloon a
+# worker's RAM during a long crawl.
 BROWSER_ARGS = [
     "--no-sandbox",
     "--disable-dev-shm-usage",
@@ -130,17 +96,26 @@ BROWSER_ARGS = [
     "--blink-settings=imagesEnabled=false",
     "--disable-background-networking",
     "--disable-background-timer-throttling",
+    "--disable-backgrounding-occluded-windows",
+    "--disable-renderer-backgrounding",
     "--disable-client-side-phishing-detection",
     "--disable-default-apps",
     "--disable-extensions",
+    "--disable-features=TranslateUI,BlinkGenPropertyTrees,MediaRouter",
     "--disable-gpu",
+    "--disable-software-rasterizer",
     "--disable-sync",
     "--disable-translate",
     "--metrics-recording-only",
     "--mute-audio",
     "--no-first-run",
+    "--no-default-browser-check",
+    "--renderer-process-limit=2",
+    "--js-flags=--max-old-space-size=512",
 ]
 
-
-def host_of(url):
-    return urlparse(url).netloc.lower().split(":")[0]
+# Back-compat alias: both scanners (and the dev scripts they are synced from)
+# refer to the low-resource launch flags by this name.  Keeping one definition
+# here means a flag added for the ATS phase can never be missing from the
+# career phase.
+LOW_RESOURCE_BROWSER_ARGS = BROWSER_ARGS

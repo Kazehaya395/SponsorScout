@@ -48,6 +48,11 @@ CREATE TABLE IF NOT EXISTS jobs (
     -- because experience-level is a soft enum (the model never changes)
     -- and a tiny one. NULL means "not yet classified" (legacy rows).
     experience_level TEXT DEFAULT '',
+    -- FIX P0-30: scanner-extracted experience requirement columns
+    -- (additive; NULL/'' = not yet classified, never a hard fact).
+    experience_required TEXT DEFAULT '',
+    experience_min_years REAL,
+    experience_source TEXT DEFAULT '',
     -- NEW: industry tag sourced from company registry (v0.2.0)
     industry TEXT DEFAULT '',
     -- AI domain detection: ★ when AI keywords detected in job listing

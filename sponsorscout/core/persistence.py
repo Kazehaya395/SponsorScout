@@ -119,13 +119,14 @@ def upsert_job(conn, job, commit: bool = True):
             source_type, source_subtype, source_name, description, trust_score, freshness_score,
             sponsorship_score, match_score, verified_active, is_expired,
             last_verified_at, remote_type, eu_blue_card, has_relocation, experience_level,
+            experience_required, experience_min_years, experience_source,
             industry, ai_score,
             visa_sponsorship, relocation_support, eu_blue_card_verdict,
             relocation_required, support_confidence, support_evidence,
             support_evidence_url, support_evidence_type, blue_card_evidence,
             canonical_job_id, run_id, raw_location, country_source)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                   ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(url) DO UPDATE SET
              title=excluded.title,
              company=excluded.company,
@@ -147,7 +148,10 @@ def upsert_job(conn, job, commit: bool = True):
              remote_type=excluded.remote_type,
              eu_blue_card=excluded.eu_blue_card,
              has_relocation=excluded.has_relocation,
-             experience_level=excluded.experience_level,
+             experience_level=COALESCE(NULLIF(excluded.experience_level,''), experience_level),
+             experience_required=COALESCE(NULLIF(excluded.experience_required,''), experience_required),
+             experience_min_years=COALESCE(excluded.experience_min_years, experience_min_years),
+             experience_source=COALESCE(NULLIF(excluded.experience_source,''), experience_source),
              industry=COALESCE(NULLIF(excluded.industry,''), industry),
              ai_score=excluded.ai_score,
              visa_sponsorship=excluded.visa_sponsorship,
@@ -186,6 +190,10 @@ def upsert_job(conn, job, commit: bool = True):
             int(job.get("eu_blue_card", 0) or 0),
             int(job.get("has_relocation", 0) or 0),
             job.get("experience_level", ""),
+            # FIX P0-30: experience requirement columns (scanner-extracted).
+            job.get("experience_required", ""),
+            job.get("experience_min_years", None),
+            job.get("experience_source", ""),
             job_industry,
             int(job.get("ai_score", 0) or 0),
             # ── Scan evidence columns ────────────────────────────────────────

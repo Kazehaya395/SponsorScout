@@ -195,8 +195,61 @@ def _job_country(row: dict) -> str:
     return ""
 
 
+def _exp_min_years(value) -> float | None:
+    """Scanner 'Experience Min Years' -> REAL (None = not stated)."""
+    if value in ("", None):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+# Scanner experience vocabulary -> app canonical vocabulary.
+#
+# The scanners deliberately emit employer-facing words ("Internship",
+# "Junior", "Executive") while the jobs table, its partial index
+# (idx_jobs_experience) and the UI filter all use the short canonical set in
+# ``db.EXPERIENCE_LEVELS`` / ``normalizer.detect_experience_level``:
+# Intern / Entry / Mid / Senior / Lead / Exec.  Canonicalise exactly once,
+# here at the ingestion boundary, so no scanner or UI has to know both.
+_EXP_LEVEL_CANON = {
+    "internship": "Intern",
+    "intern": "Intern",
+    "junior": "Entry",
+    "entry": "Entry",
+    "entry level": "Entry",
+    "mid": "Mid",
+    "mid level": "Mid",
+    "senior": "Senior",
+    "lead": "Lead",
+    "executive": "Exec",
+    "exec": "Exec",
+}
+
+
+def _exp_level(value) -> str:
+    """Scanner 'Experience Level' -> canonical level ('' = unclassified).
+
+    An unrecognised word yields '' rather than the raw token: the column is a
+    soft enum, and '' is the documented "not yet classified" state.
+    """
+    raw = str(value or "").strip()
+    if not raw or raw.lower() == "unknown":
+        return ""
+    return _EXP_LEVEL_CANON.get(raw.lower(), "")
+
+
+def _exp_required(value) -> str:
+    """Scanner 'Experience Required' -> stored text ('' = not stated)."""
+    raw = str(value or "").strip()
+    if not raw or raw.lower() == "unknown":
+        return ""
+    return raw
+
+
 def _row_to_job(row: dict, *, source_subtype: str = "direct", run_id: str) -> dict | None:
-    """Map one 35-column scanner output row to an ``upsert_job`` dict."""
+    """Map one 39-column scanner output row to an ``upsert_job`` dict."""
     url = str(row.get("Job URL") or "").strip()
     title = str(row.get("Job Title") or "").strip()
     if not url or not title or title.lower() == "unknown":
@@ -260,6 +313,12 @@ def _row_to_job(row: dict, *, source_subtype: str = "direct", run_id: str) -> di
         "industry": industry,
         "raw_location": str(row.get("Raw Location") or "").strip(),
         "country_source": "auto",
+        # FIX P0-30: scanner-extracted experience columns (additive),
+        # canonicalised to the app vocabulary here (see _EXP_LEVEL_CANON).
+        "experience_level": _exp_level(row.get("Experience Level")),
+        "experience_required": _exp_required(row.get("Experience Required")),
+        "experience_min_years": _exp_min_years(row.get("Experience Min Years")),
+        "experience_source": str(row.get("Experience Source") or "").strip(),
     }
 
 
