@@ -24,8 +24,15 @@ from sponsorscout.core.dedup import dedup_companies_in_db, dedup_jobs_in_db
 from sponsorscout.db import database as db
 from sponsorscout.i18n import _
 
+# Canonical column order (defines the indexes); only the visible labels are
+# translated — see _header_labels().
 HEADERS_RUNS = ["Run ID", "Method", "Started", "Status", "Jobs", "Dups",
                 "Quarantined", "Errors"]
+
+
+def _runs_header_labels() -> list:
+    """HEADERS_RUNS translated for display, in the same (fixed) order."""
+    return [_(h) for h in HEADERS_RUNS]
 HEADERS_LOG = ["Seed", "Company", "Source", "Target Country", "Status",
                "Provider", "Jobs", "Quar.", "Dups", "Scope Rej.",
                "Error", "Diagnostics", "Duration (s)", "Seed URL"]
@@ -35,6 +42,24 @@ HEADERS_LOG = ["Seed", "Company", "Source", "Target Country", "Status",
 # every job row is extracted with full detail and accurate verdicts.
 # ``"quick"`` is still supported by the pipeline for the dev CLI only.
 SCAN_METHOD = "full"
+
+# Long scan-control strings live in ONE place so __init__ and retranslate()
+# cannot drift: hover tooltips were previously set only at construction and
+# stayed in the old language after a switch (e.g. an Italian tooltip on an
+# English UI). Each constant is also the exact i18n key.
+SCAN_BTN_TOOLTIP = (
+    "Scan every seeded company (ATS boards + career pages) and "
+    "enrich each job from its detail page, so no listing misses its evidence.")
+CUSTOM_BTN_TOOLTIP = (
+    "Choose specific companies and/or source types (ATS and/or "
+    "career portals) to scan instead of every seeded company.")
+RESUME_BTN_TOOLTIP = (
+    "Continue the last stopped scan — only companies it did not finish "
+    "are scanned, so no progress is lost.")
+PAUSE_BTN_TOOLTIP = (
+    "Stop the scan now and keep everything found so far. Press Resume later "
+    "to continue the remaining companies — all browsers close, so other apps "
+    "run smoothly again.")
 
 
 class ScanLogDialog(QDialog):
@@ -426,28 +451,21 @@ class ToolsTab(QWidget):
         row.setSpacing(8)
         self.scan_btn = QPushButton(_("Scan Now"))
         self.scan_btn.setObjectName("Primary")
-        self.scan_btn.setToolTip(
-            _("Scan every seeded company (ATS boards + career pages) and "
-              "enrich each job from its detail page, so no listing misses "
-              "its evidence."))
+        self.scan_btn.setToolTip(_(SCAN_BTN_TOOLTIP))
         self.scan_btn.clicked.connect(self.start_scan)
         self.custom_btn = QPushButton(_("Custom Scan"))
-        self.custom_btn.setToolTip(
-            _("Choose specific companies and/or source types (ATS and/or "
-              "career portals) to scan instead of every seeded company."))
+        self.custom_btn.setToolTip(_(CUSTOM_BTN_TOOLTIP))
         self.custom_btn.clicked.connect(self.start_custom_scan)
         self.resume_btn = QPushButton(_("Resume"))
         self.resume_btn.setEnabled(False)
-        self.resume_btn.setToolTip(
-            _("Continue the last stopped scan — only companies it did not "
-              "finish are scanned, so no progress is lost."))
+        self.resume_btn.setToolTip(_(RESUME_BTN_TOOLTIP))
         self.resume_btn.clicked.connect(self.resume_scan)
-        self.stop_btn = QPushButton(_("Stop (keep progress)"))
+        # "Pause" (not "Stop"): stopping IS pausing — progress is checkpointed
+        # in the DB and Resume continues the remaining companies later, even
+        # after an app restart (see resume_scan / get_resumable_scan).
+        self.stop_btn = QPushButton(_("Pause"))
         self.stop_btn.setEnabled(False)
-        self.stop_btn.setToolTip(
-            _("Stop the scan now and keep everything found so far. "
-              "Press Resume later to continue the remaining companies — "
-              "all browsers close, so other apps run smoothly again."))
+        self.stop_btn.setToolTip(_(PAUSE_BTN_TOOLTIP))
         self.stop_btn.clicked.connect(self.coordinator.stop)
         self.scan_status = QLabel(_("Idle"))
         for w in (self.scan_btn, self.custom_btn, self.resume_btn,
@@ -484,7 +502,7 @@ class ToolsTab(QWidget):
         lay = QVBoxLayout(box)
         self._add_section_help(box, _("Scan History description"))
         self.runs_table = QTableWidget(0, len(HEADERS_RUNS))
-        self.runs_table.setHorizontalHeaderLabels(HEADERS_RUNS)
+        self.runs_table.setHorizontalHeaderLabels(_runs_header_labels())
         self.runs_table.verticalHeader().setVisible(False)
         self.runs_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.runs_table.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -672,9 +690,7 @@ class ToolsTab(QWidget):
                   "remaining.").format(run=checkpoint["run_id"], done=done,
                                         total=total, remaining=remaining))
         else:
-            self.resume_btn.setToolTip(
-                _("Continue the last stopped scan — only companies it did "
-                  "not finish are scanned, so no progress is lost."))
+            self.resume_btn.setToolTip(_(RESUME_BTN_TOOLTIP))
 
     def _on_scan_progress(self, chunk: str):
         from sponsorscout.application.scan_coordinator import PROGRESS_PREFIX
@@ -992,14 +1008,24 @@ class ToolsTab(QWidget):
                     box.setToolTip(txt)
         self.scan_btn.setText(_("Scan Now"))
         self.custom_btn.setText(_("Custom Scan"))
-        self.custom_btn.setToolTip(
-            _("Choose specific companies and/or source types (ATS and/or "
-              "career portals) to scan instead of every seeded company."))
-        self.scan_btn.setToolTip(
-            _("Scan every seeded company (ATS boards + career pages) and "
-              "enrich each job from its detail page, so no listing misses "
-              "its evidence."))
-        self.stop_btn.setText(_("Stop"))
+        self.custom_btn.setToolTip(_(CUSTOM_BTN_TOOLTIP))
+        self.scan_btn.setToolTip(_(SCAN_BTN_TOOLTIP))
+        # The Pause/Resume labels and their hover texts were previously
+        # missed here, leaving e.g. "Riprendi" + an Italian Stop tooltip on
+        # an English UI after a language switch.
+        self.stop_btn.setText(_("Pause"))
+        self.stop_btn.setToolTip(_(PAUSE_BTN_TOOLTIP))
+        self.resume_btn.setText(_("Resume"))
+        self.resume_btn.setToolTip(_(RESUME_BTN_TOOLTIP))
+        # The checkpoint-aware tooltip needs a DB read (scan_runs + seed CSVs,
+        # ~25 ms idle and up to busy_timeout during a scan). A language switch
+        # must stay instant, so it is NOT recomputed here: the base tooltip is
+        # set above and the detailed one returns the next time the Tools tab
+        # becomes visible (see showEvent) or a scan finishes.
+        self.scan_status.setText(
+            _("Running…") if self.coordinator.is_running() else _("Idle"))
+        self.verify_n.setToolTip(
+            _("Maximum number of active jobs to re-verify per run."))
         self.scan_log.setPlaceholderText(_("Scan output appears here…"))
         self.view_log_btn.setText(_("View Per-Company Log"))
         self.download_log_btn.setText(_("Download Scan Log"))
@@ -1008,6 +1034,17 @@ class ToolsTab(QWidget):
         self.clear_scan_btn.setText(_("Clear Scan Data"))
         self.quarantine_btn.setText(_("Review Quarantine"))
         self.fresh_btn.setText(_("Run"))
-        self.runs_table.setHorizontalHeaderLabels([
-            _("Run ID"), _("Method"), _("Started"), _("Status"),
-            _("Jobs"), _("Dups"), _("Quarantined"), _("Errors")])
+        self.runs_table.setHorizontalHeaderLabels(_runs_header_labels())
+
+    def showEvent(self, event):
+        """Refresh locale-dependent state when the tab is actually shown.
+
+        Re-running the whole retranslate() here (instead of on every language
+        switch) keeps the switch instant; the cost lands on the tab change,
+        where a ~25 ms DB read is imperceptible.
+        """
+        super().showEvent(event)
+        self.retranslate()
+        # Cheap for the labels; this is the one DB read, done on tab entry
+        # (and after every scan) instead of on every language switch.
+        self._refresh_resume_button()

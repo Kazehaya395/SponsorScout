@@ -2070,20 +2070,34 @@ _EXP_WORD_ALT = "|".join(sorted((re.escape(w) for w in _EXP_WORD_NUM),
                                 key=len, reverse=True))
 
 _EXP_YEAR_UNIT = (r"(?:years?|yrs?\.?|jahre?n?|anni|anno|jaar|jaren|"
-                  r"ans|an|a[nñ]os|a[nñ]o)")
+                  r"ans|anos?|an|a[nñ]os|a[nñ]o)")
 _EXP_MONTH_UNIT = (r"(?:months?|mon\.?|monate?n?|mesi|mese|maanden|maand|"
                    r"mois|meses|mes)")
 
 # The number must sit in a clause genuinely about work experience.
 _EXP_ANCHOR = re.compile(
     r"experien|berufserfahrung|erfahrung|praxis|esperienz|ervaring|"
-    r"exp[ée]rien|experienc|experienci|"
+    r"exp[ée]rien|experienc|experi[eê]nci|experi[eê]ncia|experiencia|"
     r"similar role|comparable role|equivalent role|relevant|professional|"
+    r"requirements?|qualif\w*|must[- ]haves?|anforderungen|"
+    r"voraussetzungen|requisiti|requisitos|vereisten|wer du bist|"
+    r"what you|das bringen|nous recherchons|buscamos|"
     r"hands[-\s]?on|proven|track record|background in|working (?:in|with|as)|"
     r"seniority|vergleichbarer? (?:position|rolle)|einschl[äa]gig|"
     r"ruolo simile|ambito|settore|soortgelijke|vergelijkbare|"
     r"poste similaire|puesto similar|en el (?:sector|[áa]rea)",
     re.I)
+
+# "4+ years in Office Management" carries a real requirement but no experience
+# NOUN for _EXP_ANCHOR to catch. Same shape exists in every seed language:
+# "3 anni nel settore vendite", "4 Jahre im Vertrieb", "3 jaar in sales",
+# "3 ans dans le domaine", "3 años en el sector". Connectors are deliberately
+# narrow — bare "en" is excluded because it would also match "20 ans en France".
+_EXP_YEARS_IN = re.compile(
+    r"(?:\d{1,2}|" + _EXP_WORD_ALT + r")\s*(?:\+|\bplus\b)?\s*"
+    r"(?:" + _EXP_YEAR_UNIT + r"|" + _EXP_MONTH_UNIT + r")\s+"
+    r"(?:in|of|as|im|als|bei|nel|nella|nello|come|presso|"
+    r"dans le|dans la|au sein|en el|en la|como)\s+[A-Za-zÀ-ÿ]", re.I)
 
 # Disqualifiers, checked in a tight window around the number so a sentence
 # that merely also mentions a degree is not discarded wholesale.
@@ -2091,10 +2105,16 @@ _EXP_BLOCK_NEAR = re.compile(
     r"\b(?:old|of age|age of|ago|"
     r"last|past|next|recent|"
     r"founded|established|since|anniversar|"
+    r"seit|dal|desde|depuis|sinds|vanaf|"
     r"fixed[-\s]?term|befristet|tempo determinato|"
     r"contract|vertrag|contratto|duur|dur[ée]e|duration|"
     r"visa|permit|warrant|guarantee|garantie|"
     r"degree|bachelor|master|phd|doctora|studi|studium|laurea|"
+    r"we(?:'|\s)?(?:ve|have)\s+(?:over|more than|than|nearly|almost|\d)|"
+    r"our (?:company|team|group|history|story|brand)|"
+    r"the company (?:has|was|is|been)|nous (?:avons|existons)|"
+    r"abbiamo|la nostra azienda|im unternehmen|in the company|"
+    r"in azienda|chez nous|ons bedrijf|wij bestaan|"
     r"universit|school|apprenticeship duration|"
     r"notice period|k[üu]ndigungsfrist|preavviso)\b", re.I)
 
@@ -2170,6 +2190,50 @@ _EXP_HIRING_CUE = re.compile(
     r"buscamos|eres un|puesto de)", re.I)
 
 _EXP_SENT_SPLIT = re.compile(r"(?<=[.!?;:])\s+|[\n\r]+|\s*[•·▪▸–—]\s+")
+
+# --- Requirements-section awareness (bare requirement fragments) ----------
+# _EXP_SENT_SPLIT breaks at ':', bullets and newlines, so "Requirements: 3-5
+# years" can arrive as the bare fragment "3-5 years" with the anchor word
+# stranded in the header. These headers re-open the gate: a fragment under a
+# requirements/qualifications heading, or any short fragment (a list bullet,
+# <=100 chars), may be scanned even without an anchor. Disqualifiers and all
+# numeric rules still apply; a strong (anchored) hit always wins.
+_EXP_REQ_HEADER = re.compile(
+    r"^(?:experience|requirements?|qualifications?|must[- ]haves?|"
+    r"what you(?:'?ll)? (?:bring|need|have)|what we(?:'?re| are) looking for|"
+    r"about you|your (?:profile|background|skills|experience)|"
+    r"profil(?:e)?|we expect|ideal candidate|key (?:skills|qualifications)|"
+    r"minimum (?:qualifications?|requirements?)|preferred qualifications?|"
+    r"skills required|about the role|role requirements|who you are|"
+    r"anforderungen|voraussetzungen|wer du bist|das erwarten wir|"
+    r"das bringen sie mit|berufserfahrung|erfahrung|"
+    r"requisiti|profilo|chi cerchiamo|esperienza|"
+    r"ervaring|werkervaring|eisen|vereisten|profiel|"
+    r"nous recherchons|exp[\u00e9e]rience|qu\u00e9 buscas|buscamos|"
+    r"perfil)$",
+    re.I)
+
+# Section headings that end requirements scope - after one of these a relaxed
+# fragment no longer counts, so marketing numbers ("About us: 25 years of
+# experience") stay unclaimed by the weak tier.
+_EXP_SECTION_END = re.compile(
+    r"^(?:about (?:us|the company)|our (?:story|history|mission|values|"
+    r"culture|offer)|what we (?:offer|provide|value)|we (?:offer|provide)|"
+    r"benefits?|perks?|how to apply|apply (?:now|by)|next steps|"
+    r"hiring process|equal opportunit|diversity|privacy|company culture|"
+    r"chi siamo|cosa ti offriamo|la nostra (?:missione|azienda)|"
+    r"wir bieten|[\u00fcu]ber uns|unser angebot|ons aanbod|wij bieden|"
+    r"ce que nous offrons|notre entreprise|qu\u00e9 ofrecemos|nuestra empresa|"
+    r"bewerbung|candidatura)$",
+    re.I)
+
+# Strict experience NOUN - narrower than _EXP_ANCHOR (no 'relevant' /
+# 'professional' / 'working in'): the mention fallback that yields
+# "Mentioned" instead of NA may only fire when the JD actually names
+# experience in some language.
+_EXP_MENTION_NOUN = re.compile(
+    r"experien|berufserfahrung|erfahrung|vorkenntnis|"
+    r"esperienz|exp\u00e9rience|ervaring|experiencia|experi[e\u00ea]nc", re.I)
 
 _EXP_SOURCE_RANK = {"": 0, "none": 0, "title_inference": 1,
                     "card_context": 2, "api_description": 3, "detail_text": 3,
@@ -2255,13 +2319,41 @@ def _exp_level_from_text(text):
 
 
 def _exp_scan_numbers(text):
-    """Return the strongest explicit experience statement, or None."""
-    best = None
+    """Return the strongest explicit experience statement, or None.
+
+    Two tiers, because _EXP_SENT_SPLIT breaks at ':', bullets and newlines
+    and can strand a bare fragment ("Requirements: 3-5 years" arrives as just
+    "3-5 years") away from the anchor words in its header:
+
+    * STRONG - the fragment itself names experience (anchor / years-in).
+      Anchored hits are unambiguous: they always win, lowest minimum first
+      (the historic behaviour).
+    * WEAK - the fragment sits under a requirements/qualifications heading
+      (_EXP_REQ_HEADER, state persists until _EXP_SECTION_END) or is a short
+      list fragment (<=100 chars). Used only when no strong hit exists.
+
+    Every candidate, strong or weak, must clear the +/-45 char disqualifier
+    window, so ages, contract durations and company-tenure marketing never
+    become experience requirements.
+    """
+    strong_best = None
+    weak_best = None
+    in_req = False
     for sent in _EXP_SENT_SPLIT.split(text or ""):
         sent = (sent or "").strip()
-        if not sent or len(sent) > 600:
+        if not sent:
             continue
-        if not _EXP_ANCHOR.search(sent):
+        probe = sent.strip(" *#>_:-")
+        if _EXP_REQ_HEADER.match(probe):
+            in_req = True
+            continue
+        if _EXP_SECTION_END.match(probe):
+            in_req = False
+            continue
+        if len(sent) > 600:
+            continue
+        strong = bool(_EXP_ANCHOR.search(sent) or _EXP_YEARS_IN.search(sent))
+        if not strong and not (in_req or len(sent) <= 100):
             continue
         num = rf"(?:\d{{1,2}}|{_EXP_WORD_ALT})"
         unit = rf"(?:{_EXP_YEAR_UNIT}|{_EXP_MONTH_UNIT})"
@@ -2305,9 +2397,14 @@ def _exp_scan_numbers(text):
                 continue
             cand = (lo_y, hi_y, months, plus, lo, hi, sent[:300])
             # Prefer the lowest stated minimum: "3-5 years" beats a stray "10".
-            if best is None or lo_y < best[0]:
-                best = cand
-    return best
+            # Anchored (strong) candidates are kept apart from relaxed (weak)
+            # ones so a stray bullet can never outrank an explicit statement.
+            if strong:
+                if strong_best is None or lo_y < strong_best[0]:
+                    strong_best = cand
+            elif weak_best is None or lo_y < weak_best[0]:
+                weak_best = cand
+    return strong_best or weak_best
 
 
 def extract_experience(text="", title=""):
@@ -2367,6 +2464,25 @@ def extract_experience(text="", title=""):
             out.update({"level": lvl, "source": "detail_text",
                         "evidence": sent[:300]})
             return out
+
+    # The JD names experience somewhere but yielded neither a number nor a
+    # seniority word: that is a reference, not an absence - report it as
+    # "Mentioned" so the UI can reserve NA for descriptions that never name
+    # experience at all. Disqualified sentences (company tenure, ages, ...)
+    # are not references.
+    for sent in _EXP_SENT_SPLIT.split(text):
+        sent = (sent or "").strip()
+        if not sent or len(sent) > 400:
+            continue
+        m = _EXP_MENTION_NOUN.search(sent)
+        if not m:
+            continue
+        win = sent[max(0, m.start() - 60):m.end() + 60]
+        if _EXP_BLOCK_NEAR.search(win):
+            continue
+        out.update({"required": "Mentioned", "evidence": sent[:300],
+                    "source": "detail_text"})
+        return out
     return out
 
 
@@ -2379,6 +2495,10 @@ def apply_experience_to_record(rec, jd_text="", card_context="", title="",
     SmartRecruiters experienceLevel) and outranks every inference.
     """
     jd = (jd_text or "").strip()
+    if "&lt;" in jd or ("<" in jd and ">" in jd):
+        # Raw HTML slipped through (some adapters pass markup verbatim);
+        # extraction must always see plain text.
+        jd = _jd_plain(jd)
     exp = extract_experience(jd or card_context or "", title or "")
     src = exp["source"]
     if src == "detail_text":
@@ -2389,7 +2509,7 @@ def apply_experience_to_record(rec, jd_text="", card_context="", title="",
         mapped = _EXP_ATS_LEVEL.get(hint.lower())
         if mapped:
             exp["level"] = mapped
-            if exp["required"] == "Unknown":
+            if exp["required"] in ("Unknown", "Mentioned"):
                 src = "api_field"
 
     cur = rec.get(key_prefix + "Source") or "none"
@@ -5707,9 +5827,11 @@ class CareerPortalScanner:
         weak_verdict = str(rec.get("Visa Sponsorship") or "").strip().lower() not in (
             "y", "n", "yes", "no")
         weak_evidence = not str(rec.get("Support Evidence") or "").strip()
+        weak_experience = str(rec.get("Experience Required") or "").strip().lower() in ("", "unknown")
         return (0 if weak_location else 1,
                 0 if weak_verdict else 1,
-                0 if weak_evidence else 1)
+                0 if weak_evidence else 1,
+                0 if weak_experience else 1)
 
     def _detail_scan_for_company(self, page, name, company_jobs):
         """Visit real detail pages and enrich only from explicit page evidence."""
@@ -6186,6 +6308,26 @@ class CareerPortalScanner:
             except Exception:
                 pass
         print(f"   Support detection: {changed} rows enriched from detail pages")
+        # FIX P0-30b: rows whose experience is still unknown but that have a
+        # real job URL get a bounded second pass through the SAME fetchers,
+        # inside the SAME global cap accounting. No new threads, no new budget.
+        missing = [r for r in targets if str(r.get("Experience Required") or "").strip().lower() in ("", "unknown") and str(r.get("Job URL") or "").startswith("http")]
+        missing = missing[:100]
+        for r in missing:
+            if self.cancel_event is not None and self.cancel_event.is_set():
+                break
+            with self._detail_lock:
+                if self._detail_count >= cap:
+                    break
+                self._detail_count += 1
+            try:
+                desc, _loc = self._fetch_jd_text(r.get("Job URL") or "")
+            except Exception:
+                continue
+            if desc:
+                apply_experience_to_record(r, jd_text=desc, title=r.get("Job Title") or "")
+                changed += 1
+        print(f"   Experience backfill: {len(missing)} rows revisited")
         return changed
 
     def reprocess_csv(self, input_csv=None, output_csv=None, detail=False):

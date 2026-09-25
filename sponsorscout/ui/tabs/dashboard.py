@@ -110,39 +110,49 @@ class DashboardTab(QWidget):
 
     # ── Data ─────────────────────────────────────────────────────────────────
     def refresh(self):
-        stats = db.get_dashboard_stats(self.db_path)
-        mapping = {
-            "Total Companies": stats.get("companies", 0),
-            "Verified Jobs": stats.get("verified_jobs", 0),
-            "Sponsored Jobs": stats.get("sponsored_jobs", 0),
-            "Remote Jobs": stats.get("remote_jobs", 0),
-            "EU Blue Card": stats.get("eu_blue_card_jobs", 0),
-            "Applications": stats.get("applications", 0),
-        }
-        for key, value in mapping.items():
-            self._value_labels[key].setText(str(value))
+        # Suspended updates: both table rebuilds repaint once at the end
+        # instead of once per inserted row (this runs on every scan tick).
+        self.setUpdatesEnabled(False)
+        conn = db.get_connection(self.db_path)
+        try:
+            stats = db.get_dashboard_stats(self.db_path, _conn=conn)
+            mapping = {
+                "Total Companies": stats.get("companies", 0),
+                "Verified Jobs": stats.get("verified_jobs", 0),
+                "Sponsored Jobs": stats.get("sponsored_jobs", 0),
+                "Remote Jobs": stats.get("remote_jobs", 0),
+                "EU Blue Card": stats.get("eu_blue_card_jobs", 0),
+                "Applications": stats.get("applications", 0),
+            }
+            for key, value in mapping.items():
+                self._value_labels[key].setText(str(value))
 
-        rows = db.get_dashboard_top_companies(self.db_path, limit=10)
-        self.companies_table.setRowCount(0)
-        for company, country, job_count, max_sponsor, _max_match in rows:
-            r = self.companies_table.rowCount()
-            self.companies_table.insertRow(r)
-            display_country = (country or "").strip() or _("Unknown")
-            for col, val in enumerate((company, display_country, job_count, max_sponsor)):
-                item = QTableWidgetItem(str(val if val is not None else ""))
-                if col >= 2:
-                    item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-                self.companies_table.setItem(r, col, item)
+            rows = db.get_dashboard_top_companies(self.db_path, limit=10,
+                                                  _conn=conn)
+            self.companies_table.setRowCount(0)
+            for company, country, job_count, max_sponsor, _max_match in rows:
+                r = self.companies_table.rowCount()
+                self.companies_table.insertRow(r)
+                display_country = (country or "").strip() or _("Unknown")
+                for col, val in enumerate(
+                        (company, display_country, job_count, max_sponsor)):
+                    item = QTableWidgetItem(str(val if val is not None else ""))
+                    if col >= 2:
+                        item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                    self.companies_table.setItem(r, col, item)
 
-        rows = db.get_dashboard_country_counts(self.db_path)
-        self.country_table.setRowCount(0)
-        for country, count in rows:
-            r = self.country_table.rowCount()
-            self.country_table.insertRow(r)
-            self.country_table.setItem(r, 0, QTableWidgetItem(str(country)))
-            item = QTableWidgetItem(str(count))
-            item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-            self.country_table.setItem(r, 1, item)
+            rows = db.get_dashboard_country_counts(self.db_path, _conn=conn)
+            self.country_table.setRowCount(0)
+            for country, count in rows:
+                r = self.country_table.rowCount()
+                self.country_table.insertRow(r)
+                self.country_table.setItem(r, 0, QTableWidgetItem(str(country)))
+                item = QTableWidgetItem(str(count))
+                item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                self.country_table.setItem(r, 1, item)
+        finally:
+            conn.close()
+            self.setUpdatesEnabled(True)
 
     # ── i18n ─────────────────────────────────────────────────────────────────
     def retranslate(self):

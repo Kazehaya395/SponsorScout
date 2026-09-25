@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import sys
+import time
 
 from pathlib import Path
 
@@ -77,11 +78,11 @@ class SponsorScoutApp(QMainWindow):
         # While a scan is in flight the DB is being written to incrementally
         # (commit after every row / every 500 rows).  Poll the coordinator so
         # the Dashboard shows freshly ingested jobs without waiting for the
-        # scan to fully finish.  2-second interval is a balance between
-        # freshness and not flooding the GUI thread / DB on slower
-        # machines (8 GB, 2-core).
+        # scan to fully finish.  5-second interval (was 2 s): still feels
+        # live while halving the GUI-thread query load on slower machines
+        # (8 GB, 2-core); the tick also skips work when Dashboard is hidden.
         self._scan_refresh_timer = QTimer(self)
-        self._scan_refresh_timer.setInterval(2000)
+        self._scan_refresh_timer.setInterval(5000)
         self._scan_refresh_timer.timeout.connect(self._on_scan_refresh_tick)
         # Arm the live-refresh loop immediately; _on_scan_refresh_tick checks
         # is_running() so the timer is harmless when no scan is in flight.
@@ -100,9 +101,14 @@ class SponsorScoutApp(QMainWindow):
         ``_on_scan_finished``.
         """
         try:
-            if (self.tools_tab is not None
-                    and self.tools_tab.coordinator is not None
-                    and self.tools_tab.coordinator.is_running()):
+            scanning = (self.tools_tab is not None
+                        and self.tools_tab.coordinator is not None
+                        and self.tools_tab.coordinator.is_running())
+            # Only recompute while the user can actually SEE the Dashboard:
+            # rebuilding KPI/chart tables for a hidden tab just steals event-
+            # loop time from the active tab. A scan ending still triggers a
+            # full _refresh_all(), so nothing goes stale on tab switch.
+            if scanning and self.tabs.currentWidget() is self.dashboard_tab:
                 self.dashboard_tab.refresh()
         except Exception:  # noqa: BLE001 - never let the timer thread die silently
             logger.exception("Scan-live-refresh tick failed")
@@ -217,11 +223,24 @@ class SponsorScoutApp(QMainWindow):
 
     # ── Actions ─────────────────────────────────────────────────────────────
     def _refresh_all(self):
-        self.dashboard_tab.refresh()
-        self.search_tab.populate_static_filters()
-        self.search_tab.run_search()
-        self.applications_tab.load_applications()
-        self.tools_tab.refresh()
+        # Stage timings (visible with logging.basicConfig(level=DEBUG)):
+        # they make UI-thread DB/rebuild costs measurable before/after any
+        # further optimisation, instead of guessing.
+        stages = (
+            ("dashboard", self.dashboard_tab.refresh),
+            ("filters", self.search_tab.populate_static_filters),
+            ("search", self.search_tab.run_search),
+            ("applications", self.applications_tab.load_applications),
+            ("tools", self.tools_tab.refresh),
+        )
+        t_total = time.perf_counter()
+        for name, fn in stages:
+            t0 = time.perf_counter()
+            fn()
+            logger.debug("_refresh_all %s: %.1f ms", name,
+                         (time.perf_counter() - t0) * 1000.0)
+        logger.debug("_refresh_all total: %.1f ms",
+                     (time.perf_counter() - t_total) * 1000.0)
 
     def _on_scan_finished(self, summary: dict):
         # Stop the live-refresh loop: the scan is no longer in flight.

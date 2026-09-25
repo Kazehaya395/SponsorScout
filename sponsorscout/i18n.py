@@ -72,7 +72,6 @@ LANGUAGES: dict[str, dict[str, str]] = {
         "Scan complete.": "Scan complete.",
 
         # ── Tab names ──────────────────────────────────────────────────
-        "Search": "Search",
         "Dashboard": "Dashboard",
         "Applications": "Applications",
         "ATS Health": "ATS Health",
@@ -88,15 +87,19 @@ LANGUAGES: dict[str, dict[str, str]] = {
         "Sponsorship:": "Sponsorship:",
         "Remote:": "Remote:",
         "Experience:": "Experience:",
+        "Experience": "Experience",
+        "None": "None",
+        "mo": "mo",
+        "No experience requirement found in the job description": "No experience requirement found in the job description",
+        "Mentioned": "Mentioned",
+        "Experience mentioned in the job description (no number stated)": "Experience mentioned in the job description (no number stated)",
         "Sort:": "Sort:",
         "Objective:": "Objective:",
         "Balanced": "Balanced",
         "Strict quality": "Strict quality",
         "Visa sponsor": "Visa sponsor",
         "Local EU": "Local EU",
-        "Remote EMEA": "Remote EMEA",
         "Blue Card focus": "Blue Card focus",
-        "EU Blue Card": "EU Blue Card",
         "Relocation": "Relocation",
         "All": "All",
         "Regex": "Regex",
@@ -164,7 +167,6 @@ LANGUAGES: dict[str, dict[str, str]] = {
         "Refresh": "Refresh",
         "Remove Selected": "Remove Selected",
         "Edit selected": "Edit selected",
-        "Status:": "Status:",
         "Notes:": "Notes:",
         "saved": "saved",
         "applied": "applied",
@@ -186,6 +188,12 @@ LANGUAGES: dict[str, dict[str, str]] = {
         "Scan Now": "Scan Now",
         "Auto (1 h)": "Auto (1 h)",
         "Stop": "Stop",
+        "Pause": "Pause",
+        "Showing {a}–{b} of {n} results":
+            "Showing {a}–{b} of {n} results",
+        "Previous page": "Previous page",
+        "Next page": "Next page",
+        "Rows per page": "Rows per page",
         "Scan Log:": "Scan Log:",
         "Data Quality": "Data Quality",
         "Remove duplicate jobs and companies from the database.":
@@ -257,7 +265,6 @@ LANGUAGES: dict[str, dict[str, str]] = {
         "How to use": "How to use",
         "No job selected — use Search tab or paste a JD below":
             "No job selected — use Search tab or paste a JD below",
-        "Job Description": "Job Description",
         "Job URL:": "Job URL:",
         "Fetch JD": "Fetch JD",
         "— or paste full JD below —": "— or paste full JD below —",
@@ -389,7 +396,6 @@ LANGUAGES: dict[str, dict[str, str]] = {
             "Scan every seeded company (ATS boards + career pages) and enrich each job from its detail page, so no listing misses its evidence.",
         "Scan History description": "Every past scan run. Select a row to view or download its per-company log with errors.",
         "Resume": "Resume",
-        "Stop (keep progress)": "Stop (keep progress)",
         "Continue the last stopped scan — only companies it did not finish are scanned, so no progress is lost.":
             "Continue the last stopped scan — only companies it did not finish are scanned, so no progress is lost.",
         "Stop the scan now and keep everything found so far. Press Resume later to continue the remaining companies — all browsers close, so other apps run smoothly again.":
@@ -435,28 +441,38 @@ LANGUAGES: dict[str, dict[str, str]] = {
         "Applications": "Candidature",
         "ATS Health": "Stato ATS",
         "AI Tailor": "AI Personalizza",
-        "AI Assistant": "Assistente AI",
         "Tools": "Strumenti",
 
         # ── Search tab ─────────────────────────────────────────────────
         "Title:": "Posizione:",
         "Company:": "Azienda:",
         "Country:": "Paese:",
-        "Clear": "Pulisci",
         "Sponsorship:": "Sponsorizzazione:",
         "Remote:": "Remoto:",
         "Experience:": "Esperienza:",
+        "Experience": "Esperienza",
+        "None": "Nessuna",
+        "mo": "mesi",
+        "No experience requirement found in the job description": "Nessun requisito di esperienza indicato nella descrizione del lavoro",
+        "Mentioned": "Menzionato",
+        "Experience mentioned in the job description (no number stated)": "Esperienza menzionata nella descrizione del lavoro (senza numero indicato)",
+        "Job title": "Posizione",
+        "Location": "Località",
+        "Copy URL": "Copia URL",
+        "Job saved to Applications.": "Lavoro salvato nelle Candidature.",
+        "Blue Card": "Carta Blu",
+        "Reloc": "Ricollocaz.",
+        "Sponsor": "Sponsor",
+        "SponsorScout": "SponsorScout",
         "Sort:": "Ordina:",
         "Objective:": "Obiettivo:",
         "Balanced": "Bilanciato",
         "Strict quality": "Qualità rigorosa",
         "Visa sponsor": "Sponsor visto",
         "Local EU": "UE locale",
-        "Remote EMEA": "Remoto EMEA",
         "Blue Card focus": "Focus Blue Card",
         "EU Blue Card": "Carta Blu UE",
         "Relocation": "Ricollocazione",
-        "All": "Tutti",
         "All": "Tutti",
         "Regex": "Regex",
         "Enable regular-expression matching in Title / Company / Location filters (e.g. ^senior (backend|platform)$).":
@@ -464,7 +480,6 @@ LANGUAGES: dict[str, dict[str, str]] = {
         "Invalid regular expression": "Espressione regolare non valida",
         "Regex disabled — invalid pattern:\n{error}":
             "Regex disabilitato — pattern non valido:\n{error}",
-        "Any (incl. unknown)": "Qualsiasi (incl. sconosciuto)",
         "Any (incl. unknown)": "Qualsiasi (incl. sconosciuto)",
         "Unknown / Not classified": "Sconosciuto / Non classificato",
         "Intern": "Stage",
@@ -486,27 +501,16 @@ LANGUAGES: dict[str, dict[str, str]] = {
 
         # ── AI Rating panel ────────────────────────────────────────────
         "AI Job Rating & Eligibility": "Valutazione AI ed Eleggibilità Lavoro",
-        "Copy Rating Prompt": "Copia Prompt di Valutazione",
-        "Paste AI Result": "Incolla Risultato AI",
         "Tailor CV & Letter": "Personalizza CV e Lettera",
-        "Select a job, click 'Copy Rating Prompt', paste it into the AI Assistant tab, then click 'Paste AI Result'.":
-            "Seleziona un lavoro, clicca 'Copia Prompt di Valutazione', incollalo nella scheda Assistente AI, poi clicca 'Incolla Risultato AI'.",
-        "Select a job, then click 'Copy Rating Prompt'.":
-            "Seleziona un lavoro, poi clicca 'Copia Prompt di Valutazione'.",
         "No job selected.": "Nessun lavoro selezionato.",
         "Rating against your saved CV profile":
             "Valutazione basata sul tuo CV salvato",
-        "No CV on file — paste yours in AI Assistant tab for personalised results":
-            "Nessun CV salvato — incolla il tuo nella scheda Assistente AI per risultati personalizzati",
         "Rating will use your saved CV profile":
             "La valutazione userà il tuo CV salvato",
-        "✓ Prompt copied! Paste it into the AI Assistant tab, copy the reply, then click 'Paste AI Result' here.":
-            "✓ Prompt copiato! Incollalo nella scheda Assistente AI, copia la risposta, poi clicca 'Incolla Risultato AI' qui.",
 
         # ── Search: right-click context menu ───────────────────────────
         "Open in browser": "Apri nel browser",
         "Save to Applications": "Salva nelle Candidature",
-        "Copy Rating Prompt": "Copia Prompt di Valutazione",
         "Tailor CV & Cover Letter": "Personalizza CV e Lettera",
 
         # ── Dashboard ──────────────────────────────────────────────────
@@ -545,6 +549,12 @@ LANGUAGES: dict[str, dict[str, str]] = {
         "Scan Now": "Scansiona Ora",
         "Auto (1 h)": "Automatico (1 h)",
         "Stop": "Ferma",
+        "Pause": "Pausa",
+        "Showing {a}–{b} of {n} results":
+            "Mostrati {a}–{b} di {n} risultati",
+        "Previous page": "Pagina precedente",
+        "Next page": "Pagina successiva",
+        "Rows per page": "Righe per pagina",
         "Scan Log:": "Registro Scansione:",
         "Data Quality": "Qualità Dati",
         "Remove duplicate jobs and companies from the database.":
@@ -552,8 +562,8 @@ LANGUAGES: dict[str, dict[str, str]] = {
         "Clear Scan Data": "Cancella Dati di Scansione",
         "The database already contains no scanned data.":
             "Il database non contiene dati scansionati.",
-        "This will permanently delete {jobs} scanned job(s), {runs} scan run(s) and {logs} scan log row(s) from the database.\\nSeed CSVs and saved applications are NOT affected. Continue?":
-            "Questo eliminerà permanentemente {jobs} lavoro/i scansionato/i, {runs} esecuzione/i di scansione e {logs} riga/i di registro dal database.\\nI CSV semina e le candidature salvate NON saranno influenzati. Continuare?",
+        "This will permanently delete {jobs} scanned job(s), {runs} scan run(s) and {logs} scan log row(s) from the database.\nSeed CSVs and saved applications are NOT affected. Continue?":
+            "Questo eliminerà permanentemente {jobs} lavoro/i scansionato/i, {runs} esecuzione/i di scansione e {logs} riga/i di registro dal database.\nI CSV semina e le candidature salvate NON saranno influenzati. Continuare?",
         "Scan data cleared": "Dati di Scansione Cancellati",
         "Removed {jobs} job(s), {runs} scan run(s) and {logs} scan log row(s). Seed CSVs were not touched.":
             "Rimosso {jobs} lavoro/i, {runs} esecuzione/i di scansione e {logs} riga/i di registro. I CSV semina non sono stati toccati.",
@@ -613,7 +623,6 @@ LANGUAGES: dict[str, dict[str, str]] = {
         "AI CV & Cover Letter Tailor": "AI Personalizzazione CV e Lettera di Presentazione",
         "Select a job in Search → 'Tailor CV & Letter', or load a JD manually below":
             "Seleziona un lavoro in Cerca → 'Personalizza CV e Lettera', o carica un annuncio manualmente",
-        "How to use": "Come usare",
         "No job selected — use Search tab or paste a JD below":
             "Nessun lavoro selezionato — usa la scheda Cerca o incolla un annuncio",
         "Job URL:": "URL Lavoro:",
@@ -732,38 +741,9 @@ LANGUAGES: dict[str, dict[str, str]] = {
         "Result Area": "Area Risultati",
 
         # ── AI Assistant tab ────────────────────────────────────────────
-        "Chat with a free web AI — no API key needed":
-            "Chatta con un'AI gratuita sul web — nessuna chiave API necessaria",
         "How to use": "Come usare",
-        "Open AI Chat": "Apri Chat AI",
-        "Opens a browser window with your normal login (stays signed "
-        "in between sessions). Paste a prompt from the AI Tailor tab "
-        "or Search tab, send it, then copy the reply back.":
-            "Apre una finestra del browser con il tuo accesso normale (resta "
-            "connesso tra le sessioni). Incolla un prompt dalla scheda AI "
-            "Personalizza o Cerca, invialo, poi copia la risposta.",
-        "Site:": "Sito:",
-        "Eligibility Rating": "Valutazione di Eleggibilità",
-        "From the Search tab: select a job, click '📋 Copy Rating Prompt', "
-        "paste it into the AI chat above, then come back, copy the "
-        "reply and click '📥 Paste AI Result' in the Search tab.":
-            "Dalla scheda Cerca: seleziona un lavoro, clicca '📋 Copia Prompt di "
-            "Valutazione', incollalo nella chat AI sopra, poi torna, copia la "
-            "risposta e clicca '📥 Incolla Risultato AI' nella scheda Cerca.",
-        "Go to Search tab": "Vai alla scheda Cerca",
-        "CV Tailoring & Cover Letter": "Personalizzazione CV e Lettera",
-        "From the ✨ AI Tailor tab: confirm a job description, then click "
-        "'📋 Copy CV Prompt' or '📋 Copy Cover Letter Prompt'. Paste it into "
-        "the AI chat above, then copy the reply back into the Result box "
-        "with '📥 Paste'.":
-            "Dalla scheda ✨ AI Personalizza: confema una descrizione del lavoro, "
-            "poi clicca '📋 Copia Prompt CV' o '📋 Copia Prompt Lettera'. "
-            "Incollalo nella chat AI sopra, poi copia la risposta nella "
-            "casella Risultato con '📥 Incolla'.",
-        "Go to AI Tailor tab": "Vai alla scheda AI Personalizza",
 
         # ── Language toggle ────────────────────────────────────────────
-        "Language": "Lingua",
 
         # ── AI / Search extras ───────────────────────────────────────
         "Contacting Gemini API...": "Contatto API Gemini...",
@@ -780,8 +760,6 @@ LANGUAGES: dict[str, dict[str, str]] = {
         # ── Tools tab extras ─────────────────────────────────────────
         "Scan History": "Storico Scansioni",
         "Idle": "Inattivo",
-        "Running...": "In esecuzione...",
-        "Scan output appears here...": "L'output della scansione appare qui...",
 # ── Dashboard ──────────────────────────────────────────────────
         "Total Companies": "Aziende Totali",
         "Sponsored Jobs": "Lavori Sponsorizzati",
@@ -820,7 +798,6 @@ LANGUAGES: dict[str, dict[str, str]] = {
         "Could not open the custom scan dialog.": "Impossibile aprire la finestra di scansione personalizzata.",
         "Scan History description": "Ogni scansione passata. Seleziona una riga per visualizzare o scaricare il suo registro per azienda con errori.",
         "Resume": "Riprendi",
-        "Stop (keep progress)": "Ferma (mantieni progresso)",
         "Continue the last stopped scan — only companies it did not finish are scanned, so no progress is lost.":
             "Continua l'ultima scansione interrotta — vengono scansionate solo le aziende non completate, nessun progresso va perso.",
         "Stop the scan now and keep everything found so far. Press Resume later to continue the remaining companies — all browsers close, so other apps run smoothly again.":
@@ -848,6 +825,102 @@ LANGUAGES: dict[str, dict[str, str]] = {
         "Cancelled — partial progress shown.": "Annullata — avanzamento parziale mostrato.",
         "Data Quality description": "Rimuovi lavori/aziende duplicati, cancella lavori scaduti (obsoleti) o elimina tutti i dati scansionati.",
         "Freshness Check description": "Riverifica i lavori salvati rispetto alle loro pagine live e segna le scadute.",
+
+        # ── Complete UI coverage (tools/data/apps/dashboard + dialogs) ──
+        # Every literal key used anywhere in the app must exist here so the
+        # Italian UI never falls back to English. Guarded by
+        # tests/test_i18n_parity.py::test_every_ui_key_has_italian_translation.
+        " Edit selected ": " Modifica selezionato ",
+        "A scan is already running.": "Una scansione è già in corso.",
+        "A source with this name and URL already exists.": "Esiste già una fonte con questo nome e questo URL.",
+        "ATS / source type": "ATS / tipo di fonte",
+        "ATS portals": "Portali ATS",
+        "Add source": "Aggiungi fonte",
+        "Add…": "Aggiungi…",
+        "Advanced (optional)": "Avanzate (facoltativo)",
+        "All reasons": "Tutti i motivi",
+        "Application updated.": "Candidatura aggiornata.",
+        "Artifact:": "Artefatto:",
+        "Cancel": "Annulla",
+        "Cannot save": "Impossibile salvare",
+        "Career portals": "Portali carriere",
+        "Careers URL": "URL carriera",
+        "Check up to": "Controlla fino a",
+        "Checked {checked} — expired {expired}.": "Controllati {checked} — scaduti {expired}.",
+        "Clear Stale Data": "Cancella Dati Obsoleti",
+        "Company name": "Nome azienda",
+        "Data Management": "Gestione Dati",
+        "Delete": "Elimina",
+        "Delete '{}' from this seed file? (Not written until you save.)":
+            "Eliminare '{}' da questo file seed? (Non scritto finché non salvi.)",
+        "Delete source": "Elimina fonte",
+        "Discard all edits and restore the seed file shipped with the application.":
+            "Scarta tutte le modifiche e ripristina il file seed incluso nell'applicazione.",
+        "Discard all edits and restore the seed file shipped with the application?":
+            "Scartare tutte le modifiche e ripristinare il file seed incluso nell'applicazione?",
+        "Duplicate source": "Fonte duplicata",
+        "Dups": "Dup",
+        "Edit source": "Modifica fonte",
+        "Edit…": "Modifica…",
+        "Errors": "Errori",
+        "File:": "File:",
+        "Freshness check done.": "Controllo aggiornamento completato.",
+        "Industry": "Settore",
+        "Invalid data": "Dati non validi",
+        "Language: ": "Lingua: ",
+        "Load": "Carica",
+        "Maximum number of active jobs to re-verify per run.":
+            "Numero massimo di lavori attivi da riverificare per esecuzione.",
+        "Method": "Metodo",
+        "No bundled default file is available.": "Nessun file predefinito incluso disponibile.",
+        "No quarantine artifacts found.": "Nessun artefatto in quarantena trovato.",
+        "No selection": "Nessuna selezione",
+        "Promote Selected to Jobs": "Porta selezionati nei lavori",
+        "Quarantine": "Quarantena",
+        "Quarantine Review": "Revisione Quarantena",
+        "Quarantined": "In quarantena",
+        "Reason:": "Motivo:",
+        "Reload": "Ricarica",
+        "Reset failed": "Ripristino fallito",
+        "Reset to bundled defaults": "Ripristina i valori predefiniti inclusi",
+        "Review Quarantine": "Rivedi Quarantena",
+        "Row {} has problems:": "La riga {} ha problemi:",
+        "Run ID": "ID esecuzione",
+        "Running…": "In esecuzione…",
+        "Save": "Salva",
+        "Save to CSV": "Salva in CSV",
+        "Saved on": "Salvato il",
+        "Scan finished: ": "Scansione terminata: ",
+        "Scan output appears here…": "L'output della scansione appare qui…",
+        "Scan started": "Scansione avviata",
+        "Scan stopped.": "Scansione fermata.",
+        "Scope policy": "Politica di ambito",
+        "Posted": "Pubblicato",
+        "Seed files changed — they will be used on the next scan.":
+            "File seed modificati — verranno usati alla prossima scansione.",
+        "Select a row to delete first.": "Seleziona prima una riga da eliminare.",
+        "Select a row to edit first.": "Seleziona prima una riga da modificare.",
+        "Select rows first.": "Seleziona prima delle righe.",
+        "Source type": "Tipo di fonte",
+        "Started": "Avviata",
+        "Status": "Stato",
+        "Title": "Titolo",
+        "URL": "URL",
+        "Verifying up to {n} jobs…": "Verifica di fino a {n} lavori…",
+        "jobs": "lavori",
+        "{n} jobs ingested": "{n} lavori acquisiti",
+        "{n} row(s) promoted into jobs.": "{n} riga/e promosse nei lavori.",
+        "{shown} of {total} quarantined rows.": "{shown} di {total} righe in quarantena.",
+        "{} companies": "{} aziende",
+        "{} companies written to\n{}": "{} aziende scritte in\n{}",
+        "↻ Refresh": "↻ Aggiorna",
+        "Remove  {title}  at  {company}?": "Rimuovere  {title}  presso  {company}?",
+        "Removed {jobs} duplicate job(s) and {companies} duplicate company entry(ies).":
+            "Rimosse {jobs} voci duplicate di lavori e {companies} voci duplicate di aziende.",
+        "Manage the source URLs scanned by SponsorScout.  ATS portals are scanned via their job-board APIs; career portals are crawled on the company site.  Edits are saved to your personal seed files and take effect on the next scan.":
+            "Gestisci gli URL delle fonti scansionate da SponsorScout. I portali ATS vengono scansionati tramite le API dei job board; i portali carriere vengono crawpati sul sito dell'azienda. Le modifiche sono salvate nei tuoi file seed personali e hanno effetto alla prossima scansione.",
+        "No data yet.\n\nRun the first scan now? It fetches jobs from each company's official career page and ATS board (1–3 minutes).":
+            "Nessun dato ancora.\n\nAvviare ora la prima scansione? Recupera i lavori dalla pagina carriera e dal board ATS ufficiale di ogni azienda (1–3 minuti).",
     },
 }
 

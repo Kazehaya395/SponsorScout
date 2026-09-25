@@ -59,7 +59,7 @@ data/*.json
 .clineignore
 extra_for_dev_purpose(do not delete)
 original files
-SPONSORSCOUT_TECHNICAL_DOCUMENTATION.md
+CODEBASE.md
 
 # ── Build tools (large binaries, not for git) ─────────────────────────────
 windows_build_tools/

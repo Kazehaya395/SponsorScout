@@ -1,7 +1,0 @@
-# Dev/test-only dependencies for SponsorScout. Install alongside the runtime
-# deps when developing or building:
-#   pip install -r requirements.txt -r requirements-dev.txt
-pyinstaller>=6.0.0
-pytest>=8.0.0
-# Inno Setup (Windows installer) and python.exe are external tools / OS apps,
-# not pip packages — see build_exe.ps1 comments.

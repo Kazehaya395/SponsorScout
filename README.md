@@ -4,213 +4,150 @@
 
 [🇬🇧 English](#-english) · [🇮🇹 Italiano](#-italiano)
 
+Find jobs that actually sponsor visas — scanned from official sources, stored
+on your own computer.
+
 ---
 
 # 🇬🇧 English
 
-## 📖 Table of Contents
+## 📖 Contents
 
 - [Download](#-download)
-- [What SponsorScout Does](#-what-sponsorscout-does)
+- [What It Does](#-what-it-does)
 - [Quick Start](#-quick-start)
 - [The Five Tabs](#-the-five-tabs)
-- [Language Switching](#-language-switching)
-- [Scan Modes — Full & Custom](#-scan-modes--full--custom)
-- [How Scanning Works](#-how-scanning-works)
+- [Scanning](#-scanning)
 - [Where Your Data Lives](#-where-your-data-lives)
-- [Troubleshooting & FAQ](#-troubleshooting--faq)
+- [Troubleshooting](#-troubleshooting)
 - [Building From Source](#-building-from-source)
 - [Requirements](#-requirements)
 - [License](#-license)
 
+---
+
 ## 📥 Download
 
-Ready-to-use installers are published on the GitHub Releases page:
-
-👉 **[Download the latest release](https://github.com/Kazake95/SponsorScout/releases/tag/SponsorScout_v_0.1.1)**
+Installers are on the [GitHub Releases page](https://github.com/Kazake95/SponsorScout/releases):
 
 | Platform | File |
 |----------|------|
 | Windows 10 / 11 | `sponsorscout-<version>-setup.exe` |
 | Linux (Debian / Ubuntu) | `sponsorscout_<version>_amd64.deb` |
 
-> Every release ships both installers as assets on that page — pick the file
-> for your platform. Older versions are listed under **Releases**.
+Pick the file for your platform. The app and its browser are bundled, so no
+Python is needed.
 
 ---
 
-## ✨ What SponsorScout Does
+## ✨ What It Does
 
 - **Scans official sources only** — 8 ATS job boards (Ashby, Greenhouse,
-  Lever, SmartRecruiters, Personio, Recruitee, Workable, Workday) via their
-  public APIs, plus each company's own career page with a headless browser
-  when there is no public ATS API.
-- **Classifies every job** — EU Blue Card eligibility, relocation / visa
-  support and remote-work type are detected from the job description, and the
-  **experience required** (years / level) is extracted from the title, the
-  employer's own seniority field and the full job description.
-- **Keeps everything local** — all data is stored in a SQLite database on your
-  own computer. Nothing is uploaded anywhere.
-- **Tracks your applications** — a simple pipeline: Saved → Applied →
-  Interview → Offer → Rejected.
-- **Gives you control** — deduplicate or wipe scanned data, re-verify jobs for
-  freshness, and download detailed per-company scan logs.
-- **Two languages** — English and Italian, switchable at any time from the
-  header dropdown.
+  Lever, SmartRecruiters, Personio, Recruitee, Workable, Workday) through their
+  public APIs, plus company career pages with a headless browser when needed.
+- **Classifies every job** — sponsorship, relocation support, remote type and
+  EU Blue Card eligibility, detected from the job description.
+- **Extracts the experience requirement** — the exact figure the ad states
+  (`4+`, `3-5 years`, `6 months`), or the seniority level (`Senior`), read in
+  English, German, Italian, Dutch, French, Spanish and Portuguese.
+- **Keeps everything local** — one SQLite file on your computer. Nothing is
+  uploaded.
+- **Tracks applications** — Saved → Applied → Interview → Offer → Rejected.
+- **Two languages** — English and Italian, switchable at any time.
 
 ---
 
 ## 🚀 Quick Start
 
-1. **Download** the installer for your platform from the link above.
-2. **Install** it — you don't need Python or anything else; the app and its
-   bundled browser come with the installer.
-3. **Launch SponsorScout.** On the very first start a welcome box asks whether
-   to run an initial scan — click **Yes**. It fetches jobs from every seeded
-   company's official job board and career page, and fills the database (takes
-   1–3 minutes).
-4. Browse the results in the **Search** tab, filter by sponsorship / Blue
-   Card / relocation / remote, and start tracking applications from the
-   **Applications** tab.
-
-That's it — everything runs locally on your computer.
+1. Download and install the package for your platform.
+2. Launch SponsorScout. On first start, accept the prompt to run an initial
+   scan (1–3 minutes).
+3. Open **Search** to browse, and **Applications** to track what you apply to.
 
 ---
 
 ## 🗂 The Five Tabs
 
 ### 1. Dashboard
-A live overview of your database: total companies, verified jobs, sponsored
-jobs, remote jobs and EU Blue Card jobs — plus a "Top companies by
-sponsorship" table and a "Jobs by country" table. The **Rescan Companies**
-button starts a fresh scan; **Refresh** reloads the numbers.
+Totals for companies, verified jobs, sponsored, remote and EU Blue Card jobs,
+plus top companies by sponsorship and jobs by country. **Rescan Companies**
+starts a full scan; **Refresh** reloads the numbers.
 
 ### 2. Search
-The main job browser. Filter by title, company, location, country,
-sponsorship, Blue Card, relocation and remote-work type (with a regex search
-toggle), then sort by best match or recency. Right-click a row to open it in
-your browser or save it to your applications.
+The main job browser.
+
+- **Filter** by title, company, location, country, remote type, experience,
+  sponsorship, Blue Card and relocation. Tick **Regex** to use a pattern in the
+  text fields.
+- **Dropdowns always show every value found in your data** — never narrowed by
+  the current selection, so you can switch to any other value directly.
+- **Filter values and table values are identical** and stay in one fixed
+  (untranslated) form in both languages, so filters never break when you switch
+  language. Only labels, headers and buttons are translated.
+- **Experience** shows the requirement as stated: `4+`, `3-5`, `6 mo`, `None`
+  when the ad explicitly asks for none, `Senior` for a level, `Mentioned` when
+  it refers to experience without a figure, and `NA` when the ad never mentions
+  it. Sorting is numeric, so `3-5` comes before `11+`. Hover for the original
+  sentence.
+- **Sort** by clicking any column header (click again to reverse).
+- **Right-click** a row to open it in your browser or save it to Applications.
+- **Pagination** — results are shown one page at a time (100, 200, 500 or 1000
+  rows, default 500) with a result counter and ◀ / ▶ buttons, so large
+  databases stay responsive and every row stays reachable.
 
 ### 3. Applications
-Your personal application tracker. Select any saved job to set its status
-(Saved / Applied / Interview / Offer / Rejected) and add notes.
+Your pipeline. Select a saved job to set its status and add notes.
 
 ### 4. Tools
-The control centre:
-- **Scanner** — **Scan Now** starts the full campaign; **Custom Scan** lets
-  you pick specific companies and/or source types (ATS boards and/or career
-  pages) instead of every seeded company; **Stop (keep progress)**
-  stops it at any time with everything found so far already saved; **Resume**
-  continues exactly the remaining companies (even after restarting the app),
-  with the progress bar picking up where it stopped. A progress bar under the
-  buttons shows live progress (`ATS 12/46`, `Career 88/162`) and reaches 100%
-  when the scan finishes; the full per-company output appears in the log
-  window. See [Scan Modes](#-scan-modes--full--custom).
-- **Scan History** — every past scan run; select one to view or download a
-  detailed per-company log including errors. Stopped scans show `cancelled`;
-  once a resume finishes everything left, the stopped row becomes `resumed`
-  (with a `↩ <child run>` link) and the continuing row shows
-  `<status> ↩ resumed from <parent run>`.
+- **Scanner** — **Scan Now** runs a full scan; **Custom Scan** lets you pick
+  companies and source types. **Pause** stops the scan with everything found so
+  far already saved; **Resume** continues exactly the remaining companies, even
+  after restarting the app. See [Scanning](#-scanning).
+- **Scan History** — every past run; select one to read or download its
+  per-company log. Paused runs show `cancelled` and become `resumed` when a
+  later run finishes the remaining work.
 - **Data Quality** — remove duplicate jobs/companies, clear expired jobs, or
   wipe all scanned data.
-- **Freshness Check** — re-verifies saved jobs against their live pages and
-  marks dead listings as expired.
+- **Freshness Check** — re-verify saved jobs against their live pages and mark
+  dead listings as expired.
 
 ### 5. Data Management
-Edit the company lists that SponsorScout scans. Two editors are provided —
-**ATS portals** and **Career portals**. You can add, edit or remove
-companies; changes are saved to your personal seed files and take effect on
-the next scan. A "Reset to bundled defaults" button restores the original
-lists.
+Edit the company lists that get scanned (**ATS portals** and **Career
+portals**). Changes apply on the next scan; **Reset to bundled defaults**
+restores the original lists.
 
 ---
 
-## 🌐 Language Switching
+## 🔍 Scanning
 
-Use the dropdown in the top-right corner of the header to switch between
-**English** and **Italiano**. Your choice is remembered and restored on the
-next launch.
+### Full scan
+The default. **Scan Now** (or the Dashboard's **Rescan Companies**) scans every
+seeded company, because a partial scan would silently hide jobs you did not ask
+for.
 
----
+### Custom scan
+**Tools → Custom Scan** lets you choose:
 
-## 🔍 Scan Modes — Full & Custom
+- **Source types** — *ATS portals* (fast, API-based) and/or *Career portals*
+  (slower, crawled with a browser).
+- **Companies** — tick the ones you want; filter or bulk-select to move fast.
 
-### Full scan (the default)
-
-Pressing **Scan Now** (or the Dashboard's **Rescan Companies**) always runs
-the complete campaign across every seeded company, because a partial scan
-would silently hide jobs you have not asked for. This is the recommended way
-to scan.
+A custom scan runs the exact same pipeline as a full scan, so result quality is
+identical — only the scope and duration change. Use it to re-scan companies you
+just edited. Custom runs appear as `custom` in Scan History.
 
 ### What a scan does
-- **ATS boards (API)** — every seeded company with a known ATS (Ashby,
-  Greenhouse, Lever, SmartRecruiters, Personio, Recruitee, Workable,
-  Workday) is pulled through its official job-board API.
-- **Career pages (browser)** — every seeded company is also crawled through
-  its own career page with a headless browser, so career-page-only companies
-  are never skipped.
-- **Detail-page enrichment** — each job is then verified against its own job
-  page (JSON-LD + page text) to fill in location, sponsorship, relocation,
-  EU Blue Card evidence and the **experience requirement**. Nothing is guessed:
-  a verdict is only upgraded when the page provides explicit evidence, and a
-  weaker source (e.g. title wording) never overwrites a stronger one (e.g. the
-  employer's own seniority field).
-- **Light on your machine** — pages are fetched with images, fonts, media and
-  analytics hosts blocked, and simple boards that publish their jobs as plain
-  HTML are read directly, so the browser is only launched when a page really
-  needs JavaScript.
+1. **ATS boards** — companies with a known ATS are pulled through the official
+   job-board API.
+2. **Career pages** — every company is also crawled through its own career page,
+   so career-page-only companies are never skipped.
+3. **Detail pages** — each job is checked for location, sponsorship,
+   relocation, Blue Card evidence and experience. Verdicts are only set from
+   explicit evidence, and weaker sources never overwrite stronger ones.
+4. Results are saved to the local database and appear immediately.
 
-> **Why is Full the default?** The old **Quick** option never found *more* or
-> *fewer* jobs — it only skipped the detail-page pass, leaving more verdicts
-> shown as `?` and some locations blank. For a sponsorship search that is
-> the wrong trade-off, so the scan itself always extracts full detail.
-
-### Custom scan (targeted)
-
-**Tools → Custom Scan** opens a picker where you choose exactly what to scan:
-
-- **Source types** — tick *ATS portals* (API-based, fast) and/or *Career
-  portals* (crawled with a headless browser, slower). Unticking one simply
-  skips that phase.
-- **Companies** — each picker lists every company from your seed files (with
-  its industry) as a checkbox. Use the filter box to find companies quickly,
-  or *Select all* / *Clear* to bulk-toggle.
-- A live summary shows how many companies are selected per phase, so you can
-  see the scope before starting.
-
-Custom scans run the **same thorough pipeline** as a full scan — the only
-difference is *which* targets are scanned, so results are identical in
-quality while the run takes time proportional to the selection (e.g. a
-10-company career-only scan takes minutes instead of an hour). Use cases:
-
-- re-scan just the companies you added or edited in **Data Management**;
-- refresh a handful of interesting companies without waiting a full hour;
-- test a new seed row before committing to a full campaign.
-
-Custom runs are labelled `custom` in **Scan History**. **Stop (keep
-progress)** and **Resume** work the same way as for a full scan: Resume
-continues only the remaining *selected* companies. Your company selection is
-not saved between runs — **Scan Now** always covers everything.
-
----
-
-## 🔧 How Scanning Works
-
-1. SponsorScout reads its **seed files** — curated lists of companies with
-   their career URLs and ATS type.
-2. Companies with a known ATS are scanned through the official **job-board
-   API** (fast).
-3. Companies without a public ATS are crawled through their **career page**
-   with a headless browser.
-4. Every job is classified (Blue Card / relocation / remote), its **experience
-   requirement** is extracted, and it is deduplicated.
-5. Results are stored in the local SQLite database and appear immediately in
-   the Dashboard and Search tabs. The progress bar counts one step per
-   finished company (ATS phase first, then career pages), so it always ends
-   at 100% — `EMPTY` companies (no open roles right now) count as done too.
-
-Seed files live in your user data folder and can be edited in the Data
-Management tab.
+Progress shows live (`ATS 12/46`, `Career 88/162`). A company with no open
+roles counts as done.
 
 ---
 
@@ -221,135 +158,95 @@ Management tab.
 | Windows | `%APPDATA%\SponsorScout` |
 | Linux | `~/.sponsorscout` |
 
-Contents: `sponsorscout.db` (all jobs, companies and scan history), `seeds/`
-(your editable company lists), `locale.json` (language preference) and the
-raw scan-log CSVs under `scan_output/`.
+Contains `sponsorscout.db` (jobs, companies, applications, scan history),
+`seeds/` (your editable company lists), `locale.json` (language) and raw scan
+logs under `scan_output/`.
 
-You can override the location with the `SPONSORSCOUT_DATA_DIR` (or
-`SPONSORSCOUT_DB_PATH`) environment variable.
+Copy `sponsorscout.db` to back everything up. Override the location with the
+`SPONSORSCOUT_DATA_DIR` (or `SPONSORSCOUT_DB_PATH`) environment variable.
+
+### Uninstalling
+
+The Windows installer and the Linux `.deb` package remove SponsorScout-owned
+user data during uninstall, including the SQLite database, editable seeds,
+language setting and scan logs. The default locations are cleaned for the
+current Windows user and for local Linux user accounts. Custom data paths are
+also removed when their `SPONSORSCOUT_DATA_DIR` / `SPONSORSCOUT_DB_PATH`
+environment variables are available to the uninstaller. Back up anything you
+want to keep before uninstalling. The shared Playwright browser cache is not
+removed because other applications may use it.
 
 ---
 
-## 🧰 Troubleshooting & FAQ
+## 🧰 Troubleshooting
 
-**A scan finished but the Dashboard looks empty.**
-Click **Refresh** on the Dashboard. If it is still empty, open the Tools tab and
-check the latest **Scan History** row: an `error` status, or a **Scan log** with
-failures, tells you which companies did not return jobs.
+**The Dashboard looks empty after a scan.** Click **Refresh**. If still empty,
+check the newest **Scan History** row — an `error` status, or failures in its
+log, shows which companies returned nothing.
 
-**The log says "Chromium browser is not available".**
-JS-rendered career pages are crawled with Playwright Chromium. Both official
-installers bundle it; a source checkout needs it once:
+**"Chromium browser is not available".** Career pages are crawled with
+Playwright. Installers bundle it; from source run
 `python -m playwright install chromium`.
 
-**Only some companies returned jobs.**
-Some companies simply have no open positions right now (`EMPTY` in the log).
-Others may temporarily block automated access; running the scan again later
-usually fills them in. Nothing is dropped silently - every outcome is recorded
-in the scan log.
+**Some companies returned no jobs.** They may have no open roles (`EMPTY` in
+the log), or they may temporarily block automated access — try again later.
+Nothing is dropped silently.
 
-**The scan is slow, or the PC feels heavy.**
-That is the detail-page pass, and it is bounded by design. SponsorScout sizes
-its own worker/browser pool from your CPU and RAM (a single browser on a 2-core
-/ 8 GB machine), runs at below-normal process priority, and blocks images,
-fonts, media and analytics hosts while crawling. Boards that publish plain HTML
-are read without a browser at all. The Dashboard stays usable.
-**You don't have to sit through it:** press **Stop (keep progress)** any time
-— everything found so far is already saved — and press **Resume** later to
-continue exactly the remaining companies. Stopping closes all browsers, so
-other apps run smoothly again; resuming works even after restarting the app.
-If you only need a few companies refreshed, use **Tools → Custom Scan**
-(see [Scan Modes](#-scan-modes--full--custom)) instead of a full campaign.
+**The scan is slow.** The detail-page pass is the slow part, and it is bounded:
+SponsorScout sizes its browser pool from your CPU/RAM, runs at below-normal
+priority, and blocks images/fonts/media while crawling. The Dashboard stays
+usable. You do not have to wait it out — press **Pause** (everything found is
+saved) and **Resume** later, even after restarting the app.
 
-**A job shows `?` for Sponsor / Blue Card / Relocation.**
-`?` means *unknown*, never *no*. The listing did not contain explicit evidence
-either way, so SponsorScout refuses to guess - open the job and judge it
-yourself. Jobs are never removed just because a verdict is unknown.
+**A job shows `?`.** `?` means *unknown*, never *no*. The ad had no explicit
+evidence, so SponsorScout does not guess. Unknown jobs are never removed.
 
-**Can I add my own companies?**
-Yes. Open **Data Management** and use the `ATS Portals` / `Career Portals`
-editors: add a company name and its careers URL and the ATS type is detected
-automatically. Changes apply on the next scan. **Reset to bundled defaults**
-brings back the shipped lists.
+**Can I scan only some companies?** Yes — **Tools → Custom Scan**. Same
+quality, only the scope changes.
 
-**Can I scan only some companies instead of the whole list?**
-Yes — use **Tools → Custom Scan**. Tick *ATS portals* and/or *Career portals*,
-untick the companies you don't want (or filter and *Select all*), then start.
-It runs the exact same pipeline as a full scan, so result quality is identical;
-only the run time changes, in proportion to how many companies you picked.
-This is the fast way to re-scan a few companies you just added or edited.
-Custom runs appear as `custom` in **Scan History**, and **Stop** / **Resume**
-work on the selected companies only.
+**How do I search with a regular expression?** Tick **Regex** in **Search** and
+type a pattern such as `(backend|platform).*engineer`. Case-insensitive; an
+invalid pattern warns and falls back to a normal search.
 
-**How do I search with a regular expression?**
-In the **Search** tab tick **Regex**, then type a pattern in the title, company
-or location box - for example `(backend|platform).*engineer` matches both
-"Backend Engineer" and "Platform Engineer". Matching is case-insensitive, and
-an invalid pattern shows a warning and falls back to a normal search instead of
-returning nothing.
-
-**Where is my data, and how do I back it up?**
-See [Where Your Data Lives](#-where-your-data-lives). Copying
-`sponsorscout.db` backs up all jobs, companies and applications.
-
-**Does anything leave my computer?**
-No. Everything is stored in a local SQLite database. The only outbound traffic
-is fetching the job listings you asked for.
+**Does anything leave my computer?** No. The only outbound traffic is fetching
+the job listings you asked for.
 
 ---
 
 ## 🏗 Building From Source
 
-Install the build deps first: `pip install -r requirements.txt
--r requirements-dev.txt`.
-
-**Windows (Inno Setup installer):**
-
 ```powershell
-.\build_exe.ps1
+python -m venv venv
+venv\Scripts\activate
+pip install -r requirements.txt
+pip install ".[dev]"          # pytest + pyinstaller
+python -m playwright install chromium
 ```
 
-Output: `dist\sponsorscout-<version>-setup.exe` (requires Inno Setup 6/7).
-The script also bundles the Playwright Chromium browser into the installer.
+**Windows installer:**
+```powershell
+.\build_exe.ps1               # -> dist\sponsorscout-<version>-setup.exe
+```
+(requires Inno Setup 6/7; bundles Playwright Chromium)
 
-**Linux (.deb package):**
-
+**Linux package:**
 ```bash
-./build_deb.sh
+./build_deb.sh                # -> dist/sponsorscout_<version>_amd64.deb
 ```
 
-Output: `dist/sponsorscout_<version>_amd64.deb`.
-The script also bundles the Playwright Chromium browser into the .deb.
-
-### 🔎 Developer Checks
-
-Two maintenance scripts in `tools/` guard the things that break silently:
-
+**Tests:**
 ```bash
-python tools/check_dev_sync.py               # dev algorithms vs app package
-python tools/check_readme_anchors.py --live  # in-page links vs GitHub anchors
+python -m pytest sponsorscout/tests
 ```
-
-- `check_dev_sync.py` proves every symbol of the standalone algorithms in
-  `extra_for_dev_purpose(do not delete)/main_job_search_algorithms/` is
-  implemented in `sponsorscout/`, so a tuned dev script can never be missing
-  from the app and make it miss jobs. Use `--strict` in CI.
-- `check_readme_anchors.py` recomputes the anchor GitHub generates for every
-  heading (a leading emoji becomes part of the anchor, so it is `#-download`
-  and must have the same name as its target), so a heading with a stray
-  apostrophe or dash cannot leave you with links pointing nowhere. `--live`
-  also compares the local result with the anchors GitHub actually published.
 
 ---
 
 ## 📋 Requirements
 
-- Python 3.10 or newer
-- Runtime deps installed via `requirements.txt`: **PySide6**, **requests**,
-  **playwright**
-- Playwright Chromium (`python -m playwright install chromium`) — used for
-  JS-rendered career-page crawling (both installers bundle it already)
-- Build/test-only deps in `requirements-dev.txt`: **pyinstaller**, **pytest**
+- Python 3.10 or newer (to run from source; installers need nothing)
+- Runtime: **PySide6**, **requests**, **playwright** (`requirements.txt`)
+- Playwright Chromium: `python -m playwright install chromium`
+- Dev/test: **pytest**, **pyinstaller** (`pip install ".[dev]"`)
 
 ---
 
@@ -364,222 +261,156 @@ MIT — see [LICENSE](LICENSE).
 ## 📖 Indice
 
 - [Scarica](#-scarica)
-- [Cosa Fa SponsorScout](#-cosa-fa-sponsorscout)
+- [Cosa Fa](#-cosa-fa)
 - [Avvio Rapido](#-avvio-rapido)
 - [Le Cinque Schede](#-le-cinque-schede)
-- [Cambio Lingua](#-cambio-lingua)
-- [Modalità di Scansione — Completa e Personalizzata](#-modalità-di-scansione--completa-e-personalizzata)
-- [Come Funziona la Scansione](#-come-funziona-la-scansione)
+- [Scansione](#-scansione)
 - [Dove Sono i Tuoi Dati](#-dove-sono-i-tuoi-dati)
-- [Risoluzione Problemi e Domande Frequenti](#-risoluzione-problemi-e-domande-frequenti)
+- [Risoluzione Problemi](#-risoluzione-problemi)
 - [Compilare dai Sorgenti](#-compilare-dai-sorgenti)
 - [Requisiti](#-requisiti)
 - [Licenza](#-licenza)
 
+---
+
 ## 📥 Scarica
 
-I programmi di installazione pronti all'uso sono pubblicati nella pagina GitHub Releases:
-
-👉 **[Scarica l'ultima versione](https://github.com/Kazake95/SponsorScout/releases/tag/SponsorScout_v_0.1.1)**
+Gli installer sono nella [pagina GitHub Releases](https://github.com/Kazake95/SponsorScout/releases):
 
 | Piattaforma | File |
 |-------------|------|
 | Windows 10 / 11 | `sponsorscout-<versione>-setup.exe` |
 | Linux (Debian / Ubuntu) | `sponsorscout_<versione>_amd64.deb` |
 
-> Ogni versione pubblica entrambi gli installer come file allegati in quella
-> pagina — scegli quello per la tua piattaforma. Le versioni precedenti sono
-> elencate sotto **Releases**.
+Scegli il file per la tua piattaforma. L'app e il browser sono inclusi, quindi
+non serve Python.
 
 ---
 
-## ✨ Cosa Fa SponsorScout
+## ✨ Cosa Fa
 
 - **Scansiona solo fonti ufficiali** — 8 bacheche ATS (Ashby, Greenhouse,
   Lever, SmartRecruiters, Personio, Recruitee, Workable, Workday) tramite le
-  loro API pubbliche, più la pagina carriera di ogni azienda con un browser
-  headless quando non esiste un'API ATS pubblica.
-- **Classifica ogni lavoro** — l'idoneità alla Carta Blu UE, il supporto al
-  trasferimento / visto e il tipo di lavoro remoto vengono rilevati dalla
-  descrizione del lavoro, e l'**esperienza richiesta** (anni / livello) viene
-  estratta dal titolo, dal campo di seniority pubblicato dall'azienda e dalla
-  descrizione completa.
-- **Mantiene tutto in locale** — tutti i dati sono salvati in un database
-  SQLite sul tuo computer. Nulla viene caricato online.
-- **Gestisce le tue candidature** — un semplice percorso: Salvata →
-  Inviata → Colloquio → Offerta → Rifiutata.
-- **Ti dà il controllo** — deduplica o elimina i dati scansionati, riverifica
-  i lavori per l'aggiornamento e scarica i registri dettagliati per azienda.
-- **Due lingue** — Italiano e Inglese, selezionabili in qualsiasi momento
-  dal menu in alto.
+  loro API pubbliche, più le pagine carriera delle aziende con un browser
+  headless quando necessario.
+- **Classifica ogni lavoro** — sponsorizzazione, trasferimento, tipo di lavoro
+  remoto e idoneità alla Carta Blu UE, rilevati dalla descrizione.
+- **Estrae l'esperienza richiesta** — la cifra esatta indicata
+  (`4+`, `3-5 anni`, `6 mesi`), oppure il livello di seniority (`Senior`),
+  riconosciuta in inglese, tedesco, italiano, olandese, francese, spagnolo e
+  portoghese.
+- **Mantiene tutto in locale** — un unico file SQLite sul tuo computer. Nulla
+  viene caricato online.
+- **Gestisce le candidature** — Salvata → Inviata → Colloquio → Offerta →
+  Rifiutata.
+- **Due lingue** — Italiano e Inglese, selezionabili in qualsiasi momento.
 
 ---
 
 ## 🚀 Avvio Rapido
 
-1. **Scarica** l'installer per la tua piattaforma dal collegamento qui sopra.
-2. **Installa** — non serve Python né altro; l'app e il browser incluso sono
-   già nell'installer.
-3. **Avvia SponsorScout.** Al primo avvio una finestra chiede se eseguire una
-   scansione iniziale — clicca **Sì**. Recupera i lavori da ogni azienda
-   nell'elenco, dalla sua bacheca ufficiale e dalla pagina carriera, e
-   riempie il database (richiede 1-3 minuti).
-4. Sfoglia i risultati nella scheda **Cerca**, filtra per sponsorizzazione /
-   Carta Blu / trasferimento / remoto e inizia a gestire le candidature dalla
-   scheda **Candidature**.
-
-È tutto — tutto funziona in locale sul tuo computer.
+1. Scarica e installa il pacchetto per la tua piattaforma.
+2. Avvia SponsorScout. Al primo avvio accetta la richiesta di eseguire la
+   scansione iniziale (1–3 minuti).
+3. Apri **Cerca** per sfoglare e **Candidature** per gestire le candidature.
 
 ---
 
 ## 🗂 Le Cinque Schede
 
-### 1. Pannello (Dashboard)
-Una panoramica live del database: aziende totali, lavori verificati, lavori
-sponsorizzati, lavori remoti e lavori con Carta Blu UE — più una tabella
-"Migliori aziende per sponsorizzazione" e una "Lavori per paese". Il pulsante
-**Riscansiona Aziende** avvia una nuova scansione; **Aggiorna** ricarica i
+### 1. Pannello
+Totali di aziende, lavori verificati, sponsorizzati, remoti e con Carta Blu
+UE, più le migliori aziende per sponsorizzazione e i lavori per paese.
+**Riscansiona Aziende** avvia una scansione completa; **Aggiorna** ricarica i
 numeri.
 
-### 2. Cerca (Search)
-Il browser principale dei lavori. Filtra per posizione, azienda, località,
-paese, sponsorizzazione, Carta Blu, trasferimento e tipo di lavoro remoto
-(con l'opzione di ricerca tramite regex), poi ordina per corrispondenza
-migliore o più recenti. Con il tasto destro su una riga puoi aprirla nel
-browser o salvarla nelle candidature.
+### 2. Cerca
+Il browser principale dei lavori.
 
-### 3. Candidature (Applications)
-Il tuo registro personale delle candidature. Seleziona un lavoro salvato per
-impostarne lo stato (Salvata / Inviata / Colloquio / Offerta / Rifiutata) e
+- **Filtra** per posizione, azienda, località, paese, tipo di lavoro remoto,
+  esperienza, sponsorizzazione, Carta Blu e trasferimento. Spunta **Regex** per
+  usare un pattern nei campi di testo.
+- **I menu a tendina mostrano sempre tutti i valori** presenti nei tuoi dati,
+  mai ridotti alla selezione corrente: puoi passare direttamente a qualsiasi
+  altro valore.
+- **I valori dei filtri coincidono con quelli della tabella** e restano in una
+  forma fissa (non tradotta) in entrambe le lingue, così i filtri non si
+  rompono cambiando lingua. Solo etichette, intestazioni e pulsanti vengono
+  tradotti.
+- **Esperienza** mostra il requisito come indicato: `4+`, `3-5`, `6 mo`, `None`
+  quando l'annuncio chiede esplicitamente nessuna esperienza, `Senior` per un
+  livello, `Mentioned` quando si parla di esperienza senza cifre e `NA` quando
+  l'annuncio non ne parla affatto. L'ordinamento è numerico, così `3-5`
+  precede `11+`. Passa il mouse per la frase originale.
+- **Ordina** cliccando l'intestazione di una colonna (clicca di nuovo per
+  invertire).
+- **Tasto destro** su una riga per aprirla nel browser o salvarla nelle
+  Candidature.
+- **Paginazione** — i risultati sono mostrati una pagina alla volta (100, 200,
+  500 o 1000 righe, 500 per impostazione predefinita) con contatore e pulsanti
+  ◀ / ▶, così i database grandi restano rapidi e ogni riga resta
+  raggiungibile.
+
+### 3. Candidature
+Il tuo percorso. Seleziona un lavoro salvato per impostarne lo stato e
 aggiungere note.
 
-### 4. Strumenti (Tools)
-Il centro di controllo:
-- **Scanner** — **Scansiona Ora** avvia la campagna completa; **Scansione
-  Personalizzata** ti permette di scegliere aziende e/o tipi di fonte specifici
-  (bacheche ATS e/o pagine carriera) invece di tutte le aziende negli elenchi;
-  **Ferma (mantieni progresso)** la interrompe in qualsiasi momento mantenendo
-  tutto ciò che è stato trovato; **Riprendi** continua esattamente le aziende
-  restanti (anche dopo aver riavviato l'app), con la barra di avanzamento che
-  riparte da dove si era fermata. Una barra di avanzamento sotto i pulsanti
-  mostra il progresso live (`ATS 12/46`, `Carriere 88/162`) e arriva al 100%
-  a scansione finita; l'output completo per azienda appare nella finestra di
-  log. Vedi
-  [Modalità di Scansione](#-modalità-di-scansione--completa-e-personalizzata).
-- **Cronologia Scansioni** — ogni scansione passata; selezionane una per
-  visualizzare o scaricare un registro dettagliato per azienda, errori
-  inclusi. Le scansioni interrotte mostrano `cancelled`; quando una ripresa
-  completa tutto ciò che restava, la riga interrotta diventa `resumed`
-  (con un link `↩ <run figlio>`) e la riga che continua mostra
-  `<stato> ↩ resumed from <run genitore>`.
-- **Qualità Dati** — rimuovi lavori/aziende duplicati, cancella lavori scaduti
-  o elimina tutti i dati scansionati.
-- **Verifica Aggiornamento** — riverifica i lavori salvati sulle loro
-  pagine live e segna gli annunci non più disponibili come scaduti.
+### 4. Strumenti
+- **Scanner** — **Scansiona Ora** esegue una scansione completa; **Scansione
+  Personalizzata** ti lascia scegliere aziende e tipi di fonte. **Pausa**
+  interrompe la scansione con tutto ciò che è stato trovato già salvato;
+  **Riprendi** continua esattamente le aziende restanti, anche dopo aver
+  riavviato l'app. Vedi [Scansione](#-scansione).
+- **Cronologia Scansioni** — ogni esecuzione passata; selezionane una per
+  leggere o scaricare il registro per azienda. Le scansioni interrotte mostrano
+  `cancelled` e diventano `resumed` quando un'esecuzione successiva completa il
+  lavoro rimanente.
+- **Qualità Dati** — rimuovi lavori/aziende duplicati, cancella lavori
+  scaduti o elimina tutti i dati scansionati.
+- **Verifica Aggiornamento** — riverifica i lavori salvati sulle pagine live e
+  segna gli annunci non più disponibili come scaduti.
 
-### 5. Gestione Dati (Data Management)
-Modifica gli elenchi di aziende che SponsorScout scansiona. Sono forniti due
-editor — **Portali ATS** e **Portali Career**. Puoi aggiungere, modificare o
-rimuovere aziende; le modifiche vengono salvate nei tuoi file seed personali
-e hanno effetto dalla prossima scansione. Il pulsante "Ripristina
-predefiniti" ripristina gli elenchi originali.
+### 5. Gestione Dati
+Modifica gli elenchi di aziende che vengono scansionati (**Portali ATS** e
+**Portali Career**). Le modifiche hanno effetto dalla scansione successiva;
+**Ripristina predefiniti** riporta gli elenchi originali.
 
 ---
 
-## 🌐 Cambio Lingua
+## 🔍 Scansione
 
-Usa il menu a tendina nell'angolo in alto a destra dell'intestazione per
-passare da **Italiano** a **English**. La tua scelta viene salvata e
-ripristinata al prossimo avvio.
+### Scansione completa
+Quella predefinita. **Scansiona Ora** (o **Riscansiona Aziende** nel Pannello)
+scansiona ogni azienda negli elenchi, perché una scansione parziale
+nasconderebbe in silenzio dei lavori che non hai chiesto.
 
----
+### Scansione personalizzata
+**Strumenti → Scansione Personalizzata** ti lascia scegliere:
 
-## 🔍 Modalità di Scansione — Completa e Personalizzata
+- **Tipi di fonte** — *Portali ATS* (veloci, via API) e/o *Portali Career*
+  (più lenti, esplorati con un browser).
+- **Aziende** — spunta quelle che ti servono; usa il filtro o la selezione
+  rapida per spostarti in fretta.
 
-### Scansione completa (predefinita)
-
-Premendo **Scansiona Ora** (o **Riscansiona Aziende** nel Pannello) si esegue
-sempre la campagna completa su tutte le aziende negli elenchi, perché una
-scansione parziale nasconderebbe in silenzio dei lavori che non hai chiesto.
-Questo è il modo consigliato di scansionare.
+Una scansione personalizzata usa esattamente la stessa pipeline di una scansione
+completa, quindi la qualità dei risultati è identica: cambiano solo ambito
+e durata. Usala per riscanare le aziende che hai appena modificato. Le
+esecuzioni personalizzate compaiono come `custom` nella Cronologia Scansioni.
 
 ### Cosa fa una scansione
-- **Bacheche ATS (API)** — ogni azienda nell'elenco con un ATS noto (Ashby,
-  Greenhouse, Lever, SmartRecruiters, Personio, Recruitee, Workable, Workday)
-  viene interrogata tramite l'API ufficiale della sua bacheca lavori.
-- **Pagine carriera (browser)** — ogni azienda viene esplorata anche sulla
-  propria pagina carriera con un browser headless, quindi le aziende con la
-  sola pagina carriera non vengono mai saltate.
-- **Arricchimento dalla pagina di dettaglio** — ogni lavoro viene poi
-  verificato sulla propria pagina (JSON-LD + testo della pagina) per ricavare
-  località, sponsorizzazione, trasferimento, Carta Blu UE e l'**esperienza
-  richiesta**. Nulla viene ipotizzato: un verdetto viene aggiornato solo se la
-  pagina fornisce un'evidenza esplicita, e una fonte più debole (es. il testo
-  del titolo) non sovrascrive mai una più forte (es. il campo di seniority
-  pubblicato dall'azienda).
-- **Leggera sul tuo PC** — le pagine vengono scaricate bloccando immagini,
-  font, media e host di analytics, e le bacheche che pubblicano i lavori come
-  semplice HTML vengono lette direttamente: il browser viene avviato solo
-  quando una pagina richiede davvero JavaScript.
+1. **Bacheche ATS** — le aziende con un ATS noto vengono interrogate tramite
+   l'API ufficiale della bacheca.
+2. **Pagine carriera** — ogni azienda viene esplorata anche sulla propria
+   pagina carriera, quindi le aziende con la sola pagina carriera non vengono
+   saltate.
+3. **Pagine di dettaglio** — ogni lavoro viene verificato per località,
+   sponsorizzazione, trasferimento, Carta Blu UE ed esperienza. I verdetti
+   vengono impostati solo con evidenze esplicite e le fonti più deboli non
+   sovrascrivono mai quelle più forti.
+4. I risultati vengono salvati nel database locale e compaiono subito.
 
-> **Perché la Completa è quella predefinita?** La vecchia opzione **Veloce**
-> non trovava né *più* né *meno* lavori — saltava solo la fase di dettaglio,
-> lasciando più verdetti come `?` e alcune località vuote. Per una ricerca di
-> sponsorizzazione è un compromesso sbagliato, quindi la scansione estrae
-> sempre tutti i dettagli.
-
-### Scansione personalizzata (mirata)
-
-**Strumenti → Scansione Personalizzata** apre un selettore con cui scegli
-esattamente cosa scansionare:
-
-- **Tipi di fonte** — spunta *Portali ATS* (via API, veloce) e/o *Portali
-  Career* (esplorati con browser headless, più lenti). Togliendo la spunta a
-  uno dei due si salta semplicemente quella fase.
-- **Aziende** — ogni selettore elenca tutte le aziende dei tuoi file seed (con
-  la relativa industria) come caselle da spuntare. Usa il campo di filtro per
-  trovare rapidamente un'azienda, oppure *Seleziona tutto* / *Pulisci* per
-  attivare o disattivare in blocco.
-- Un riepilogo live mostra quante aziende sono selezionate per fase, così vedi
-  l'ampiezza prima di iniziare.
-
-Le scansioni personalizzate usano la **stessa pipeline completa** di una
-scansione normale — l'unica differenza è *quali* obiettivi vengono
-scansionati, quindi i risultati hanno la stessa qualità mentre la durata è
-proporzionale alla selezione (es. una scansione di 10 aziende solo carriera
-richiede minuti invece di un'ora). Casi d'uso:
-
-- ri-scansionare solo le aziende che hai aggiunto o modificato in
-  **Gestione Dati**;
-- aggiornare poche aziende interessanti senza aspettare un'ora intera;
-- provare una nuova riga seed prima di lanciare una campagna completa.
-
-Le scansioni personalizzate sono etichettate `custom` in **Cronologia
-Scansioni**. **Ferma (mantieni progresso)** e **Riprendi** funzionano come per
-una scansione completa: la ripresa continua solo le aziende *selezionate*
-restanti. La selezione non viene salvata tra un run e l'altro — **Scansiona
-Ora** copre sempre tutto.
-
----
-
-## 🔧 Come Funziona la Scansione
-
-1. SponsorScout legge i suoi **file seed** — elenchi curati di aziende con
-   i loro URL carriera e tipo di ATS.
-2. Le aziende con un ATS noto vengono scansionate tramite l'**API ufficiale
-   della bacheca** (veloce).
-3. Le aziende senza ATS pubblico vengono esplorate attraverso la loro
-   **pagina carriera** con un browser headless.
-4. Ogni lavoro viene classificato (Carta Blu / trasferimento / remoto), la sua
-   **esperienza richiesta** viene estratta e il lavoro viene deduplicato.
-5. I risultati vengono salvati nel database SQLite locale e appaiono
-   immediatamente nelle schede Pannello e Cerca. La barra di avanzamento
-   conta un passo per azienda finita (prima la fase ATS, poi le pagine
-   carriera), quindi arriva sempre al 100% — anche le aziende `EMPTY`
-   (nessuna posizione aperta al momento) contano come completate.
-
-I file seed si trovano nella cartella dati dell'utente e possono essere
-modificati nella scheda Gestione Dati.
+L'avanzamento è live (`ATS 12/46`, `Carriere 88/162`). Un'azienda senza
+posizioni aperte conta come completata.
 
 ---
 
@@ -590,143 +421,100 @@ modificati nella scheda Gestione Dati.
 | Windows | `%APPDATA%\SponsorScout` |
 | Linux | `~/.sponsorscout` |
 
-Contenuto: `sponsorscout.db` (tutti i lavori, aziende e cronologia delle
-scansioni), `seeds/` (i tuoi elenchi di aziende modificabili),
-`locale.json` (preferenza lingua) e i CSV di log grezzi in `scan_output/`.
+Contiene `sponsorscout.db` (lavori, aziende, candidature, cronologia scansioni),
+`seeds/` (i tuoi elenchi modificabili), `locale.json` (lingua) e i log grezzi
+in `scan_output/`.
 
-Puoi cambiare la posizione con le variabili d'ambiente `SPONSORSCOUT_DATA_DIR`
-(o `SPONSORSCOUT_DB_PATH`).
+Copia `sponsorscout.db` per salvare tutto. Puoi cambiare la posizione con la
+variabile d'ambiente `SPONSORSCOUT_DATA_DIR` (o `SPONSORSCOUT_DB_PATH`).
+
+### Disinstallazione
+
+L'installer Windows e il pacchetto Linux `.deb` rimuovono durante la
+disinstallazione tutti i dati locali di SponsorScout: database SQLite, elenchi
+modificabili, lingua e log delle scansioni. Vengono pulite le posizioni
+predefinite dell'utente Windows e degli account Linux locali. Vengono rimosse
+anche le posizioni personalizzate se le variabili `SPONSORSCOUT_DATA_DIR` /
+`SPONSORSCOUT_DB_PATH` sono disponibili al programma di disinstallazione.
+Fai una copia di cio che vuoi conservare prima di disinstallare. La cache
+condivisa dei browser Playwright non viene rimossa, perche potrebbe servire
+ad altre applicazioni.
 
 ---
 
-## 🧰 Risoluzione Problemi e Domande Frequenti
+## 🧰 Risoluzione Problemi
 
-**La scansione è finita ma il Pannello sembra vuoto.**
-Clicca **Aggiorna** nel Pannello. Se è ancora vuoto, apri la scheda Strumenti e
-controlla l'ultima riga in **Cronologia Scansioni**: uno stato `error`, o un
-**Registro Scansione** con errori, indica quali aziende non hanno restituito
+**Il Pannello sembra vuoto dopo una scansione.** Clicca **Aggiorna**. Se è
+ancora vuoto, controlla l'ultima riga della **Cronologia Scansioni**: uno stato
+`error`, o errori nel registro, indicano quali aziende non hanno restituito
 lavori.
 
-**Nel log compare "Chromium browser is not available".**
-Le pagine carriera JS vengono esplorate con Playwright Chromium. Entrambi gli
-installer ufficiali lo includono; da codice sorgente serve una volta:
+**"Chromium browser is not available".** Le pagine carriera vengono esplorate
+con Playwright. Gli installer lo includono; da codice sorgente esegui
 `python -m playwright install chromium`.
 
-**Solo alcune aziende hanno restituito lavori.**
-Alcune semplicemente non hanno posizioni aperte in questo momento (`EMPTY` nel
-log). Altre possono bloccare temporaneamente l'accesso automatico; rieseguendo
-la scansione più tardi di solito si completano. Nulla viene perso in silenzio:
-ogni esito è registrato nel log della scansione.
+**Alcune aziende non hanno restituito lavori.** Potrebbero non avere posizioni
+aperte (`EMPTY` nel log) oppure bloccare temporaneamente l'accesso automatico:
+riprova più tardi. Nulla viene perso in silenzio.
 
-**La scansione è lenta o il PC diventa pesante.**
-È la fase di dettaglio, ed è limitata per progettazione. SponsorScout
-dimensiona i propri worker/browser in base a CPU e RAM (un solo browser su un PC
-con 2 core / 8 GB), gira con priorità di processo inferiore al normale e blocca
-immagini, font, media e host di analytics durante l'esplorazione. Le bacheche
-che pubblicano semplice HTML vengono lette senza alcun browser. Il
-Pannello resta utilizzabile. **Non devi aspettare tutto il tempo:** premi
-**Ferma (mantieni progresso)** quando vuoi — tutto ciò che è stato trovato è
-già salvato — e premi **Riprendi** più tardi per continuare esattamente le
-aziende restanti. Fermando si chiudono tutti i browser, così le altre app
-tornano fluide; la ripresa funziona anche dopo aver riavviato l'app.
-Se ti servono solo poche aziende aggiornate, usa
-**Strumenti → Scansione Personalizzata**
-(vedi [Modalità di Scansione](#-modalità-di-scansione--completa-e-personalizzata))
-invece di una campagna completa.
+**La scansione è lenta.** La fase di dettaglio è la più lenta ed è limitata:
+SponsorScout dimensiona i browser in base a CPU/RAM, gira con priorità
+inferiore al normale e blocca immagini/font/media. Il Pannello resta
+utilizzabile. Non devi aspettare tutto: premi **Pausa** (tutto ciò che è stato
+trovato è già salvato) e **Riprendi** più tardi, anche dopo aver riavviato
+l'app.
 
-**Un lavoro mostra `?` per Sponsor / Carta Blu / Trasferimento.**
-`?` significa *sconosciuto*, mai *no*. L'annuncio non conteneva un'evidenza
-esplicita, quindi SponsorScout non ipotizza nulla - apri il lavoro e valuta tu.
-I lavori non vengono mai rimossi solo perché un verdetto è sconosciuto.
+**Un lavoro mostra `?`.** `?` significa *sconosciuto*, mai *no*. L'annuncio non
+conteneva evidenze esplicite, quindi SponsorScout non ipotizza nulla. I lavori
+sconosciuti non vengono mai rimossi.
 
-**Posso aggiungere le mie aziende?**
-Sì. Apri **Gestione Dati** e usa gli editor `Portali ATS` / `Portali Career`:
-inserisci il nome dell'azienda e l'URL carriera, il tipo di ATS viene rilevato
-automaticamente. Le modifiche si applicano alla scansione successiva.
-**Ripristina predefiniti** riporta gli elenchi forniti.
+**Posso scansionare solo alcune aziende?** Sì — **Strumenti → Scansione
+Personalizzata**. Stessa qualità, cambia solo l'ambito.
 
-**Posso scansionare solo alcune aziende invece dell'intero elenco?**
-Sì — usa **Strumenti → Scansione Personalizzata**. Spunta *Portali ATS* e/o
-*Portali Career*, togli la spunta alle aziende che non vuoi (oppure filtra e
-usa *Seleziona tutto*), poi avvia. Usa esattamente la stessa pipeline di una
-scansione completa, quindi la qualità dei risultati è identica; cambia solo la
-durata, proporzionale al numero di aziende scelte. È il modo veloce per
-ri-scansionare poche aziende appena aggiunte o modificate. Le scansioni
-personalizzate appaiono come `custom` in **Cronologia Scansioni**, e
-**Ferma** / **Riprendi** agiscono solo sulle aziende selezionate.
+**Come si cerca con un'espressione regolare?** Spunta **Regex** in **Cerca** e
+digita un pattern come `(backend|platform).*engineer`. Non distingue
+maiuscole/minuscole; un pattern non valido mostra un avviso e ripiega su una
+ricerca normale.
 
-**Come si cerca con un'espressione regolare?**
-Nella scheda **Cerca** spunta **Regex**, poi digita un pattern nel campo
-posizione, azienda o località - per esempio `(backend|platform).*engineer`
-trova sia "Backend Engineer" sia "Platform Engineer". La ricerca non distingue
-maiuscole/minuscole e un pattern non valido mostra un avviso e ripiega su una
-ricerca normale invece di restituire zero risultati.
-
-**Dove sono i miei dati e come faccio un backup?**
-Vedi [Dove Sono i Tuoi Dati](#-dove-sono-i-tuoi-dati). Copiando
-`sponsorscout.db` salvi lavori, aziende e candidature.
-
-**Qualcosa esce dal mio computer?**
-No. Tutto è salvato in un database SQLite locale. L'unico traffico in uscita
-sono gli annunci lavori che hai chiesto di scaricare.
+**Qualcosa esce dal mio computer?** No. L'unico traffico in uscita sono gli
+annunci lavori che hai chiesto di scaricare.
 
 ---
 
 ## 🏗 Compilare dai Sorgenti
 
-Installa prima le dipendenze di build: `pip install -r requirements.txt
--r requirements-dev.txt`.
-
-**Windows (installer Inno Setup):**
-
 ```powershell
-.\build_exe.ps1
+python -m venv venv
+venv\Scripts\activate
+pip install -r requirements.txt
+pip install ".[dev]"          # pytest + pyinstaller
+python -m playwright install chromium
 ```
 
-Output: `dist\sponsorscout-<versione>-setup.exe` (richiede Inno Setup 6/7).
-Lo script include anche il browser Playwright Chromium nell'installer.
+**Installer Windows:**
+```powershell
+.\build_exe.ps1               # -> dist\sponsorscout-<versione>-setup.exe
+```
+(richiede Inno Setup 6/7; include Playwright Chromium)
 
-**Linux (pacchetto .deb):**
-
+**Pacchetto Linux:**
 ```bash
-./build_deb.sh
+./build_deb.sh                # -> dist/sponsorscout_<versione>_amd64.deb
 ```
 
-Output: `dist/sponsorscout_<versione>_amd64.deb`.
-Lo script include anche il browser Playwright Chromium nel pacchetto .deb.
-
-### 🔎 Controlli per Sviluppatori
-
-Due script di manutenzione in `tools/` proteggono ciò che si rompe in
-silenzio:
-
+**Test:**
 ```bash
-python tools/check_dev_sync.py               # algoritmi dev vs pacchetto app
-python tools/check_readme_anchors.py --live  # link interni vs ancore GitHub
+python -m pytest sponsorscout/tests
 ```
-
-- `check_dev_sync.py` dimostra che ogni simbolo degli algoritmi standalone in
-  `extra_for_dev_purpose(do not delete)/main_job_search_algorithms/` è
-  implementato in `sponsorscout/`, così uno script dev aggiornato non può mai
-  mancare nell'app e farle perdere dei lavori. Usa `--strict` in CI.
-- `check_readme_anchors.py` ricalcola l'ancora che GitHub genera per ogni
-  titolo (un'emoji iniziale entra nell'ancora: è `#-download`, non
-  `#download`), così un titolo con apostrofo o trattino non può lasciarti con
-  link che non portano da nessuna parte. Con `--live` confronta il risultato
-  locale con le ancore realmente pubblicate da GitHub.
 
 ---
 
 ## 📋 Requisiti
 
-- Python 3.10 o successivo
-- Dipendenze di runtime tramite `requirements.txt`: **PySide6**, **requests**,
-  **playwright**
-- Playwright Chromium (`python -m playwright install chromium`) — usato per
-  lo scanning delle pagine carriera JS (entrambi gli installer lo includono
-  già)
-- Dipendenze solo per build/test in `requirements-dev.txt`: **pyinstaller**,
-  **pytest**
+- Python 3.10 o successivo (per eseguire da sorgenti; gli installer non richiedono nulla)
+- Runtime: **PySide6**, **requests**, **playwright** (`requirements.txt`)
+- Playwright Chromium: `python -m playwright install chromium`
+- Solo sviluppo/test: **pytest**, **pyinstaller** (`pip install ".[dev]"`)
 
 ---
 

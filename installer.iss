@@ -18,6 +18,7 @@
 #define MyAppURL       "https://github.com/yourusername/sponsorscout"
 #define MyAppExeName   "SponsorScout.exe"
 #define MyAppIcoName   "sponsorscout.ico"
+#define MyAppDataDirName "SponsorScout"
 
 [Setup]
 AppId=SponsorScout
@@ -83,12 +84,10 @@ Filename: "{sys}\taskkill.exe"; Parameters: "/f /im SponsorScout.exe"; Flags: ru
 Filename: "{sys}\taskkill.exe"; Parameters: "/f /im Sponsorscout.exe"; Flags: runhidden runminimized skipifdoesntexist
 
 [UninstallDelete]
-; Clean up installed folders and files that weren't copied by Inno (databases, logs, settings)
+; Remove the installed bundle. User data is purged again from [Code] so
+; explicitly configured data paths are handled as well.
+; Keep the shared Playwright browser cache: other applications may use it.
 Type: filesandordirs; Name: "{app}"
-Type: filesandordirs; Name: "{userappdata}\SponsorScout"
-Type: filesandordirs; Name: "{localappdata}\ms-playwright"
-Type: filesandordirs; Name: "{localappdata}\SponsorScout"
-Type: filesandordirs; Name: "{%USERPROFILE}\.sponsorscout"
 
 [Code]
 const
@@ -122,50 +121,75 @@ begin
   end;
 end;
 
+function IsUnsafePurgePath(const PathValue: string): boolean;
+begin
+  Result := (PathValue = '') or (PathValue = '\');
+  if (Length(PathValue) >= 2) and (PathValue[1] = '\') and (PathValue[2] = '\') then
+    Result := True;
+  if (Length(PathValue) = 2) and (PathValue[2] = ':') then
+    Result := True;
+  if (Length(PathValue) = 3) and (PathValue[2] = ':') and (PathValue[3] = '\') then
+    Result := True;
+end;
+
+procedure PurgePath(const LabelText, PathValue: string);
+var
+  FullPath: string;
+begin
+  if PathValue = '' then
+    Exit;
+  FullPath := ExpandConstant(PathValue);
+  if IsUnsafePurgePath(FullPath) then
+  begin
+    Log('Refusing unsafe purge path: ' + FullPath);
+    Exit;
+  end;
+  if DirExists(FullPath) then
+  begin
+    Log('Purging ' + LabelText + ': ' + FullPath);
+    DelTree(FullPath, True, True, True);
+  end;
+end;
+
+procedure PurgeUserData;
+var
+  CustomDataDir: string;
+  CustomDbPath: string;
+begin
+  // Default Windows locations used by sponsorscout/paths.py.
+  PurgePath('application data', '{userappdata}\{#MyAppDataDirName}');
+  PurgePath('local application data', '{localappdata}\{#MyAppDataDirName}');
+  PurgePath('user profile data', '{%USERPROFILE}\.sponsorscout');
+
+  // Also honor explicit overrides when they are present in the uninstaller's
+  // environment. Never purge a drive root or the user's entire profile.
+  CustomDataDir := ExpandConstant('{env:SPONSORSCOUT_DATA_DIR}');
+  if CustomDataDir <> '' then
+    PurgePath('configured data directory', CustomDataDir);
+
+  CustomDbPath := ExpandConstant('{env:SPONSORSCOUT_DB_PATH}');
+  if CustomDbPath <> '' then
+  begin
+    if FileExists(CustomDbPath) then
+      DeleteFile(CustomDbPath);
+    if FileExists(CustomDbPath + '-wal') then
+      DeleteFile(CustomDbPath + '-wal');
+    if FileExists(CustomDbPath + '-shm') then
+      DeleteFile(CustomDbPath + '-shm');
+  end;
+end;
+
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
-  AppDir: string;
   ResultCode: Integer;
 begin
   if CurUninstallStep = usUninstall then
   begin
-    // Synchronously terminate any running instance of the application at the start of uninstall
-    // to prevent file locks or orphaned processes.
+    // Ensure the GUI is closed before Inno removes the application files.
     Exec(ExpandConstant('{sys}\taskkill.exe'), '/f /im SponsorScout.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    Exec(ExpandConstant('{sys}\taskkill.exe'), '/f /im Sponsorscout.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   end;
 
   if CurUninstallStep = usPostUninstall then
-  begin
-    // 1. Recursive cleanup of the AppData user folder (SQLite databases, logs, customized prompts)
-    AppDir := GetUserAppDataDir();
-    if DirExists(AppDir) then
-    begin
-      Log('Removing AppData directory: ' + AppDir);
-      DelTree(AppDir, True, True, True);
-    end;
-
-    // 2. Remove the user profile dot folder (~/.sponsorscout) if it exists
-    AppDir := ExpandConstant('{%USERPROFILE}\.sponsorscout');
-    if DirExists(AppDir) then
-    begin
-      Log('Removing user profile dot folder: ' + AppDir);
-      DelTree(AppDir, True, True, True);
-    end;
-
-    // 3. Remove the Local AppData cache folder ({localappdata}\SponsorScout)
-    AppDir := ExpandConstant('{localappdata}\SponsorScout');
-    if DirExists(AppDir) then
-    begin
-      Log('Removing Local AppData folder: ' + AppDir);
-      DelTree(AppDir, True, True, True);
-    end;
-
-    // 4. Remove Playwright's downloaded browser binaries ({localappdata}\ms-playwright)
-    AppDir := ExpandConstant('{localappdata}\ms-playwright');
-    if DirExists(AppDir) then
-    begin
-      Log('Removing Playwright browser binaries: ' + AppDir);
-      DelTree(AppDir, True, True, True);
-    end;
-  end;
+    PurgeUserData;
 end;

@@ -162,3 +162,8 @@ CREATE INDEX IF NOT EXISTS idx_jobs_sponsored_fresh ON jobs(sponsorship_score DE
 CREATE INDEX IF NOT EXISTS idx_jobs_source_subtype ON jobs(source_subtype);
 CREATE INDEX IF NOT EXISTS idx_jobs_run_id ON jobs(run_id);
 CREATE INDEX IF NOT EXISTS idx_jobs_canonical ON jobs(canonical_job_id);
+-- Perf (Dashboard KPI refresh, also every scan tick): these COUNTs filter on
+-- source_type and on (remote_type + verified flags) over the whole jobs table.
+CREATE INDEX IF NOT EXISTS idx_jobs_source_type ON jobs(source_type);
+CREATE INDEX IF NOT EXISTS idx_jobs_remote_verified
+    ON jobs(remote_type, verified_active, is_expired);

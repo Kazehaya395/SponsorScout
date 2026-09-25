@@ -1,58 +1,72 @@
 name,careers_url,provider,board_slug,source_type,target_country,scope_policy,industry,sponsorship_history,english_friendly,remote_score,notes
-Adyen,https://job-boards.greenhouse.io/adyen,greenhouse,adyen,direct_employer,Global,global,Fintech,90,95,65,
-Anthropic,https://job-boards.greenhouse.io/anthropic,greenhouse,anthropic,direct_employer,Global,global,AI,80,95,75,verified: 608 jobs; seed row was labelled 'Greenhouse'
-Astroscale,https://astroscale.bamboohr.com/careers?source=LinkedIn,bamboohr,astroscale,direct_employer,Global,global,Space,60,80,30,verified: 48 jobs (FIX P0-19 adapter)
-Autodesk,https://autodesk.wd1.myworkdayjobs.com/Ext,workday,autodesk/Ext,direct_employer,Global,global,Software,80,85,60,FIX P0-20: workday API adapter
-Avomind,https://apply.workable.com/avomind/,workable,avomind,direct_employer,Global,global,Recruitment,70,80,35,
-Backbase,https://job-boards.greenhouse.io/workatbackbase,greenhouse,workatbackbase,direct_employer,Global,global,SaaS,80,85,60,
-BambooHR,https://job-boards.greenhouse.io/bamboohr17,greenhouse,bamboohr17,direct_employer,Global,global,HR Tech,75,90,80,
-Bol.com,https://job-boards.greenhouse.io/bolcomen,greenhouse,bolcomen,direct_employer,Global,global,E-Commerce,80,85,60,
-Bonial,https://bonial.recruitee.com/,recruitee,bonial,direct_employer,Global,global,Retail Media,75,80,45,
+# ===== CANADA (1) =====,,,,,,,,,,,
+SOTI,https://soti.wd3.myworkdayjobs.com/Careers/jobs,workday,soti/Careers,direct_employer,Global,global,Enterprise Software,70,85,50,"Workday - no API adapter, DOM path; FIX P0-20: workday API adapter"
+# ===== CYPRUS (1) =====,,,,,,,,,,,
 Brain Rocket,https://brainrocket.bamboohr.com/careers/,bamboohr,brainrocket,direct_employer,Global,global,iGaming/Tech,60,85,40,"verified 2026-09-18: API reachable, 0 open postings"
+# ===== DENMARK (2) =====,,,,,,,,,,,
+Pleo,https://jobs.ashbyhq.com/pleo/,ashby,pleo,direct_employer,Global,global,Fintech,80,90,75,
+simcorp,https://simcorp.wd3.myworkdayjobs.com/SimCorp_Jobs,workday,simcorp/SimCorp_Jobs,direct_employer,Global,global,Fintech/Software,75,80,55,FIX P0-20: workday API adapter
+# ===== FINLAND (1) =====,,,,,,,,,,,
+Wolt,https://boards.greenhouse.io/wolt,greenhouse,wolt,direct_employer,Global,global,Delivery,80,85,55,
+# ===== FRANCE (3) =====,,,,,,,,,,,
 Brevo,https://jobs.lever.co/brevo,lever,brevo,direct_employer,Global,global,SaaS,80,85,60,
+Mistral AI,https://jobs.ashbyhq.com/mistral.ai,ashby,mistral.ai,direct_employer,Global,global,AI,80,95,70,verified: 193 jobs
+Sonio,https://sonio-ag.jobs.personio.com/,personio,sonio-ag,direct_employer,Global,global,HealthTech,70,85,55,verified: 10 jobs
+# ===== GERMANY (15) =====,,,,,,,,,,,
+Avomind,https://apply.workable.com/avomind/,workable,avomind,direct_employer,Global,global,Recruitment,70,80,35,
+Bonial,https://bonial.recruitee.com/,recruitee,bonial,direct_employer,Global,global,Retail Media,75,80,45,
 Cargo.one,https://jobs.ashbyhq.com/cargo-one,ashby,cargo-one,direct_employer,Global,global,Logistics Tech,85,90,95,
 Contentful,https://boards.greenhouse.io/contentful,greenhouse,contentful,direct_employer,Global,global,SaaS,85,90,75,
 Crealytics,https://crealytics.jobs.personio.de/,personio,crealytics,direct_employer,Global,global,MarTech,80,85,60,"verified 2026-09-15: API reachable, 0 open postings"
 Delivery Hero,https://careers.smartrecruiters.com/DeliveryHero,smartrecruiters,DeliveryHero,direct_employer,Global,global,Food Tech,80,85,55,FIX P0-20: smartrecruiters API adapter
 Ecosia,https://jobs.ashbyhq.com/ecosia.org,ashby,ecosia.org,direct_employer,Global,global,Search,75,90,65,"verified 2026-09-15: API reachable, 0 open postings"
 EMBL,https://embl.wd103.myworkdayjobs.com/EMBL,workday,embl/EMBL,direct_employer,Europe,job_location,Research/Science,85,95,30,"Workday - no API adapter, DOM path; FIX P0-20: workday API adapter"
-Figma,https://www.figma.com/careers/#job-openings,greenhouse,figma,direct_employer,Global,global,Design,85,95,75,
-GMV,https://gmv.csod.com/ux/ats/careersite/4/home?c=gmv&lang=en-US,auto,,direct_employer,Global,global,Aerospace/Defense,40,70,35,"Cornerstone (csod) - no API adapter, DOM path"
-Improbable,https://jobs.ashbyhq.com/Improbable,ashby,Improbable,direct_employer,Global,global,Gaming/AI,80,90,65,
-Incident.io,https://jobs.ashbyhq.com/incident,ashby,incident,direct_employer,Global,global,SaaS,80,95,85,
 InnoGames,https://jobs.eu.lever.co/innogames,lever,innogames,direct_employer,Global,global,Gaming,80,85,60,EU-resident board (api.eu.lever.co)
-Jobandtalent,https://jobs.lever.co/jobandtalent/,lever,jobandtalent,direct_employer,Global,global,HR Tech,70,80,55,
 Lemon Markets,https://jobs.ashbyhq.com/lemon-markets,ashby,lemon-markets,direct_employer,Global,global,Fintech,80,85,65,
-Leonardo,https://leonardocompany.wd3.myworkdayjobs.com/LeonardoCareerSite,workday,leonardocompany/LeonardoCareerSite,direct_employer,Global,global,Aerospace/Defense,25,65,50,FIX P0-20: workday API adapter
-Linear,https://jobs.ashbyhq.com/Linear,ashby,Linear,direct_employer,Global,global,Developer Tools,80,95,85,
-Luno,https://job-boards.greenhouse.io/luno,greenhouse,luno,direct_employer,Global,global,Crypto,80,90,70,
-Mapbox,https://jobs.ashbyhq.com/mapbox,ashby,mapbox,direct_employer,Global,global,GeoTech,80,90,75,
-Mendix,https://jobs.lever.co/mendix,lever,mendix,direct_employer,Global,global,SaaS,80,85,60,
-Mentimeter,https://job-boards.eu.greenhouse.io/mentimeter,greenhouse,mentimeter,direct_employer,Global,global,EdTech,75,90,70,
-Mistral AI,https://jobs.ashbyhq.com/mistral.ai,ashby,mistral.ai,direct_employer,Global,global,AI,80,95,70,verified: 193 jobs
-Mixpanel,https://job-boards.greenhouse.io/mixpanel,greenhouse,mixpanel,direct_employer,Global,global,Analytics,80,90,80,
-Monzo,https://job-boards.greenhouse.io/monzo,greenhouse,monzo,direct_employer,Global,global,Fintech,90,95,70,
-Moonpay,https://jobs.lever.co/moonpay,lever,moonpay,direct_employer,Global,global,Crypto,75,90,80,verified: 25 jobs
 Moss,https://moss.jobs.personio.de,personio,moss,direct_employer,Global,global,Fintech,80,85,60,"verified 2026-09-15: API reachable, 0 open postings"
-Netlify,https://job-boards.greenhouse.io/netlify,greenhouse,netlify,direct_employer,Global,global,Developer Tools,85,95,90,
-Nexthink,https://careers.smartrecruiters.com/nexthink,smartrecruiters,nexthink,direct_employer,Global,global,SaaS,80,85,65,FIX P0-20: smartrecruiters API adapter
-NXP Semiconductors,https://nxp.wd3.myworkdayjobs.com/careers,workday,nxp/careers,direct_employer,Global,global,Semiconductors,80,85,55,FIX P0-20: workday API adapter
-Ohpen,https://ohpen.jobs.personio.com/?language=en,personio,ohpen,direct_employer,Global,global,Banking SaaS,75,85,55,
-Philips,https://philips.wd3.myworkdayjobs.com/jobs-and-careers,workday,philips/jobs-and-careers,direct_employer,Global,global,Engineering,80,80,55,FIX P0-20: workday API adapter
-Pleo,https://jobs.ashbyhq.com/pleo/,ashby,pleo,direct_employer,Global,global,Fintech,80,90,75,
-Prysmian Group,https://prysmiangroup.wd3.myworkdayjobs.com/Careers,workday,prysmiangroup/Careers,direct_employer,Global,global,Manufacturing,40,70,60,FIX P0-20: workday API adapter
 QuantumDiam,https://quantum-diamond.jobs.personio.de/,personio,quantum-diamond,direct_employer,Global,global,Quantum Tech,70,80,40,
 Raisin,https://boards.greenhouse.io/raisin,greenhouse,raisin,direct_employer,Global,global,Fintech,80,85,60,
 Scalable Capital,https://careers.smartrecruiters.com/ScalableGmbH,smartrecruiters,ScalableGmbH,direct_employer,Global,global,Fintech,80,85,55,"SmartRecruiters - no API adapter, DOM path; FIX P0-20: smartrecruiters API adapter"
+Zalando,https://zalando.wd3.myworkdayjobs.com/ZalandoSiteWD,workday,zalando/ZalandoSiteWD,direct_employer,Global,global,E-Commerce,80,80,55,FIX P0-20: workday API adapter
+# ===== ITALY (2) =====,,,,,,,,,,,
+Leonardo,https://leonardocompany.wd3.myworkdayjobs.com/LeonardoCareerSite,workday,leonardocompany/LeonardoCareerSite,direct_employer,Global,global,Aerospace/Defense,25,65,50,FIX P0-20: workday API adapter
+Prysmian Group,https://prysmiangroup.wd3.myworkdayjobs.com/Careers,workday,prysmiangroup/Careers,direct_employer,Global,global,Manufacturing,40,70,60,FIX P0-20: workday API adapter
+# ===== JAPAN (1) =====,,,,,,,,,,,
+Astroscale,https://astroscale.bamboohr.com/careers?source=LinkedIn,bamboohr,astroscale,direct_employer,Global,global,Space,60,80,30,verified: 48 jobs (FIX P0-19 adapter)
+# ===== NETHERLANDS (7) =====,,,,,,,,,,,
+Adyen,https://job-boards.greenhouse.io/adyen,greenhouse,adyen,direct_employer,Global,global,Fintech,90,95,65,
+Backbase,https://job-boards.greenhouse.io/workatbackbase,greenhouse,workatbackbase,direct_employer,Global,global,SaaS,80,85,60,
+Bol.com,https://job-boards.greenhouse.io/bolcomen,greenhouse,bolcomen,direct_employer,Global,global,E-Commerce,80,85,60,
+Mendix,https://jobs.lever.co/mendix,lever,mendix,direct_employer,Global,global,SaaS,80,85,60,
+NXP Semiconductors,https://nxp.wd3.myworkdayjobs.com/careers,workday,nxp/careers,direct_employer,Global,global,Semiconductors,80,85,55,FIX P0-20: workday API adapter
+Ohpen,https://ohpen.jobs.personio.com/?language=en,personio,ohpen,direct_employer,Global,global,Banking SaaS,75,85,55,
+Philips,https://philips.wd3.myworkdayjobs.com/jobs-and-careers,workday,philips/jobs-and-careers,direct_employer,Global,global,Engineering,80,80,55,FIX P0-20: workday API adapter
+# ===== SPAIN (3) =====,,,,,,,,,,,
+GMV,https://gmv.csod.com/ux/ats/careersite/4/home?c=gmv&lang=en-US,auto,,direct_employer,Global,global,Aerospace/Defense,40,70,35,"Cornerstone (csod) - no API adapter, DOM path"
+Jobandtalent,https://jobs.lever.co/jobandtalent/,lever,jobandtalent,direct_employer,Global,global,HR Tech,70,80,55,
+Typeform,https://job-boards.greenhouse.io/typeform,greenhouse,typeform,direct_employer,Global,global,SaaS,85,95,80,
+# ===== SWEDEN (1) =====,,,,,,,,,,,
+Mentimeter,https://job-boards.eu.greenhouse.io/mentimeter,greenhouse,mentimeter,direct_employer,Global,global,EdTech,75,90,70,
+# ===== SWITZERLAND (1) =====,,,,,,,,,,,
+Nexthink,https://careers.smartrecruiters.com/nexthink,smartrecruiters,nexthink,direct_employer,Global,global,SaaS,80,85,65,FIX P0-20: smartrecruiters API adapter
+# ===== UNITED KINGDOM (4) =====,,,,,,,,,,,
+Improbable,https://jobs.ashbyhq.com/Improbable,ashby,Improbable,direct_employer,Global,global,Gaming/AI,80,90,65,
+Incident.io,https://jobs.ashbyhq.com/incident,ashby,incident,direct_employer,Global,global,SaaS,80,95,85,
+Luno,https://job-boards.greenhouse.io/luno,greenhouse,luno,direct_employer,Global,global,Crypto,80,90,70,
+Monzo,https://job-boards.greenhouse.io/monzo,greenhouse,monzo,direct_employer,Global,global,Fintech,90,95,70,
+# ===== USA (15) =====,,,,,,,,,,,
+Anthropic,https://job-boards.greenhouse.io/anthropic,greenhouse,anthropic,direct_employer,Global,global,AI,80,95,75,verified: 608 jobs; seed row was labelled 'Greenhouse'
+Autodesk,https://autodesk.wd1.myworkdayjobs.com/Ext,workday,autodesk/Ext,direct_employer,Global,global,Software,80,85,60,FIX P0-20: workday API adapter
+BambooHR,https://job-boards.greenhouse.io/bamboohr17,greenhouse,bamboohr17,direct_employer,Global,global,HR Tech,75,90,80,
+Figma,https://www.figma.com/careers/#job-openings,greenhouse,figma,direct_employer,Global,global,Design,85,95,75,
+Linear,https://jobs.ashbyhq.com/Linear,ashby,Linear,direct_employer,Global,global,Developer Tools,80,95,85,
+Mapbox,https://jobs.ashbyhq.com/mapbox,ashby,mapbox,direct_employer,Global,global,GeoTech,80,90,75,
+Mixpanel,https://job-boards.greenhouse.io/mixpanel,greenhouse,mixpanel,direct_employer,Global,global,Analytics,80,90,80,
+Moonpay,https://jobs.lever.co/moonpay,lever,moonpay,direct_employer,Global,global,Crypto,75,90,80,verified: 25 jobs
+Netlify,https://job-boards.greenhouse.io/netlify,greenhouse,netlify,direct_employer,Global,global,Developer Tools,85,95,90,
 Sentry,https://jobs.ashbyhq.com/sentry,ashby,sentry,direct_employer,Global,global,Developer Tools,80,95,85,
-simcorp,https://simcorp.wd3.myworkdayjobs.com/SimCorp_Jobs,workday,simcorp/SimCorp_Jobs,direct_employer,Global,global,Fintech/Software,75,80,55,FIX P0-20: workday API adapter
 SmartRecruiters,https://www.smartrecruiterscareers.com/jobs,auto,,direct_employer,Global,global,HR Tech,75,90,65,
-Sonio,https://sonio-ag.jobs.personio.com/,personio,sonio-ag,direct_employer,Global,global,HealthTech,70,85,55,verified: 10 jobs
-SOTI,https://soti.wd3.myworkdayjobs.com/Careers/jobs,workday,soti/Careers,direct_employer,Global,global,Enterprise Software,70,85,50,"Workday - no API adapter, DOM path; FIX P0-20: workday API adapter"
 Starship,https://starship.teamtailor.com/jobs,teamtailor,starship,direct_employer,Global,global,Robotics,75,90,45,verified: 4 jobs
 Twilio,https://job-boards.greenhouse.io/twilio,greenhouse,twilio,direct_employer,Global,global,SaaS,85,90,80,
-Typeform,https://job-boards.greenhouse.io/typeform,greenhouse,typeform,direct_employer,Global,global,SaaS,85,95,80,
 Vercel,https://job-boards.greenhouse.io/vercel,greenhouse,vercel,direct_employer,Global,global,Developer Tools,85,95,95,
-Wolt,https://boards.greenhouse.io/wolt,greenhouse,wolt,direct_employer,Global,global,Delivery,80,85,55,
-Zalando,https://zalando.wd3.myworkdayjobs.com/ZalandoSiteWD,workday,zalando/ZalandoSiteWD,direct_employer,Global,global,E-Commerce,80,80,55,FIX P0-20: workday API adapter
 Zendesk,https://zendesk.wd1.myworkdayjobs.com/zendesk,workday,zendesk/zendesk,direct_employer,Global,global,SaaS,80,85,65,FIX P0-20: workday API adapter

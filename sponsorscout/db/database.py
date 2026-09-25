@@ -23,6 +23,10 @@ def _configure_connection(conn, db_path=DB_PATH):
     conn.execute("PRAGMA busy_timeout=5000")
     # Performance: NORMAL is safe with WAL; reduces fsync overhead.
     conn.execute("PRAGMA synchronous=NORMAL")
+    # Performance: 8 MiB page cache (SQLite default is 2 MiB). The
+    # Dashboard's COUNT/GROUP BY refreshes and full-table LIKE scans reuse
+    # cached pages instead of re-reading them from disk on every query.
+    conn.execute("PRAGMA cache_size=-8000")
     return conn
 
 
@@ -46,10 +50,19 @@ def _regexp_like(pattern, value):
         return 0
 
 
+_user_dir_ready = False
+
+
 def get_connection(db_path=DB_PATH):
+    global _user_dir_ready
     db_path = Path(db_path).expanduser()
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    ensure_user_data_dir()
+    # ensure_user_data_dir() is per-process work; running it on EVERY
+    # connection open added filesystem syscalls to every query. Tests that
+    # redirect the data dir re-import this module, which resets the flag.
+    if not _user_dir_ready:
+        ensure_user_data_dir()
+        _user_dir_ready = True
     conn = _configure_connection(sqlite3.connect(str(db_path), timeout=30.0))
     conn.create_function("REGEXP", 2, _regexp_like)
     return conn
@@ -237,6 +250,9 @@ def search_jobs(db_path, title="", company="", location="", country="All", sourc
                    COALESCE(eu_blue_card, 0) as eu_blue_card,
                    COALESCE(has_relocation, 0) as has_relocation,
                    COALESCE(experience_level, '') as experience_level,
+                   COALESCE(experience_required, '') as experience_required,
+                   COALESCE(experience_min_years, NULL) as experience_min_years,
+                   COALESCE(experience_source, '') as experience_source,
                    COALESCE(industry, '') as industry,
                    COALESCE(ai_score, 0) as ai_score,
                    COALESCE(visa_sponsorship, '') as visa_sponsorship,
@@ -334,6 +350,21 @@ def search_jobs(db_path, title="", company="", location="", country="All", sourc
             query += _verdict_clause("visa_sponsorship", None, sponsorship_filter)
         if blue_card_filter in ("Y", "N", "Unknown"):
             query += _verdict_clause("eu_blue_card_verdict", "eu_blue_card", blue_card_filter)
+        # ── Experience filter (dynamic distinct-values dropdown) ─────────────
+        # Case-insensitive: legacy normalizer rows are lowercase, scanner rows
+        # are canonical (Intern/Entry/.../Exec).  Unknown covers '' + 'Unknown'.
+        exp = (experience_filter or "All")
+        if exp == "Tutti":
+            exp = "All"
+        if exp and exp not in ("All", ""):
+            if exp in ("Unknown", "Unknown / Not classified"):
+                query += " AND COALESCE(experience_level,'') IN ('', 'Unknown')"
+            elif exp == "Any (incl. unknown)":
+                pass
+            else:
+                query += " AND lower(COALESCE(experience_level,'')) = lower(?)"
+                params.append(exp)
+
         if relocation_filter in ("Y", "N", "Unknown"):
             query += _verdict_clause("relocation_support", "has_relocation", relocation_filter)
 
@@ -360,14 +391,6 @@ EXPERIENCE_LEVELS = [
     "Unknown / Not classified",
 ]
 
-# Sort modes for the Search tab.
-SORT_MODES = [
-    ("Best match", "best"),
-    ("Latest", "latest"),
-    ("Sponsored first", "sponsorship"),
-]
-
-
 # BUGFIX (2024-Q4 round 2): the previous threshold of `>= 20` was too
 # LOW for the `score()` function. The baseline is 20 with no signals at
 # all, and most real jobs score exactly 20-30 even when there's no
@@ -382,10 +405,15 @@ SORT_MODES = [
 SPONSORSHIP_SCORE_THRESHOLD = 70
 
 
-def get_dashboard_stats(db_path):
-    conn = None
+def get_dashboard_stats(db_path, _conn=None):
+    # _conn: optional shared connection so one Dashboard refresh runs all
+    # three dashboard queries without re-opening (and re-PRAGMA-ing) a
+    # connection per query — this runs on the GUI thread on every scan tick.
+    conn = _conn
+    owned = conn is None
     try:
-        conn = get_connection(db_path)
+        if owned:
+            conn = get_connection(db_path)
         stats = {
             "companies": conn.execute(
                 "SELECT COUNT(DISTINCT company) FROM jobs "
@@ -416,14 +444,16 @@ def get_dashboard_stats(db_path):
         }
         return stats
     finally:
-        if conn:
+        if owned and conn:
             conn.close()
 
 
-def get_dashboard_top_companies(db_path, limit=8):
-    conn = None
+def get_dashboard_top_companies(db_path, limit=8, _conn=None):
+    conn = _conn
+    owned = conn is None
     try:
-        conn = get_connection(db_path)
+        if owned:
+            conn = get_connection(db_path)
         rows = conn.execute("""
             SELECT company,
                    (SELECT country FROM jobs j2
@@ -445,14 +475,16 @@ def get_dashboard_top_companies(db_path, limit=8):
         """, (limit,)).fetchall()
         return rows
     finally:
-        if conn:
+        if owned and conn:
             conn.close()
 
 
-def get_dashboard_country_counts(db_path):
-    conn = None
+def get_dashboard_country_counts(db_path, _conn=None):
+    conn = _conn
+    owned = conn is None
     try:
-        conn = get_connection(db_path)
+        if owned:
+            conn = get_connection(db_path)
         rows = conn.execute("""
             SELECT country, COUNT(*) as count
             FROM jobs
@@ -462,7 +494,7 @@ def get_dashboard_country_counts(db_path):
         """).fetchall()
         return rows
     finally:
-        if conn:
+        if owned and conn:
             conn.close()
 
 
@@ -1097,6 +1129,31 @@ def get_distinct_experience_levels(db_path) -> list[str]:
             ORDER BY experience_level ASC
         """).fetchall()
         return [r[0] for r in rows]
+    except Exception:
+        return []
+    finally:
+        if conn:
+            conn.close()
+
+
+def get_distinct_experience_specs(db_path) -> list[tuple]:
+    """Return distinct (required, level, min_years) triples from active jobs.
+
+    The Search tab renders each triple through ui.tabs.search.
+    _experience_cell() to build the Experience dropdown, so the dropdown
+    always offers exactly the unique value list of the Experience column
+    (canonical, untranslated values — see FILTER_ALL in ui.tabs.search).
+    """
+    conn = None
+    try:
+        conn = get_connection(db_path)
+        rows = conn.execute("""
+            SELECT DISTINCT experience_required, experience_level,
+                   experience_min_years
+            FROM jobs
+            WHERE verified_active = 1 AND is_expired = 0
+        """).fetchall()
+        return [(r[0], r[1], r[2]) for r in rows]
     except Exception:
         return []
     finally:

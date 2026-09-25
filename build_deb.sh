@@ -223,49 +223,102 @@ exit 0
 EOL
 chmod 755 "$DEBIAN_DIR/postinst"
 
-cat > "$DEBIAN_DIR/postrm" <<'EOL'
+cat > "$DEBIAN_DIR/prerm" <<'EOL'
 #!/bin/sh
-set -e
+set -eu
 
-# ── Kill any running SponsorScout process before removing files ──────────────
-# This prevents file locks and orphaned processes, matching the Windows
-# installer behavior (taskkill /f /im SponsorScout.exe).
+# Stop the GUI before dpkg removes package-owned files. This is also needed
+# during upgrades, but it never removes user data.
 for sig in TERM KILL; do
   pids=$(pgrep -x "SponsorScout" 2>/dev/null || true)
   if [ -n "$pids" ]; then
-    echo "SponsorScout: stopping running instance(s) (SIG$sig)…"
+    echo "SponsorScout: stopping running instance(s) (SIG$sig)..."
     # shellcheck disable=SC2086
     kill -s "$sig" $pids 2>/dev/null || true
     sleep 1
   fi
 done
 
-# ── Remove generated app data from the install directory ─────────────────────
-APP_DIR="/opt/sponsorscout"
-if [ -d "$APP_DIR" ]; then
-  rm -rf "$APP_DIR"
-fi
+exit 0
+EOL
+chmod 755 "$DEBIAN_DIR/prerm"
 
-# ── Remove per-user SponsorScout configuration and Playwright browser cache ──
-# Iterates over all user home directories to ensure complete cleanup,
-# matching the Windows installer which removes {userappdata}\SponsorScout,
-# {localappdata}\SponsorScout, and {localappdata}\ms-playwright.
-for USER_HOME in "/root" "$HOME" /home/*; do
-  # Remove user config/data directory
-  if [ -d "$USER_HOME/.sponsorscout" ]; then
-    rm -rf "$USER_HOME/.sponsorscout"
-  fi
-  if [ -f "$USER_HOME/.sponsorscout" ]; then
-    rm -f "$USER_HOME/.sponsorscout"
-  fi
+cat > "$DEBIAN_DIR/postrm" <<'EOL'
+#!/bin/sh
+set -eu
 
-  # Remove Playwright Chromium browser cache (~150 MB per user)
-  PLAYWRIGHT_CACHE="$USER_HOME/.cache/ms-playwright"
-  if [ -d "$PLAYWRIGHT_CACHE" ]; then
-    echo "SponsorScout: removing Playwright browser cache: $PLAYWRIGHT_CACHE"
-    rm -rf "$PLAYWRIGHT_CACHE"
+# dpkg calls postrm for upgrades as well as removals. Never purge user data
+# during an upgrade; purge it only for an actual uninstall/remove.
+ACTION="${1:-remove}"
+case "$ACTION" in
+  remove|purge) ;;
+  *) exit 0 ;;
+esac
+
+# Stop the GUI before removing the package files and database.
+for sig in TERM KILL; do
+  pids=$(pgrep -x "SponsorScout" 2>/dev/null || true)
+  if [ -n "$pids" ]; then
+    echo "SponsorScout: stopping running instance(s) (SIG$sig)?"
+    # shellcheck disable=SC2086
+    kill -s "$sig" $pids 2>/dev/null || true
+    sleep 1
   fi
 done
+
+# dpkg normally removes package-owned files itself. Keep this explicit cleanup
+# for interrupted upgrades and older installations that left the app tree.
+APP_DIR="/opt/sponsorscout"
+if [ -d "$APP_DIR" ]; then
+  rm -rf -- "$APP_DIR"
+fi
+
+purge_path() {
+  target="$1"
+  case "$target" in
+    /*) ;;
+    *) echo "SponsorScout: refusing non-absolute purge path: $target" >&2; return 0 ;;
+  esac
+  case "$target" in
+    "/"|"/bin"|"/boot"|"/dev"|"/etc"|"/home"|"/lib"|"/lib64"|"/media"|"/mnt"|"/opt"|"/proc"|"/root"|"/run"|"/sbin"|"/srv"|"/sys"|"/tmp"|"/usr"|"/var")
+      echo "SponsorScout: refusing unsafe purge path: $target" >&2
+      return 0
+      ;;
+  esac
+  if [ -d "$target" ]; then
+    echo "SponsorScout: removing data directory: $target"
+    rm -rf -- "$target"
+  elif [ -e "$target" ]; then
+    rm -f -- "$target"
+  fi
+}
+
+# Remove the standard per-user data directory for every real account.
+if command -v getent >/dev/null 2>&1; then
+  getent passwd | while IFS=: read -r username _ uid _ _ home _; do
+    case "$uid" in
+      ''|*[!0-9]*) continue ;;
+    esac
+    if [ "$uid" -ge 1000 ] || [ "$username" = "root" ]; then
+      case "$home" in
+        ""|/|/nonexistent|/dev/null) continue ;;
+      esac
+      purge_path "$home/.sponsorscout"
+    fi
+  done
+else
+  purge_path "$HOME/.sponsorscout"
+  purge_path "/root/.sponsorscout"
+fi
+
+# Also clean explicit overrides when dpkg inherited them from the invoking
+# environment. This does not inspect arbitrary files or delete a drive root.
+if [ -n "${SPONSORSCOUT_DATA_DIR:-}" ]; then
+  purge_path "$SPONSORSCOUT_DATA_DIR"
+fi
+if [ -n "${SPONSORSCOUT_DB_PATH:-}" ]; then
+  rm -f -- "$SPONSORSCOUT_DB_PATH" "$SPONSORSCOUT_DB_PATH-wal" "$SPONSORSCOUT_DB_PATH-shm"
+fi
 
 exit 0
 EOL

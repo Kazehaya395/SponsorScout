@@ -4,10 +4,9 @@ Extracted from ats_portal_scanner.py / career_scanner.py.
 
 Only what both scanners genuinely share lives here: the lean low-resource
 Chromium flag set (``BROWSER_ARGS`` / ``LOW_RESOURCE_BROWSER_ARGS``) and
-host-adaptive pool sizing (``recommended_workers``).  Each scanner keeps its
-own text helpers and CSV schemas next to the code that uses them (39-column
-output / 15-column scan log / error log), so ``tools/check_dev_sync.py`` can
-keep every copy honest against its dev script.
+host-adaptive pool sizing (``recommended_workers``). Each scanner keeps its
+own text helpers and CSV schemas next to the code that uses them, preserving
+the pipeline's 39-column jobs output and 15-column scan log.
 """
 
 

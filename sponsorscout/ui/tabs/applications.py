@@ -17,7 +17,14 @@ from sponsorscout.db import database as db
 from sponsorscout.i18n import _
 
 APP_STATUSES = ["saved", "applied", "interview", "offer", "rejected"]
+# Canonical column order (defines the indexes); only the visible labels are
+# translated — see _header_labels().
 HEADERS = ["Company", "Title", "Status", "Saved on", "URL"]
+
+
+def _header_labels() -> list:
+    """HEADERS translated for display, in the same (fixed) column order."""
+    return [_(h) for h in HEADERS]
 
 
 class ApplicationsTab(QWidget):
@@ -51,7 +58,7 @@ class ApplicationsTab(QWidget):
 
         # ── Applications table ───────────────────────────────────────────────
         self.table = QTableWidget(0, len(HEADERS))
-        self.table.setHorizontalHeaderLabels(HEADERS)
+        self.table.setHorizontalHeaderLabels(_header_labels())
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SingleSelection)

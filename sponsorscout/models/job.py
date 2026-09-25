@@ -9,8 +9,8 @@ class Job:
     Each field maps 1:1 to a column of the ``jobs`` table defined in
     ``sponsorscout/db/schema.sql``. Adding a new column to the DB without
     adding it here will silently keep flowing through as a dict key in
-    scanner code, which is exactly the inconsistency that
-    SponsorScout_Codebase_Analysis.md \u00a73.4 / \u00a75.6 warned about.
+    scanner code — the schema/model drift failure mode documented in
+    ``CODEBASE.md`` (Conventions and Gotchas).
     """
 
     external_id: str

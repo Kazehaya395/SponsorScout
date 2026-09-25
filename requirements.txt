@@ -8,7 +8,8 @@ PySide6>=6.5.0
 # Build-time only: used by build_exe.ps1 / build_deb.sh to produce the bundle.
 pyinstaller>=6.0.0
 
-# Dev/test-only deps live in requirements-dev.txt (pytest, etc.).
+# Dev/test-only deps (pytest) are NOT here — install them with:
+#   pip install ".[dev]"
 # Explicitly-removed runtime deps (verified unused by the shipped package):
 #   pandas, Pillow, beautifulsoup4, lxml, pytest
 # They were only used by legacy code under `extra_for_dev_purpose` (not bundled)

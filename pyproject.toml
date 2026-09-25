@@ -24,8 +24,8 @@ dependencies = [
 ]
 
 # Dev/test-only dependencies (pytest, pyinstaller) are intentionally NOT listed
-# here so an editable install for the app stays lean. Install them separately:
-#   pip install -r requirements-dev.txt
+# here so an editable install for the app stays lean. Install them with:
+#   pip install ".[dev]"
 # Removed from this package's runtime deps (verified unused by the shipped app):
 #   beautifulsoup4, lxml, Pillow, pandas — legacy `extra_for_dev_purpose` only.
 
@@ -35,12 +35,13 @@ dev = [
     "pyinstaller>=6.0.0",
 ]
 
-# Tests removed; no test extras.
+# Test suite lives in sponsorscout/tests and runs with pytest:
+#   pip install ".[dev]"  then  python -m pytest sponsorscout/tests
 
 [project.urls]
 Homepage = "https://sponsorscout.app"
-Repository = "https://github.com/your-org/SponsorScout"
-Issues = "https://github.com/your-org/SponsorScout/issues"
+Repository = "https://github.com/Kazake95/SponsorScout"
+Issues = "https://github.com/Kazake95/SponsorScout/issues"
 
 [project.scripts]
 sponsorscout = "sponsorscout.main:main"
