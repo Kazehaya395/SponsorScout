@@ -229,10 +229,18 @@ python -m playwright install chromium
 ```
 (requires Inno Setup 6/7; bundles Playwright Chromium)
 
-**Linux package:**
+**Linux package (Debian / Ubuntu):**
 ```bash
 ./build_deb.sh                # -> dist/sponsorscout_<version>_amd64.deb
 ```
+Run it as your normal user: **do not use `sudo`**. The script creates an
+isolated build environment in `.build/deb-venv`, so it never modifies the
+system Python. If Python's venv module is missing, install it once with
+`sudo apt install python3-venv`, then run `./build_deb.sh` again.
+Packaging the ~1.4 GB payload (PySide6 + bundled Chromium) is the slow step and
+prints how long it took; the `.deb` only appears in `dist/` once it is complete.
+For a much faster build that requires dpkg >= 1.21.18 to install, use
+`DEB_COMPRESSION=zstd ./build_deb.sh`.
 
 **Tests:**
 ```bash
@@ -247,6 +255,7 @@ python -m pytest sponsorscout/tests
 - Runtime: **PySide6**, **requests**, **playwright** (`requirements.txt`)
 - Playwright Chromium: `python -m playwright install chromium`
 - Dev/test: **pytest**, **pyinstaller** (`pip install ".[dev]"`)
+- Linux packaging: `python3`, `python3-venv`, and `dpkg` (`sudo apt install python3-venv`)
 
 ---
 
@@ -497,10 +506,18 @@ python -m playwright install chromium
 ```
 (richiede Inno Setup 6/7; include Playwright Chromium)
 
-**Pacchetto Linux:**
+**Pacchetto Linux (Debian / Ubuntu):**
 ```bash
 ./build_deb.sh                # -> dist/sponsorscout_<versione>_amd64.deb
 ```
+Esegui lo script come utente normale: **non usare `sudo`**. Lo script crea un
+ambiente di compilazione isolato in `.build/deb-venv`, quindi non modifica mai
+Python di sistema. Se manca il modulo venv, installalo una sola volta con
+`sudo apt install python3-venv`, poi esegui di nuovo `./build_deb.sh`.
+La compressione del payload da ~1,4 GB (PySide6 + Chromium incluso) e il passo
+piu lento e ne stampa la durata; il file `.deb` compare in `dist/` solo quando
+e completo. Per una build molto piu veloce, che richiede dpkg >= 1.21.18 per
+l'installazione, usa `DEB_COMPRESSION=zstd ./build_deb.sh`.
 
 **Test:**
 ```bash
@@ -515,6 +532,7 @@ python -m pytest sponsorscout/tests
 - Runtime: **PySide6**, **requests**, **playwright** (`requirements.txt`)
 - Playwright Chromium: `python -m playwright install chromium`
 - Solo sviluppo/test: **pytest**, **pyinstaller** (`pip install ".[dev]"`)
+- Pacchetto Linux: `python3`, `python3-venv` e `dpkg` (`sudo apt install python3-venv`)
 
 ---
 

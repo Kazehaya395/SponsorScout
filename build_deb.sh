@@ -7,7 +7,67 @@ cd "$ROOT_DIR"
 APP_NAME="SponsorScout"
 PKG_NAME="sponsorscout"
 DEB_ARCH="amd64"
-VERSION="$(python3 - <<'PY'
+
+BUILD_DIR=".build/deb"
+VENV_DIR=".build/deb-venv"
+DIST_DIR="dist"
+APP_DIR="$BUILD_DIR/opt/$PKG_NAME"
+DEBIAN_DIR="$BUILD_DIR/DEBIAN"
+
+need() {
+  command -v "$1" >/dev/null 2>&1 || { echo "Missing required command: $1" >&2; exit 1; }
+}
+
+# dpkg-deb only writes a local .deb file, so building must never run as root.
+# Running with sudo would also create root-owned build artifacts and could
+# trigger Debian's PEP 668 "externally-managed-environment" protection.
+if [ "$(id -u)" -eq 0 ]; then
+  cat >&2 <<'EOF'
+ERROR: do not run build_deb.sh with sudo.
+This script only creates dist/sponsorscout_<version>_amd64.deb and does not
+need root. Run it as your normal user:
+
+  ./build_deb.sh
+EOF
+  exit 1
+fi
+
+need python3
+need dpkg-deb
+
+# Debian/Ubuntu may ship Python without the venv module. Fail with an
+# actionable message instead of falling back to a system-wide pip install.
+if ! python3 -c "import venv" >/dev/null 2>&1; then
+  cat >&2 <<'EOF'
+ERROR: Python's venv module is missing.
+Install it first, then run ./build_deb.sh again:
+
+  sudo apt install python3-venv
+EOF
+  exit 1
+fi
+
+# All build dependencies live in this disposable, git-ignored environment.
+# This avoids PEP 668 and never modifies the system Python installation.
+if [ -e "$VENV_DIR" ] && [ ! -w "$VENV_DIR" ]; then
+  echo "ERROR: $VENV_DIR is not writable by the current user." >&2
+  echo "A previous sudo build may have created it. Remove it once, then retry:" >&2
+  echo "  sudo rm -rf $VENV_DIR && ./build_deb.sh" >&2
+  exit 1
+fi
+
+if [ ! -x "$VENV_DIR/bin/python" ]; then
+  echo "Creating build virtual environment at $VENV_DIR..."
+  if ! python3 -m venv "$VENV_DIR"; then
+    echo "ERROR: could not create $VENV_DIR" >&2
+    echo "If it exists with root-owned files, remove it and retry:" >&2
+    echo "  sudo rm -rf $VENV_DIR && ./build_deb.sh" >&2
+    exit 1
+  fi
+fi
+PYTHON="$VENV_DIR/bin/python"
+
+VERSION="$("$PYTHON" - <<'PY'
 from pathlib import Path
 import re
 text = Path('pyproject.toml').read_text(encoding='utf-8')
@@ -18,34 +78,13 @@ print(m.group(1))
 PY
 )"
 
-BUILD_DIR=".build/deb"
-DIST_DIR="dist"
-APP_DIR="$BUILD_DIR/opt/$PKG_NAME"
-DEBIAN_DIR="$BUILD_DIR/DEBIAN"
-
-need() {
-    command -v "$1" >/dev/null 2>&1 || { echo "Missing required command: $1" >&2; exit 1; }
-}
-
-need python3
-need dpkg-deb
-
-# Repair pip if it is in a broken state (e.g. a half-finished self-upgrade
-# left pip._internal.operations.build missing). We detect the breakage by
-# trying to import the internal module, then delete the truncated package and
-# re-bootstrap pip from its bundled wheel via ensurepip.
-if ! python3 -c "import pip._internal.operations.build" >/dev/null 2>&1; then
-  echo "Repairing broken pip installation…"
-  SITE="$(python3 -c 'import site; print(site.getsitepackages()[0])')"
-  rm -rf "$SITE/pip" "$SITE"/pip-*.dist-info
-  python3 -m ensurepip --upgrade >/dev/null 2>&1 || python3 -m ensurepip >/dev/null 2>&1 || true
-fi
-python3 -m pip install -r requirements.txt >/dev/null
+echo "Installing build dependencies into $VENV_DIR..."
+PIP_DISABLE_PIP_VERSION_CHECK=1 "$PYTHON" -m pip install -r requirements.txt
 
 rm -rf "$BUILD_DIR" "$DIST_DIR"
 mkdir -p "$APP_DIR" "$DEBIAN_DIR" "$DIST_DIR"
 
-python3 -m PyInstaller \
+"$PYTHON" -m PyInstaller \
   --clean \
   --noconfirm \
   --windowed \
@@ -96,7 +135,7 @@ find "$APP_DIR" -type d \( -name "tests" -o -name "test" -o -name "testing" \) \
 # ~/.cache/ms-playwright only, so the installed app had no browser at all and
 # every `provider=auto` career target failed with "Executable doesn't exist".
 echo "Installing Playwright Chromium into bundle ($APP_DIR/_playwright)…"
-PLAYWRIGHT_BROWSERS_PATH="$APP_DIR/_playwright" python3 -m playwright install chromium
+PLAYWRIGHT_BROWSERS_PATH="$APP_DIR/_playwright" "$PYTHON" -m playwright install chromium
 if [ ! -d "$APP_DIR/_playwright" ]; then
   echo "ERROR: Playwright browsers were NOT installed into $APP_DIR/_playwright —" >&2
   echo "the packaged app could not scan SPA career portals. Aborting build." >&2
@@ -332,11 +371,80 @@ if [ ! -x "$APP_DIR/$APP_NAME" ]; then
   exit 1
 fi
 
+# ── Package ─────────────────────────────────────────────────────────────────
+# The staged tree is ~1.4 GB (PySide6 + the bundled Playwright Chromium), so
+# compression is by far the slowest step of this build. Three fixes:
+#
+#   1. xz level 1 instead of the dpkg default (xz -6): several times faster on
+#      this payload. xz is kept (rather than zstd) because a zstd .deb can only
+#      be installed by dpkg >= 1.21.18, which would break older targets.
+#      Override with DEB_COMPRESSION=zstd DEB_COMPRESSION_LEVEL=3 ./build_deb.sh
+#   2. --root-owner-group: an unprivileged build must not record the builder's
+#      uid/gid in the archive. Without it dpkg warns
+#      "unusual owner or group 1000:1000" and installs /opt/sponsorscout
+#      owned by that uid instead of root.
+#   3. Build into a .partial file and rename only on success, so an interrupted
+#      or in-progress build never leaves a truncated .deb that looks complete.
+DEB_OUT="$DIST_DIR/${PKG_NAME}_${VERSION}_${DEB_ARCH}.deb"
+DEB_TMP="$DIST_DIR/.${PKG_NAME}_${VERSION}_${DEB_ARCH}.deb.partial"
+rm -f "$DEB_TMP" "$DEB_OUT"
+
+# Probe what this dpkg actually supports instead of guessing from its version.
+PROBE_ROOT="$(mktemp -d)"
+trap 'rm -rf "$PROBE_ROOT"' EXIT
+PROBE_DIR="$PROBE_ROOT/control"
+mkdir -p "$PROBE_DIR/DEBIAN"
+cat > "$PROBE_DIR/DEBIAN/control" <<EOL
+Package: sponsorscout-probe
+Version: 0
+Architecture: $DEB_ARCH
+Maintainer: SponsorScout <sponsorscout@localhost>
+Description: capability probe
+EOL
+
+DEB_FLAGS=()
+if dpkg-deb --build --root-owner-group "$PROBE_DIR" "$PROBE_ROOT/probe.deb" >/dev/null 2>&1; then
+  DEB_FLAGS+=(--root-owner-group)
+else
+  echo "WARNING: this dpkg does not support --root-owner-group (needs dpkg >= 1.19)." >&2
+  echo "         The package would install files owned by uid $(id -u)." >&2
+fi
+
+COMPRESS_ARGS=()
+COMPRESS_LABEL="dpkg default"
+if dpkg-deb "${DEB_FLAGS[@]+"${DEB_FLAGS[@]}"}" -Z xz -S 1 \
+     --build "$PROBE_DIR" "$PROBE_ROOT/probe-xz.deb" >/dev/null 2>&1; then
+  COMPRESS_ARGS=(-Z xz -S 1)
+  COMPRESS_LABEL="xz -1"
+else
+  echo "WARNING: this dpkg cannot set the compression level; using its default." >&2
+  echo "         Upgrading dpkg (>= 1.19) makes packaging several times faster." >&2
+fi
+
+if [ "${DEB_COMPRESSION:-auto}" != "auto" ]; then
+  DEB_COMPRESSION_LEVEL="${DEB_COMPRESSION_LEVEL:-3}"
+  if dpkg-deb "${DEB_FLAGS[@]+"${DEB_FLAGS[@]}"}" \
+       -Z "$DEB_COMPRESSION" -S "$DEB_COMPRESSION_LEVEL" \
+       --build "$PROBE_DIR" "$PROBE_ROOT/probe-c.deb" >/dev/null 2>&1; then
+    COMPRESS_ARGS=(-Z "$DEB_COMPRESSION" -S "$DEB_COMPRESSION_LEVEL")
+    COMPRESS_LABEL="$DEB_COMPRESSION -$DEB_COMPRESSION_LEVEL"
+  else
+    echo "WARNING: this dpkg does not support -Z $DEB_COMPRESSION; keeping the default." >&2
+  fi
+fi
+
 echo "Binary size: $(du -sh "$APP_DIR/$APP_NAME" | cut -f1)"
 echo "Installed package tree size: $(du -sh "$APP_DIR" | cut -f1)"
+echo "Compressing $(du -sm "$BUILD_DIR" | cut -f1) MB with ${COMPRESS_LABEL} (packaging is the slow step)…"
 
-# dpkg-deb does not require root when the package tree is staged locally.
-dpkg-deb --build "$BUILD_DIR" "$DIST_DIR/${PKG_NAME}_${VERSION}_${DEB_ARCH}.deb" >/dev/null
-
-DEB_SIZE=$(du -sh "$DIST_DIR/${PKG_NAME}_${VERSION}_${DEB_ARCH}.deb" | cut -f1)
-echo "Built $DIST_DIR/${PKG_NAME}_${VERSION}_${DEB_ARCH}.deb  (${DEB_SIZE})"
+PACKAGE_START=$(date +%s)
+if ! dpkg-deb "${DEB_FLAGS[@]+"${DEB_FLAGS[@]}"}" "${COMPRESS_ARGS[@]+"${COMPRESS_ARGS[@]}"}" \
+     --build "$BUILD_DIR" "$DEB_TMP"; then
+  rm -f "$DEB_TMP"
+  echo "ERROR: dpkg-deb failed to build the package." >&2
+  exit 1
+fi
+mv -f "$DEB_TMP" "$DEB_OUT"
+echo "Packaging took $(( $(date +%s) - PACKAGE_START ))s"
+echo "Built $DEB_OUT  ($(du -sh "$DEB_OUT" | cut -f1))"
+echo "Install with: sudo dpkg -i $DEB_OUT"
