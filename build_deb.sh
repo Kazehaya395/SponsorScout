@@ -410,26 +410,55 @@ if [ ! -x "$APP_DIR/$APP_NAME" ]; then
 fi
 
 # ── Package ─────────────────────────────────────────────────────────────────
-# The staged tree is ~1.4 GB (PySide6 + the bundled Playwright Chromium), so
-# compression is by far the slowest step of this build. Three fixes:
+# Notes for this step:
 #
-#   1. xz level 1 instead of the dpkg default (xz -6): several times faster on
-#      this payload. xz is kept (rather than zstd) because a zstd .deb can only
-#      be installed by dpkg >= 1.21.18, which would break older targets.
-#      Override with DEB_COMPRESSION=zstd DEB_COMPRESSION_LEVEL=3 ./build_deb.sh
-#   2. --root-owner-group: an unprivileged build must not record the builder's
-#      uid/gid in the archive. Without it dpkg warns
-#      "unusual owner or group 1000:1000" and installs /opt/sponsorscout
-#      owned by that uid instead of root.
-#   3. Build into a .partial file and rename only on success, so an interrupted
-#      or in-progress build never leaves a truncated .deb that looks complete.
+#   * The staged tree is ~1.5 GB (PySide6 + the bundled Playwright Chromium), so
+#     compression dominates the build time. We probe for the fastest
+#     universally-installable compressor this machine actually has, rather than
+#     trusting the dpkg default (often xz -6, sometimes gzip or nothing at all).
+#   * --root-owner-group: an unprivileged build must not record the builder's
+#     uid/gid, which otherwise installs /opt/sponsorscout owned by uid 1000.
+#   * The .partial + rename keeps a half-written archive from looking finished.
+#
+# zstd is opt-in only (DEB_COMPRESSION=zstd ./build_deb.sh) because a zstd .deb
+# can only be installed by dpkg >= 1.21.18.
 DEB_OUT="$DIST_DIR/${PKG_NAME}_${VERSION}_${DEB_ARCH}.deb"
 DEB_TMP="$DIST_DIR/.${PKG_NAME}_${VERSION}_${DEB_ARCH}.deb.partial"
 rm -f "$DEB_TMP" "$DEB_OUT"
 
+# ── Filesystem permissions ──────────────────────────────────────────────────
+# WSL drvfs mounts (/mnt/...), NTFS and FAT report every file as 0777 and ignore
+# chmod. dpkg-deb then refuses the control directory outright ("control
+# directory has bad permissions 777"), and even if it did not, every installed
+# file would be world-writable. Normalise in place when the filesystem honours
+# chmod; otherwise stage the tree on a Linux filesystem and build from there.
+BUILD_TREE="$BUILD_DIR"
+STAGE_DIR=""
+if chmod 755 "$DEBIAN_DIR" 2>/dev/null \
+   && [ "$(stat -c '%a' "$DEBIAN_DIR" 2>/dev/null || echo 777)" = "755" ]; then
+  echo "Normalising package permissions in place…"
+  find "$BUILD_DIR" -type d -exec chmod 755 {} + 2>/dev/null || true
+  find "$BUILD_DIR" -type f -exec chmod go-w {} + 2>/dev/null || true
+else
+  echo "This filesystem does not support Unix permissions (WSL /mnt, NTFS, FAT)." >&2
+  echo "Staging the package tree on a Linux filesystem instead…" >&2
+  STAGE_DIR="$(mktemp -d)"
+  cp -a "$BUILD_DIR/." "$STAGE_DIR/"
+  chmod -R u=rwX,go=rX "$STAGE_DIR"
+  chmod 755 "$STAGE_DIR/DEBIAN"
+  chmod 755 "$STAGE_DIR/DEBIAN/"* 2>/dev/null || true
+  chmod 755 "$STAGE_DIR/usr/bin/sponsorscout" 2>/dev/null || true
+  BUILD_TREE="$STAGE_DIR"
+fi
+
 # Probe what this dpkg actually supports instead of guessing from its version.
 PROBE_ROOT="$(mktemp -d)"
-trap 'rm -rf "$PROBE_ROOT"' EXIT
+cleanup() {
+  rm -rf "$PROBE_ROOT"
+  if [ -n "$STAGE_DIR" ]; then rm -rf "$STAGE_DIR"; fi
+  return 0
+}
+trap cleanup EXIT
 PROBE_DIR="$PROBE_ROOT/control"
 mkdir -p "$PROBE_DIR/DEBIAN"
 cat > "$PROBE_DIR/DEBIAN/control" <<EOL
@@ -448,38 +477,46 @@ else
   echo "         The package would install files owned by uid $(id -u)." >&2
 fi
 
+# A compressor is only usable if both the dpkg and the matching tool exist
+# (xz needs xz-utils, zstd needs dpkg >= 1.21.18), so try them in order.
+probe_compression() {
+  dpkg-deb "${DEB_FLAGS[@]+"${DEB_FLAGS[@]}"}" -Z "$1" -S "$2" \
+       --build "$PROBE_DIR" "$PROBE_ROOT/probe-$1.deb" >/dev/null 2>&1
+}
+
 COMPRESS_ARGS=()
 COMPRESS_LABEL="dpkg default"
-if dpkg-deb "${DEB_FLAGS[@]+"${DEB_FLAGS[@]}"}" -Z xz -S 1 \
-     --build "$PROBE_DIR" "$PROBE_ROOT/probe-xz.deb" >/dev/null 2>&1; then
+if probe_compression xz 1; then
   COMPRESS_ARGS=(-Z xz -S 1)
   COMPRESS_LABEL="xz -1"
-else
-  echo "WARNING: this dpkg cannot set the compression level; using its default." >&2
-  echo "         Upgrading dpkg (>= 1.19) makes packaging several times faster." >&2
+elif probe_compression gzip 1; then
+  COMPRESS_ARGS=(-Z gzip -S 1)
+  COMPRESS_LABEL="gzip -1"
 fi
+echo "Compression: ${COMPRESS_LABEL}"
 
 if [ "${DEB_COMPRESSION:-auto}" != "auto" ]; then
   DEB_COMPRESSION_LEVEL="${DEB_COMPRESSION_LEVEL:-3}"
-  if dpkg-deb "${DEB_FLAGS[@]+"${DEB_FLAGS[@]}"}" \
-       -Z "$DEB_COMPRESSION" -S "$DEB_COMPRESSION_LEVEL" \
-       --build "$PROBE_DIR" "$PROBE_ROOT/probe-c.deb" >/dev/null 2>&1; then
+  if probe_compression "$DEB_COMPRESSION" "$DEB_COMPRESSION_LEVEL"; then
     COMPRESS_ARGS=(-Z "$DEB_COMPRESSION" -S "$DEB_COMPRESSION_LEVEL")
     COMPRESS_LABEL="$DEB_COMPRESSION -$DEB_COMPRESSION_LEVEL"
   else
-    echo "WARNING: this dpkg does not support -Z $DEB_COMPRESSION; keeping the default." >&2
+    echo "WARNING: -Z $DEB_COMPRESSION is not available here; keeping $COMPRESS_LABEL." >&2
   fi
 fi
 
 echo "Binary size: $(du -sh "$APP_DIR/$APP_NAME" | cut -f1)"
 echo "Installed package tree size: $(du -sh "$APP_DIR" | cut -f1)"
-echo "Compressing $(du -sm "$BUILD_DIR" | cut -f1) MB with ${COMPRESS_LABEL} (packaging is the slow step)…"
+echo "Compressing $(du -sm "$BUILD_TREE" | cut -f1) MB with ${COMPRESS_LABEL} (packaging is the slow step)…"
 
 PACKAGE_START=$(date +%s)
 if ! dpkg-deb "${DEB_FLAGS[@]+"${DEB_FLAGS[@]}"}" "${COMPRESS_ARGS[@]+"${COMPRESS_ARGS[@]}"}" \
-     --build "$BUILD_DIR" "$DEB_TMP"; then
+     --build "$BUILD_TREE" "$DEB_TMP"; then
   rm -f "$DEB_TMP"
   echo "ERROR: dpkg-deb failed to build the package." >&2
+  echo "If it complained about directory permissions, this repository lives on a" >&2
+  echo "filesystem that cannot store them (WSL /mnt, NTFS, FAT). Copy the project" >&2
+  echo "to a Linux filesystem such as ~/$(basename "$PWD") and build again." >&2
   exit 1
 fi
 mv -f "$DEB_TMP" "$DEB_OUT"

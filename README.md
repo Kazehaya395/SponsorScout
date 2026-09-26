@@ -241,6 +241,10 @@ Packaging the ~1.4 GB payload (PySide6 + bundled Chromium) is the slow step and
 prints how long it took; the `.deb` only appears in `dist/` once it is complete.
 For a much faster build that requires dpkg >= 1.21.18 to install, use
 `DEB_COMPRESSION=zstd ./build_deb.sh`.
+Building from a Windows drive mounted in WSL (`/mnt/c/...` and friends) is not
+recommended: those filesystems cannot store Unix permissions, so the build
+detects it and stages the package in `/tmp`. For the fastest and most
+reliable build, copy the project to a Linux filesystem such as `~/sponsorscout`.
 
 **Tests:**
 ```bash
@@ -518,6 +522,11 @@ La compressione del payload da ~1,4 GB (PySide6 + Chromium incluso) e il passo
 piu lento e ne stampa la durata; il file `.deb` compare in `dist/` solo quando
 e completo. Per una build molto piu veloce, che richiede dpkg >= 1.21.18 per
 l'installazione, usa `DEB_COMPRESSION=zstd ./build_deb.sh`.
+
+Non e consigliato compilare da un disco Windows montato in WSL (`/mnt/c/...` e
+simili): quei filesystem non possono memorizzare i permessi Unix, quindi la
+build lo rileva e prepara il pacchetto in `/tmp`. Per una build piu rapida e
+affidabile, copia il progetto su un filesystem Linux come `~/sponsorscout`.
 
 **Test:**
 ```bash

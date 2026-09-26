@@ -56,11 +56,26 @@ def test_debian_build_uses_local_venv_and_does_not_require_sudo():
 def test_debian_packaging_sets_root_owner_and_reports_timing():
     # The unprivileged build must not record the builder's uid/gid.
     assert "--root-owner-group" in DEB
-    # xz -1 instead of the slow dpkg default (xz -6) on the ~1.4 GB payload.
-    assert "COMPRESS_ARGS=(-Z xz -S 1)" in DEB
+    # xz -1 instead of the slow dpkg default (xz -6) on the ~1.5 GB payload.
+    assert "probe_compression xz 1" in DEB
     # zstd is opt-in only, because older dpkg cannot install a zstd .deb.
     assert 'DEB_COMPRESSION:-auto' in DEB
     # Never leave a truncated archive that looks like a finished package.
     assert ".deb.partial" in DEB
     assert 'mv -f "$DEB_TMP" "$DEB_OUT"' in DEB
     assert "Packaging took" in DEB
+
+
+def test_debian_packaging_handles_filesystems_without_permissions():
+    # WSL /mnt, NTFS and FAT report 0777 and ignore chmod, which makes dpkg-deb
+    # abort with "control directory has bad permissions 777".
+    assert "does not support Unix permissions" in DEB
+    assert "chmod 755 \"$DEBIAN_DIR\"" in DEB
+    assert "stat -c '%a'" in DEB
+    # Fall back to a Linux filesystem when the in-place chmod has no effect.
+    assert 'STAGE_DIR="$(mktemp -d)"' in DEB
+    assert 'cp -a "$BUILD_DIR/." "$STAGE_DIR/"' in DEB
+    # The build must run against whichever tree is in use.
+    assert 'BUILD_TREE="$BUILD_DIR"' in DEB
+    assert 'BUILD_TREE="$STAGE_DIR"' in DEB
+    assert '--build "$BUILD_TREE" "$DEB_TMP"' in DEB
