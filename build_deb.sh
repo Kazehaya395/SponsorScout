@@ -35,7 +35,7 @@ fi
 need python3
 need dpkg-deb
 
-# Debian/Ubuntu may ship Python without the venv module. Fail with an
+# Debian/Ubuntu may ship Python without the venv/ensurepip modules. Fail with an
 # actionable message instead of falling back to a system-wide pip install.
 if ! python3 -c "import venv" >/dev/null 2>&1; then
   cat >&2 <<'EOF'
@@ -56,7 +56,22 @@ if [ -e "$VENV_DIR" ] && [ ! -w "$VENV_DIR" ]; then
   exit 1
 fi
 
-if [ ! -x "$VENV_DIR/bin/python" ]; then
+# A venv can be present and even executable yet have no working pip (for
+# example it was created while python3-venv was still missing, or a previous
+# run was interrupted midway). Test that pip actually runs inside it instead of
+# trusting the mere existence of bin/python, and rebuild the venv when it is
+# not usable. This is what caused "bin/python: No module named pip".
+venv_python="$VENV_DIR/bin/python"
+venv_has_pip() {
+  [ -x "$1" ] && "$1" -m pip --version >/dev/null 2>&1
+}
+
+if [ -e "$VENV_DIR" ] && ! venv_has_pip "$venv_python"; then
+  echo "Existing $VENV_DIR has no working pip - recreating it..."
+  rm -rf "$VENV_DIR"
+fi
+
+if [ ! -x "$venv_python" ]; then
   echo "Creating build virtual environment at $VENV_DIR..."
   if ! python3 -m venv "$VENV_DIR"; then
     echo "ERROR: could not create $VENV_DIR" >&2
@@ -65,7 +80,30 @@ if [ ! -x "$VENV_DIR/bin/python" ]; then
     exit 1
   fi
 fi
-PYTHON="$VENV_DIR/bin/python"
+
+# Some minimal installs produce a venv whose pip module is present but not
+# bootstrapped; ask ensurepip to finish the job before giving up.
+if ! venv_has_pip "$venv_python"; then
+  echo "Bootstrapping pip inside $VENV_DIR..."
+  "$venv_python" -m ensurepip --upgrade >/dev/null 2>&1 || true
+fi
+
+if ! venv_has_pip "$venv_python"; then
+  cat >&2 <<EOF
+ERROR: could not provide pip inside $VENV_DIR.
+The venv module is available but ensurepip/pip is missing. Install the full
+venv package and try again:
+
+  sudo apt install python3-venv
+
+If it still fails, remove the environment and rebuild it:
+
+  rm -rf $VENV_DIR && ./build_deb.sh
+EOF
+  exit 1
+fi
+
+PYTHON="$venv_python"
 
 VERSION="$("$PYTHON" - <<'PY'
 from pathlib import Path

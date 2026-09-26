@@ -43,6 +43,14 @@ def test_debian_build_uses_local_venv_and_does_not_require_sudo():
     assert "python3 -m pip install" not in DEB
     assert "sudo apt install python3-venv" in DEB
     assert '[ ! -w "$VENV_DIR" ]' in DEB
+    # A venv may exist with a working bin/python but no pip, so the health of
+    # the environment must be verified with a real "pip --version" probe.
+    assert "venv_has_pip" in DEB
+    assert '-m pip --version' in DEB
+    assert "has no working pip - recreating it" in DEB
+    # ensurepip repairs a half-bootstrapped venv before giving up.
+    assert "-m ensurepip --upgrade" in DEB
+    assert "could not provide pip inside" in DEB
 
 
 def test_debian_packaging_sets_root_owner_and_reports_timing():
