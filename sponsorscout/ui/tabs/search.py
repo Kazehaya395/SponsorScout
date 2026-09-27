@@ -6,9 +6,9 @@ Blue Card / Relocation are rendered as honest three-state values:
 
 import re
 
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, Qt, QTimer, Signal
 from PySide6.QtCore import QUrl
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtGui import QDesktopServices, QFont, QFontMetrics
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QHeaderView,
     QHBoxLayout, QLabel, QLineEdit, QMenu, QMessageBox, QPushButton,
@@ -43,12 +43,31 @@ URL_ROLE = Qt.UserRole + 1
 FILTER_ALL = "All"
 
 
+# ── Column width policy ─────────────────────────────────────────────────────
+# Qt's QHeaderView.sectionSizeHint() is NOT content aware for item views: it
+# returns a character-count estimate of the HEADER LABEL ("Company" -> 88 px
+# on the real dataset) while the widest company cell needs ~220 px. Sizing the
+# sections from it is exactly what cut "Amazon Italia", "Hamburg, Germany" and
+# "2026-05-12" down to "Amazon …" / "Hambur…" / "2026-0…" at a width the user
+# could not correct. The Search tab therefore measures the TEXT it is about to
+# show (see _content_widths) and keeps every column draggable.
+_COL_PADDING = 16      # 6 px QSS cell padding on both sides + 1 px grid line
+_COL_MAX_WIDTH = 520   # cap per column; a cut value keeps its full text as a
+                       # tooltip (_update_clipped_tooltips), so no data is lost
+_COL_MIN_WIDTH = 58    # keeps a (still draggable) empty column usable
+#: Columns whose cells are always one character (Y / N / ?): their width can
+#: never exceed their own header label, so the fit skips measuring them.
+_FIXED_CELL_COLS = frozenset({5, 6, 7})
+
+
 # ── Experience column rendering (FIX P0-30 display layer) ────────────────────
 # The scanners store the ABSOLUTE requirement exactly as the JD states it
-# ("4+ years", "3-5 years", "6 months", "None required", "Unknown") — see the
-# experience block in ats_scanner.py / career_scanner.py.  The table shows it in
-# compact form so ten columns still fit on a laptop screen; the verbatim text is
-# kept in the cell tooltip so no information is lost.
+# ("4+ years", "3-5 years", "6 months", "None required", "Mentioned",
+# "Unknown") — see the experience block in ats_scanner.py / career_scanner.py.
+# The table shows it in compact form ("4+", "3-5", "6 mo") and the verbatim
+# text stays in the cell tooltip, so nothing is lost. When the ad states
+# NEITHER a figure NOR a level there is exactly one value (see
+# _EXP_NO_STATEMENT) instead of two near-synonyms that read as two facts.
 #
 # Unit words are accepted in every language the seeds use (EN/DE/IT/NL/FR/ES),
 # so a requirement string produced by a non-English board still compacts.
@@ -70,6 +89,15 @@ _EXP_ABSENT = {"", "unknown", "n/a", "na", "not specified", "unspecified",
 _EXP_NONE_RX = re.compile(
     r"^(?:none|no\s|not required|without|nessun|nessuna|keine[ns]?|geen|"
     r"aucune|sin experiencia|niet vereist)", re.I)
+# The ONE value the column shows when the ad states neither a figure nor a
+# level.  It replaces the old "Referenced" / "NA" pair: two labels for "no
+# usable requirement" read as two different facts, and "Referenced" still left
+# the user guessing WHAT was referenced.  "?" is the honesty marker the
+# neighbouring Sponsor / Blue Card / Reloc columns already use for "no
+# evidence", so the whole table speaks one vocabulary.  Nothing is lost: the
+# cell tooltip still tells the two cases apart (_experience_tooltip), and the
+# stored scanner value is untouched — this is a display decision only.
+_EXP_NO_STATEMENT = "?"
 
 
 def _compact_experience(text: str) -> str:
@@ -80,11 +108,15 @@ def _compact_experience(text: str) -> str:
     """
     t = (text or "").strip()
     if t.lower() in _EXP_ABSENT:
-        return "NA"
+        return _EXP_NO_STATEMENT
     if _EXP_NONE_RX.match(t):
         return "None"
+    # The scanner stores the literal "Mentioned" for an ad that names
+    # experience without quantifying it ("Customer support experience is a
+    # plus").  That is not a requirement level, so it renders as the SAME
+    # single value as "never mentioned" instead of inventing a second label.
     if t.lower() == "mentioned":
-        return "Mentioned"
+        return _EXP_NO_STATEMENT
     m = _EXP_SPEC_RX.match(t)
     if not m:
         return t
@@ -104,19 +136,22 @@ def _experience_cell(required: str, level: str, min_years) -> str:
     """Experience cell for the Search table.
 
     Priority (user-specified):
-      1. the ABSOLUTE requirement stated in the JD      ('4+', '3-5')
-      2. the seniority level when the JD names one       ('Senior')
-      3. 'NA' when the JD carries no experience signal at all
+      1. the ABSOLUTE requirement stated in the JD  ('4+', '3-5', '6 mo')
+      2. 'None' when the ad explicitly asks for no experience
+      3. the seniority level when one is known   ('Senior', 'Lead')
+      4. '_EXP_NO_STATEMENT' ('?') — ONE single value whether the ad merely
+         names experience without a figure or never names it at all.  The
+         three-state columns next to it already say '?' for "no evidence", so
+         the column keeps a single, unambiguous vocabulary.
     """
     req = (required or "").strip()
     lvl = (level or "").strip()
-    # 'Mentioned' is weaker than a level word: fall through to the level.
+    # Stored "Mentioned" is weaker than a level word: fall through to the level
+    # so a level-only row keeps showing its level.
     if req and req.lower() not in _EXP_ABSENT and req.lower() != "mentioned":
         return _compact_experience(req)
     if lvl and lvl.lower() not in _EXP_ABSENT:
         return lvl
-    if req.lower() == "mentioned":
-        return "Mentioned"
     try:
         years = float(min_years) if min_years is not None else None
     except (TypeError, ValueError):
@@ -124,19 +159,33 @@ def _experience_cell(required: str, level: str, min_years) -> str:
     if years:
         return ("%d+" % int(years)) if years == int(years) \
             else ("%g+" % years)
-    return "NA"
+    return _EXP_NO_STATEMENT
 
 
 def _experience_tooltip(row) -> str:
-    """Verbatim requirement + which evidence produced it (hover detail)."""
+    """Hover detail for the Experience cell.
+
+    This is where the single "?" value is explained: the tooltip distinguishes
+    an ad that only NAME-DROPS experience from one that never mentions it, and
+    says so when the cell shows a level that came from the job title rather
+    than from the description.
+    """
     raw = str(row.get("experience_required") or "").strip()
-    if raw and raw.lower() not in _EXP_ABSENT:
-        src = str(row.get("experience_source") or "").strip()
-        body = raw
+    if raw:
         if raw.lower() == "mentioned":
-            body = _("Experience mentioned in the job description (no number stated)")
-        return "%s (%s)" % (body, src) if src and src != "none" else body
+            return _("The ad mentions experience without stating a figure or "
+                     "a level.")
+        if raw.lower() not in _EXP_ABSENT:
+            src = str(row.get("experience_source") or "").strip()
+            return "%s (%s)" % (raw, src) if src and src != "none" else raw
+    level = str(row.get("experience_level") or "").strip()
+    if level and level.lower() not in _EXP_ABSENT:
+        # Cell shows a level (board field / title inference): the old tooltip
+        # claimed "no requirement found" next to a non-empty cell.
+        return _("Seniority level \"{level}\" — the ad states no number of "
+                 "years.").format(level=level)
     return _("No experience requirement found in the job description")
+
 
 
 # Canonical level -> rank, so level-only rows still sort by seniority.
@@ -146,10 +195,10 @@ _EXP_LEVEL_RANK = {"intern": 0, "internship": 0, "entry": 1, "junior": 1,
 
 
 def _experience_sort_key(required: str, level: str, min_years):
-    """Numeric-first sort: stated years ascending, then level, then NA last.
+    """Numeric-first sort: stated years, then level, then the single '?' value.
 
     Without this the table would sort the new column as text, so '11' would
-    come before '3' and 'NA' would land between the numbers and the levels.
+    come before '3' and '?' would land between the numbers and the levels.
     """
     req = (required or "").strip()
     years = None
@@ -172,10 +221,8 @@ def _experience_sort_key(required: str, level: str, min_years):
         return (0, years, rank)
     if rank != 9:
         return (1, 0.0, rank)
-    # "Mentioned": a real reference without a number - sorts with the
-    # no-number group, after levels and before true NA rows.
-    if req and req.lower() not in _EXP_ABSENT:
-        return (1, 0.0, 9)
+    # The single "?" tier: a bare mention and "never mentioned" are the same
+    # statement about the ad, so they must not be split by the sort either.
     return (2, 0.0, 9)
 
 
@@ -210,6 +257,51 @@ def _verdict_cell(value: str) -> str:
     return "?"
 
 
+def _row_values(row) -> list:
+    """The ten display strings of one result row, in HEADERS order.
+
+    Single source of truth: _fill_rows() writes these into the table and the
+    column-width fit (_content_widths) measures THE SAME strings, so a column
+    can never be sized from something other than what it shows.
+    """
+    return [
+        row["title"],
+        row["company"],
+        row["country"],
+        row["location"],
+        row["_exp_display"],                        # rendered once in run_search
+        _verdict_cell(row["visa_sponsorship"]),
+        _verdict_cell(row["eu_blue_card_verdict"]),
+        _verdict_cell(row["relocation_support"]),
+        row["remote_type"],
+        (row["first_seen_at"] or "")[:10],
+    ]
+
+
+class _SearchHeader(QHeaderView):
+    """Table header that keeps every column draggable and content-sized.
+
+    Two Qt defaults fight the Search tab: a Stretch section cannot be dragged
+    at all, and a double-click resizes a section to ``sectionSizeHint()``,
+    which for an item view is a character-count estimate of the HEADER LABEL
+    ("Company" -> 88 px). Double-clicking a column that shows "Amazon Italia"
+    would therefore shrink it back to a clipped 88 px, i.e. the handler would
+    undo the very fix the user asked for. This subclass turns the double-click
+    into the tab's own measurement instead ("fit THIS column to its content").
+    """
+
+    fit_requested = Signal(int)  # logical section index
+
+    def mouseDoubleClickEvent(self, event):
+        col = self.logicalIndexAt(event.position().toPoint())
+        if col >= 0:
+            self.fit_requested.emit(col)
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
+
+
+
 class SearchTab(QWidget):
     application_saved = Signal(str)  # job url
 
@@ -221,6 +313,22 @@ class SearchTab(QWidget):
         # see _render_page).
         self._filtered_rows = []
         self._page = 0
+        # Column-width state (see the "Column width policy" block above):
+        #   _fitted_widths  widest content measured for each column
+        #   _user_widths    widths the USER dragged - never auto-fitted again
+        #   _granted_slack  Title's share of the leftover viewport width
+        #   _fitting        True only inside our own resizeSection() calls, so
+        #                   a programmatic fit is never mistaken for a drag
+        #   *_widths caches memoise QFontMetrics.horizontalAdvance(): it costs
+        #                  ~30 us per call through the bindings, and a page has
+        #                  ~5,000 cells, so measuring each DISTINCT string once
+        #                  is what makes content fitting affordable at all.
+        self._fitted_widths = {}
+        self._user_widths = {}
+        self._granted_slack = 0
+        self._fitting = False
+        self._value_widths = {}
+        self._label_widths = {}
         root = QVBoxLayout(self)
         root.setContentsMargins(12, 12, 12, 12)
         root.setSpacing(10)
@@ -316,6 +424,12 @@ class SearchTab(QWidget):
         self._user_sort_section = -1
         self._user_sort_order = Qt.AscendingOrder
         self.table = QTableWidget(0, len(HEADERS))
+        # Install the content-aware header BEFORE anything is wired to it (the
+        # old header is deleted by setHorizontalHeader): its double-click means
+        # "fit this column to its content", and no column is Stretch any more,
+        # so every divider is draggable — including Title, which used to be
+        # frozen wide enough only for its own HEADER LABEL.
+        self.table.setHorizontalHeader(_SearchHeader(Qt.Horizontal, self.table))
         self.table.setHorizontalHeaderLabels(_header_labels())
         self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -323,26 +437,36 @@ class SearchTab(QWidget):
         self.table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.table.setAlternatingRowColors(True)
         self.table.setSortingEnabled(False)
+        # QFontMetrics are built from the widget fonts once: the cells are
+        # regular, the header labels are BOLD (QSS "QHeaderView::section"),
+        # which the widget's own font object does not carry - measuring a
+        # label with the regular font would leave "Blue Card" clipped.
+        self._value_metrics = QFontMetrics(self.table.font())
+        header_font = QFont(self.table.font())
+        header_font.setBold(True)
+        self._label_metrics = QFontMetrics(header_font)
         # Qt paints a sort arrow on column 0 (descending) by default even with
         # sorting disabled, which would claim "sorted by Title" while the rows
         # are actually in the SQL "best match" order. Clear it: a column shows
         # an arrow only after the user clicks it.
-        self.table.horizontalHeader().setSortIndicator(-1, Qt.AscendingOrder)
+        header = self.table.horizontalHeader()
+        header.setSortIndicator(-1, Qt.AscendingOrder)
+        # NOT ResizeToContents: that mode re-measures every cell whenever an
+        # item changes, so one page render triggered thousands of layout passes
+        # (hundreds of ms). Interactive + one content fit per render instead.
+        header.setSectionResizeMode(QHeaderView.Interactive)
+        header.sectionResized.connect(self._on_section_resized)
+        header.fit_requested.connect(self._fit_column)
+        # The VIEWPORT resize is the exact moment the leftover width changes
+        # (window resize, vertical scrollbar appearing) — re-share the slack
+        # there instead of re-measuring, which keeps it cheap.
+        self.table.viewport().installEventFilter(self)
         # sectionClicked still fires with Qt sorting off, so header clicks work
         # as the user's sort intent and the sort indicator still updates.
-        self.table.horizontalHeader().sectionClicked.connect(
-            self._on_sort_section_clicked)
+        header.sectionClicked.connect(self._on_sort_section_clicked)
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._context_menu)
         self.table.doubleClicked.connect(self._open_selected)
-        header = self.table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.Stretch)
-        for col in range(1, len(HEADERS)):
-            # NOT ResizeToContents: that mode re-measures every cell whenever
-            # an item changes, so one page render triggered thousands of
-            # layout passes (hundreds of ms). Interactive keeps the columns
-            # user-resizable; _render_page() sizes them once per page instead.
-            header.setSectionResizeMode(col, QHeaderView.Interactive)
         root.addWidget(self.table, stretch=1)
 
         # wiring
@@ -456,6 +580,11 @@ class SearchTab(QWidget):
         # on big datasets; ◀/▶ re-render from this cache without re-querying.
         self._filtered_rows = rows
         self._page = 0
+        # A new result set invalidates the measured widths (different jobs,
+        # different text), so the columns are measured again — once per search,
+        # not once per page. Widths the user dragged by hand are a layout
+        # preference and survive the search.
+        self._fitted_widths.clear()
         self._render_page()
 
     # ── Pagination ──────────────────────────────────────────────────────────────
@@ -494,7 +623,7 @@ class SearchTab(QWidget):
             self.table.setUpdatesEnabled(False)
             self.table.setRowCount(len(page_rows))
             self._fill_rows(page_rows, previous_count)
-            self._resize_columns_once()
+            self._fit_columns(page_rows)
             self.table.setUpdatesEnabled(True)
             self._refresh_pager_label()
             return
@@ -509,7 +638,7 @@ class SearchTab(QWidget):
         self.table.clearSelection()
         self.table.setCurrentCell(-1, -1)
         self._fill_rows(page_rows, 0)
-        self._resize_columns_once()
+        self._fit_columns(page_rows)
         self._restore_selection(selected_url)
         self.table.setUpdatesEnabled(True)
         self._refresh_pager_label()
@@ -611,18 +740,7 @@ class SearchTab(QWidget):
         """
         for r in range(start, len(page_rows)):
             row = page_rows[r]
-            values = [
-                row["title"],
-                row["company"],
-                row["country"],
-                row["location"],
-                row["_exp_display"],
-                _verdict_cell(row["visa_sponsorship"]),
-                _verdict_cell(row["eu_blue_card_verdict"]),
-                _verdict_cell(row["relocation_support"]),
-                row["remote_type"],
-                (row["first_seen_at"] or "")[:10],
-            ]
+            values = _row_values(row)
             url = row["url"]
             for col, val in enumerate(values):
                 text = str(val if val is not None else "")
@@ -650,19 +768,167 @@ class SearchTab(QWidget):
                     if item.toolTip() != tooltip:
                         item.setToolTip(tooltip)
 
-    def _resize_columns_once(self):
-        """Size the non-stretch columns ONE pass per page render.
+    # ── Column widths ────────────────────────────────────────────────────────
+    def _value_width(self, text: str) -> int:
+        """Pixel width of a cell value (table font), memoised per string."""
+        width = self._value_widths.get(text)
+        if width is None:
+            width = self._value_metrics.horizontalAdvance(text)
+            self._value_widths[text] = width
+        return width
 
-        Equivalent visual result to ResizeToContents, but the measurement runs
-        once per render instead of once per mutated cell.
+    def _label_width(self, text: str) -> int:
+        """Pixel width of a header label (BOLD font), memoised per string."""
+        width = self._label_widths.get(text)
+        if width is None:
+            width = self._label_metrics.horizontalAdvance(text)
+            self._label_widths[text] = width
+        return width
+
+    def _content_widths(self, page_rows) -> dict:
+        """How wide every column must be to show ``page_rows`` uncut.
+
+        The header label is the FLOOR (a section narrower than its own title
+        would elide "Blue Card"), the widest cell text the requirement. The
+        values come from ``_row_values()`` — the exact strings the cells show —
+        and every distinct string is measured at most once per session.
+        """
+        labels = _header_labels()
+        widths = {col: self._label_width(labels[col]) + _COL_PADDING
+                  for col in range(len(HEADERS))}
+        for row in page_rows:
+            for col, value in enumerate(_row_values(row)):
+                if col in _FIXED_CELL_COLS or not value:
+                    continue  # Y/N/? cells can never beat their own label
+                width = self._value_width(str(value)) + _COL_PADDING
+                if width > widths[col]:
+                    widths[col] = width
+        return {col: min(width, _COL_MAX_WIDTH)
+                for col, width in widths.items()}
+
+    def _fit_columns(self, page_rows):
+        """Content-fit every column the user has NOT sized by hand.
+
+        Runs once per page render, but a column never shrinks inside one result
+        set: paging to a page with shorter text must not make the table jump
+        around under the user's eyes.
+        """
+        for col, width in self._content_widths(page_rows).items():
+            if width > self._fitted_widths.get(col, 0):
+                self._fitted_widths[col] = width
+        self._apply_widths()
+        self._update_clipped_tooltips(page_rows)
+
+    def _update_clipped_tooltips(self, page_rows):
+        """Full text as a tooltip wherever a column cannot show all of it.
+
+        The fit caps a column at _COL_MAX_WIDTH (one 1,400 px junk title must
+        not push every other column off the window) and the user is free to
+        squeeze a column further, so a value can still be cut. Nothing is lost:
+        such a cell carries its full text as a tooltip, which is written only
+        when it actually changes — the common path is one width lookup per cell.
+        The Experience column is skipped: its tooltip is the evidence line
+        built by _experience_tooltip().
+
+        Cells are REUSED across pages, so the other half of the job is dropping
+        the tooltip: otherwise row 0 could still advertise the previous page's
+        job (the same class of bug as a stale row index).
         """
         header = self.table.horizontalHeader()
-        for col in range(1, self.table.columnCount()):
-            if header.sectionResizeMode(col) != QHeaderView.Interactive:
-                continue  # user may have switched this column to another mode
-            hint = header.sectionSizeHint(col)
-            if hint > 0:
-                header.resizeSection(col, hint)
+        widths = {col: header.sectionSize(col) for col in range(len(HEADERS))}
+        for r, row in enumerate(page_rows):
+            for col, value in enumerate(_row_values(row)):
+                if col == 4:
+                    continue
+                item = self.table.item(r, col)
+                if item is None:
+                    continue
+                text = str(value) if value else ""
+                if text and self._value_width(text) + _COL_PADDING > widths[col]:
+                    if item.toolTip() != text:
+                        item.setToolTip(text)
+                elif item.toolTip():
+                    item.setToolTip("")
+
+    def _apply_widths(self):
+        """Push the current widths into the header and fill the viewport.
+
+        The leftover viewport width goes to the Title column — that is what the
+        old Stretch mode did — but Title stays draggable now ("Title takes the
+        slack", its own content width being the base). When the columns already
+        need more than the viewport nothing is shrunk: the horizontal scrollbar
+        takes over so no column is cut off.
+        """
+        header = self.table.horizontalHeader()
+        self._fitting = True
+        try:
+            total = 0
+            for col in range(len(HEADERS)):
+                width = self._user_widths.get(col)
+                if width is None:
+                    width = max(_COL_MIN_WIDTH,
+                                self._fitted_widths.get(col, _COL_MIN_WIDTH))
+                self._set_section_width(header, col, width)
+                total += width
+            self._granted_slack = max(
+                0, self.table.viewport().width() - total)
+            if self._granted_slack:
+                base = self._user_widths.get(0)
+                if base is None:
+                    base = max(_COL_MIN_WIDTH,
+                               self._fitted_widths.get(0, _COL_MIN_WIDTH))
+                self._set_section_width(
+                    header, 0, base + self._granted_slack)
+        finally:
+            self._fitting = False
+
+    @staticmethod
+    def _set_section_width(header, col, width):
+        """resizeSection() only on a real change (it repaints and re-lays out)."""
+        if header.sectionSize(col) != width:
+            header.resizeSection(col, width)
+
+    def _on_section_resized(self, col, _old, width):
+        """Remember a divider the USER dragged — and never auto-fit it again.
+
+        Re-fitting after a manual resize is what made the columns feel frozen:
+        the next page render silently threw the user's width away. A drag is a
+        decision, so it wins until the user double-clicks the divider.
+        """
+        if self._fitting:
+            return  # our own fit, not a user decision
+        # Title carries the shared slack on top of its width; store the width
+        # the user actually chose, or every later render would add the slack
+        # again on top of it.
+        base = width - (self._granted_slack if col == 0 else 0)
+        self._user_widths[col] = max(_COL_MIN_WIDTH, base)
+
+    def _fit_column(self, col):
+        """Make ONE column as wide as its content again (divider double-click).
+
+        Drops the manual width, re-measures the column on the rows currently on
+        screen and re-applies the layout.
+        """
+        if not 0 <= col < len(HEADERS):
+            return
+        self._user_widths.pop(col, None)
+        self._fitted_widths[col] = self._content_widths(
+            self._page_rows())[col]
+        self._apply_widths()
+
+    def eventFilter(self, watched, event):
+        """Re-share the leftover viewport width when the table viewport resizes.
+
+        Nothing is re-measured here (the content did not change), so a window
+        resize or a scrollbar appearing costs no text measurement at all. The
+        event is never swallowed.
+        """
+        if (watched is self.table.viewport()
+                and event.type() == QEvent.Type.Resize
+                and not self._fitting
+                and (self._fitted_widths or self._user_widths)):
+            self._apply_widths()
+        return super().eventFilter(watched, event)
 
     def _restore_selection(self, url):
         """Keep the selected job selected after a page rebuild, if still shown."""

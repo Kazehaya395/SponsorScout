@@ -7,8 +7,6 @@ can never desync from the actual scan (wrong phase, overflow, stalls).
 """
 import threading
 
-import pytest
-
 from sponsorscout.application.scan_coordinator import (
     PROGRESS_PREFIX,
     _parse_progress_tick,

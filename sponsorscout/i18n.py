@@ -7,7 +7,6 @@ Usage:  from sponsorscout.i18n import _, set_locale, get_locale
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 from sponsorscout.paths import USER_DATA_DIR
 
@@ -88,11 +87,9 @@ LANGUAGES: dict[str, dict[str, str]] = {
         "Remote:": "Remote:",
         "Experience:": "Experience:",
         "Experience": "Experience",
-        "None": "None",
-        "mo": "mo",
         "No experience requirement found in the job description": "No experience requirement found in the job description",
-        "Mentioned": "Mentioned",
-        "Experience mentioned in the job description (no number stated)": "Experience mentioned in the job description (no number stated)",
+        "The ad mentions experience without stating a figure or a level.": "The ad mentions experience without stating a figure or a level.",
+        "Seniority level \"{level}\" — the ad states no number of years.": "Seniority level \"{level}\" — the ad states no number of years.",
         "Sort:": "Sort:",
         "Objective:": "Objective:",
         "Balanced": "Balanced",
@@ -394,6 +391,20 @@ LANGUAGES: dict[str, dict[str, str]] = {
         "Scanner description": "Start a job scan across all seeded companies — every ATS board and career page is crawled, then each job is enriched from its detail page. Live output appears below.",
         "Scan every seeded company (ATS boards + career pages) and enrich each job from its detail page, so no listing misses its evidence.":
             "Scan every seeded company (ATS boards + career pages) and enrich each job from its detail page, so no listing misses its evidence.",
+        "Pause the running scan in place — workers stop at the next company and browsers wait. Press Resume to continue instantly, no new scan is started.":
+            "Pause the running scan in place — workers stop at the next company and browsers wait. Press Resume to continue instantly, no new scan is started.",
+        "Continue the paused scan where it stopped — same run, no loss.":
+            "Continue the paused scan where it stopped — same run, no loss.",
+        "Stop the scan now and keep everything found so far. The stopped run is checkpointed — Resume (the other button) starts a new scan for the companies that were not finished, even after an app restart.":
+            "Stop the scan now and keep everything found so far. The stopped run is checkpointed — Resume (the other button) starts a new scan for the companies that were not finished, even after an app restart.",
+        "Looking up the last stopped scan…":
+            "Looking up the last stopped scan…",
+        "Paused": "Paused",
+        "Pausing…": "Pausing…",
+        "Stopping…": "Stopping…",
+        "Stopped.": "Stopped.",
+        "Stop the running scan? Everything found so far is kept and can be resumed later.":
+            "Stop the running scan? Everything found so far is kept and can be resumed later.",
         "Scan History description": "Every past scan run. Select a row to view or download its per-company log with errors.",
         "Resume": "Resume",
         "Continue the last stopped scan — only companies it did not finish are scanned, so no progress is lost.":
@@ -451,11 +462,9 @@ LANGUAGES: dict[str, dict[str, str]] = {
         "Remote:": "Remoto:",
         "Experience:": "Esperienza:",
         "Experience": "Esperienza",
-        "None": "Nessuna",
-        "mo": "mesi",
         "No experience requirement found in the job description": "Nessun requisito di esperienza indicato nella descrizione del lavoro",
-        "Mentioned": "Menzionato",
-        "Experience mentioned in the job description (no number stated)": "Esperienza menzionata nella descrizione del lavoro (senza numero indicato)",
+        "The ad mentions experience without stating a figure or a level.": "L'annuncio cita l'esperienza senza indicare né cifre né livello.",
+        "Seniority level \"{level}\" — the ad states no number of years.": "Livello di seniority \"{level}\" — l'annuncio non indica un numero di anni.",
         "Job title": "Posizione",
         "Location": "Località",
         "Copy URL": "Copia URL",
@@ -802,6 +811,20 @@ LANGUAGES: dict[str, dict[str, str]] = {
             "Continua l'ultima scansione interrotta — vengono scansionate solo le aziende non completate, nessun progresso va perso.",
         "Stop the scan now and keep everything found so far. Press Resume later to continue the remaining companies — all browsers close, so other apps run smoothly again.":
             "Ferma ora la scansione mantenendo tutto ciò che è stato trovato. Premi Riprendi più tardi per continuare le aziende restanti — tutti i browser si chiudono, così le altre app tornano fluide.",
+        "Pause the running scan in place — workers stop at the next company and browsers wait. Press Resume to continue instantly, no new scan is started.":
+            "Metti in pausa la scansione in corso — i worker si fermano alla prossima azienda e i browser attendono. Premi Riprendi per continuare subito, senza avviare una nuova scansione.",
+        "Continue the paused scan where it stopped — same run, no loss.":
+            "Continua la scansione in pausa da dove si è fermata — stessa esecuzione, nessuna perdita.",
+        "Stop the scan now and keep everything found so far. The stopped run is checkpointed — Resume (the other button) starts a new scan for the companies that were not finished, even after an app restart.":
+            "Ferma ora la scansione mantenendo tutto ciò che è stato trovato. L'esecuzione interrotta viene salvata — Riprendi (l'altro pulsante) avvia una nuova scansione solo per le aziende non finite, anche dopo un riavvio dell'app.",
+        "Looking up the last stopped scan…":
+            "Ricerca dell'ultima scansione interrotta…",
+        "Paused": "In pausa",
+        "Pausing…": "Pausa in corso…",
+        "Stopping…": "Arresto in corso…",
+        "Stopped.": "Fermata.",
+        "Stop the running scan? Everything found so far is kept and can be resumed later.":
+            "Fermare la scansione in corso? Tutto ciò che è stato trovato viene mantenuto e potrà essere ripreso più tardi.",
         "Resuming scan": "Ripresa scansione",
         "Nothing to resume — no stopped scan with unfinished companies.":
             "Nulla da riprendere — nessuna scansione interrotta con aziende incompiute.",

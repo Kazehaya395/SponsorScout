@@ -27,16 +27,24 @@ import re
 import socket
 import time
 import unicodedata
-from collections import Counter
 from html import unescape
-from urllib.parse import urlparse, parse_qsl, urlencode, urlunparse, urljoin
+from urllib.parse import urlparse, urljoin
 from urllib.request import Request, urlopen
 import urllib.request
 
 try:
     from playwright.sync_api import sync_playwright
-except ModuleNotFoundError:
+    PLAYWRIGHT_IMPORT_ERROR = None
+except ModuleNotFoundError as _pw_exc:  # Provider-API-only runs can still work.
     sync_playwright = None
+    # Keep the reason so a frozen build that lost Playwright reports WHICH
+    # module is missing instead of failing every DOM target silently.
+    PLAYWRIGHT_IMPORT_ERROR = f"{type(_pw_exc).__name__}: {_pw_exc}"
+
+
+def _playwright_unavailable_reason():
+    """Why sync_playwright is unusable — surfaced in error logs."""
+    return PLAYWRIGHT_IMPORT_ERROR or "playwright.sync_api could not be imported"
 
 # Real-time logging.  When a progress callback is installed (desktop app) all
 # output lines are routed to it (and therefore into the Tools tab scan log);
@@ -780,7 +788,6 @@ def _host_free_mb():
             continue
     if avail is None:
         try:
-            import shutil  # noqa: F401  (presence check only)
             page = os.sysconf("SC_AVPHYS_PAGES")
             size = os.sysconf("SC_PAGE_SIZE")
             avail = (page * size) / (1024.0 * 1024.0)
@@ -1035,10 +1042,6 @@ def clean(value):
     return re.sub(r"\s+", " ", value).strip()
 
 
-def host_of(url):
-    return urlparse(url).netloc.lower().split(":")[0]
-
-
 # ───────────────────────── JD SUPPORT DETECTOR ────────────────────────────────
 # (imported verbatim from career_portal_scanner_v7.py — keep in sync)
 # ───────────────────── JD SUPPORT DETECTOR ─────────────────────
@@ -1081,11 +1084,24 @@ except ModuleNotFoundError:  # standalone single-file mode
     )
 
 
+try:
+    from sponsorscout.scanning.common import check_control
+except ModuleNotFoundError:  # standalone single-file mode
+    def check_control(cancel_event, pause_event=None, poll_sec=0.1):
+        """Standalone copy of ``sponsorscout.scanning.common.check_control``."""
+        if pause_event is not None and pause_event.is_set():
+            while pause_event.is_set():
+                if cancel_event is not None and cancel_event.is_set():
+                    return True
+                time.sleep(poll_sec)
+        return cancel_event is not None and cancel_event.is_set()
+
+
 class ATSScanner:
     def __init__(self, seed_file="company_ATS_seed.csv",
                  output_file="scraped_ats_jobs_v5.csv",
                  skip_preflight=False, resume=False,
-                 cancel_event=None, only_companies=None):
+                 cancel_event=None, only_companies=None, pause_event=None):
         self.seed_file = seed_file
         self.output_file = output_file
         self.skip_preflight = skip_preflight
@@ -1093,6 +1109,10 @@ class ATSScanner:
         # Cooperative cancellation for the desktop UI Stop button: checked
         # before each target; the in-flight target is allowed to finish.
         self.cancel_event = cancel_event
+        # Cooperative suspension for the desktop Pause button: while set, the
+        # loop blocks in check_control() without ending the run, so Resume
+        # continues in-place (no DB checkpoint, no new run_id).
+        self.pause_event = pause_event
         # Optional whitelist of company names (Dashboard "Rescan Companies"):
         # when set, only those targets are scanned.
         self.only_companies = only_companies
@@ -1998,7 +2018,11 @@ class ATSScanner:
     def browser_fallback(self, target):
         """Last-resort DOM scrape for ATS types without a public API."""
         if sync_playwright is None:
-            logging.error("Playwright required for %s", target["url"])
+            logging.error(
+                "Playwright required for %s (%s)",
+                target["url"],
+                _playwright_unavailable_reason(),
+            )
             return []
         rows = []
         try:
@@ -2188,7 +2212,7 @@ class ATSScanner:
         for idx, target in enumerate(targets, 1):
             # Cooperative cancellation (desktop Stop button): stop between
             # targets so an in-flight HTTP/browser request can finish cleanly.
-            if self.cancel_event is not None and self.cancel_event.is_set():
+            if check_control(self.cancel_event, self.pause_event):
                 print(f"   CANCELLED: stopping before target [{idx}] {target.get('name', '?')}")
                 break
             started = time.monotonic()

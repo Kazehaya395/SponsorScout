@@ -4,8 +4,6 @@ Stopping a scan keeps every finished company in the DB (live ingestion +
 scan_log rows); resuming scans only the remainder under a fresh run_id and
 re-ingestion upserts idempotently on the canonical URL key.
 """
-import sqlite3
-
 import pytest
 
 from sponsorscout.application import seed_manager

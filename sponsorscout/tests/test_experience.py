@@ -315,15 +315,15 @@ def test_display_layer_shows_absolute_values():
     assert _experience_cell("10+ years", "Lead", 10) == "10+"
 
 
-def test_display_layer_level_only_and_na():
-    """Level word when the JD names seniority; NA when there is no signal."""
+def test_display_layer_level_only_and_no_statement():
+    """Level word when the JD names seniority; '?' when there is no signal."""
     from sponsorscout.ui.tabs.search import _experience_cell
 
     assert _experience_cell("Unknown", "Senior", None) == "Senior"
     assert _experience_cell("", "Mid", None) == "Mid"
-    assert _experience_cell("Unknown", "Unknown", None) == "NA"
-    assert _experience_cell("", "", None) == "NA"
-    assert _experience_cell("N/A", "Unknown", "") == "NA"
+    assert _experience_cell("Unknown", "Unknown", None) == "?"
+    assert _experience_cell("", "", None) == "?"
+    assert _experience_cell("N/A", "Unknown", "") == "?"
 
 
 def test_display_layer_months_and_none():
@@ -338,7 +338,7 @@ def test_display_layer_months_and_none():
     # Stated years sort ascending, not lexicographically ("11" vs "3").
     assert _experience_sort_key("11+ years", "Lead", 11) > \
         _experience_sort_key("3+ years", "Mid", 3)
-    # Level-only rows sort after numbers; NA rows last.
+    # Level-only rows sort after numbers; the '?' tier last.
     assert _experience_sort_key("Unknown", "Senior", None) > \
         _experience_sort_key("11+ years", "Lead", 11)
     assert _experience_sort_key("Unknown", "Unknown", None) > \
@@ -374,7 +374,7 @@ def test_table_items_sort_without_crashing():
     table = QTableWidget(0, 2)
     table.setSortingEnabled(False)
     for i, (txt, key) in enumerate([("4+", (0, 4.0, 2)), ("6 mo", (0, 0.5, 1)),
-                                    ("NA", (2, 0.0, 9)), ("3-5", (0, 3.0, 3))]):
+                                    ("?", (2, 0.0, 9)), ("3-5", (0, 3.0, 3))]):
         table.insertRow(i)
         item = _CellItem(txt, key)
         table.setItem(i, 0, item)
@@ -384,14 +384,14 @@ def test_table_items_sort_without_crashing():
     # Keyed column: numeric order, not lexical ("4+" must not precede "3-5").
     table.sortItems(0)
     assert [table.item(r, 0).text() for r in range(4)] == \
-        ["6 mo", "3-5", "4+", "NA"]
+        ["6 mo", "3-5", "4+", "?"]
     # Unkeyed column: falls back to text comparison, no crash.
     table.sortItems(1)
     assert [table.item(r, 1).text() for r in range(4)] == \
-        ["plain-3-5", "plain-4+", "plain-6 mo", "plain-NA"]
+        ["plain-3-5", "plain-4+", "plain-6 mo", "plain-?"]
 
 
-# --- FIX: requirements-section fragments + "Mentioned" NA rule --------------
+# --- FIX: requirements-section fragments + the single "no statement" value ----
 
 def test_requirements_header_colon_isolates_number():
     for jd, req, lo in (
@@ -422,6 +422,11 @@ def test_company_tenure_is_never_experience():
 
 
 def test_mentioned_when_jd_names_experience_without_number():
+    """The STORED value stays "Mentioned" (scanner/DB contract, unchanged).
+
+    Only the rendered Search cell collapses it into the single "?" value - see
+    test_bare_mention_renders_as_the_single_question_mark below.
+    """
     exp = career_mod.extract_experience(
         "Experience in fintech is a plus; we value pragmatic engineers.", "")
     assert exp["required"] == "Mentioned", exp
@@ -433,15 +438,59 @@ def test_na_only_when_jd_never_mentions_experience():
     from sponsorscout.ui.tabs.search import _experience_cell
     exp = career_mod.extract_experience("Nice office with free snacks.", "")
     assert exp["required"] == "Unknown", exp
-    assert _experience_cell(exp["required"], exp["level"], exp["min_years"]) == "NA"
+    assert _experience_cell(exp["required"], exp["level"], exp["min_years"]) == "?"
 
 
-def test_mentioned_is_not_na_and_sorts_before_na():
-    from sponsorscout.ui.tabs.search import _experience_cell, _experience_sort_key
-    assert _experience_cell("Mentioned", "Unknown", "") == "Mentioned"
+def test_bare_mention_renders_as_the_single_question_mark():
+    """A bare mention and a silent ad render the SAME cell value: '?'.
+
+    They used to be "Referenced" vs "NA" - two labels for "no usable
+    requirement", which read as two different facts and told the user nothing
+    about what the ad actually said. The distinction is not thrown away: the
+    hover tooltip still states which case it is.
+    """
+    from sponsorscout.ui.tabs.search import (
+        _EXP_NO_STATEMENT, _experience_cell, _experience_sort_key,
+        _experience_tooltip,
+    )
+    assert _EXP_NO_STATEMENT == "?"
+    # Same value for a mention-only ad and a description that never names
+    # experience; a level word still wins over both.
+    assert _experience_cell("Mentioned", "Unknown", "") == "?"
+    assert _experience_cell("Unknown", "Unknown", None) == "?"
+    assert _experience_cell("", "", None) == "?"
     assert _experience_cell("Mentioned", "Senior", "") == "Senior"
-    assert _experience_sort_key("Mentioned", "Unknown", "") < _experience_sort_key("Unknown", "Unknown", None)
-    assert _experience_sort_key("Mentioned", "Unknown", "") > _experience_sort_key("Unknown", "Senior", None)
+    # The tooltip is where the difference survives.
+    mention_tip = _experience_tooltip({"experience_required": "Mentioned",
+                                       "experience_level": "",
+                                       "experience_source": "api_description"})
+    silent_tip = _experience_tooltip({"experience_required": "Unknown",
+                                      "experience_level": "",
+                                      "experience_source": "none"})
+    assert mention_tip != silent_tip
+    assert "figure or a level" in mention_tip
+    assert "No experience requirement found" in silent_tip
+    # And the two never split the sort either: one tier, listed last.
+    assert _experience_sort_key("Mentioned", "Unknown", "") == \
+        _experience_sort_key("Unknown", "Unknown", None)
+    assert _experience_sort_key("Mentioned", "Unknown", "") > \
+        _experience_sort_key("Unknown", "Senior", None)
+
+
+def test_level_only_row_tooltip_never_claims_no_requirement():
+    """A level-only row (title inference) must not be tooltip-ed as empty.
+
+    The cell shows "Senior" (inferred from the job title), so a tooltip
+    reading "no experience requirement found in the job description"
+    contradicts the very cell it is attached to.
+    """
+    from sponsorscout.ui.tabs.search import _experience_tooltip
+
+    tip = _experience_tooltip({"experience_required": "",
+                                "experience_level": "Senior",
+                                "experience_source": "title_inference"})
+    assert "Senior" in tip
+    assert "No experience requirement found" not in tip
 
 
 def test_ats_career_parity_new_cases():

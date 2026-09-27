@@ -119,6 +119,17 @@ PY
 echo "Installing build dependencies into $VENV_DIR..."
 PIP_DISABLE_PIP_VERSION_CHECK=1 "$PYTHON" -m pip install -r requirements.txt
 
+# Fail fast when a dependency installed but is not actually usable. A broken
+# greenlet (its compiled extension missing) makes `playwright.sync_api` raise
+# ModuleNotFoundError, which the scanner swallows and later reports as an opaque
+# "Playwright is required for DOM fallback" for every target.
+if ! "$PYTHON" -c "from playwright.sync_api import sync_playwright" >/dev/null 2>&1; then
+  echo "ERROR: playwright is not usable inside $VENV_DIR (broken/missing dependency)." >&2
+  echo "Recreate the build environment and retry:" >&2
+  echo "  rm -rf $VENV_DIR && ./build_deb.sh" >&2
+  exit 1
+fi
+
 rm -rf "$BUILD_DIR" "$DIST_DIR"
 mkdir -p "$APP_DIR" "$DEBIAN_DIR" "$DIST_DIR"
 
@@ -130,8 +141,10 @@ mkdir -p "$APP_DIR" "$DEBIAN_DIR" "$DIST_DIR"
   --name "$APP_NAME" \
   --collect-data sponsorscout \
   --collect-submodules sponsorscout \
-  --collect-submodules playwright \
+  --collect-all playwright \
   --collect-submodules PySide6 \
+  --hidden-import greenlet \
+  --hidden-import pyee \
   --exclude-module pandas \
   --exclude-module PIL \
   --exclude-module bs4 \
@@ -185,6 +198,21 @@ find "$APP_DIR/_playwright" -maxdepth 1 -type d -name 'ffmpeg*' -exec rm -rf {} 
 # JS-rendered career portals work out of the box. Deleting it makes every scan
 # fail and the UI appear hung/frozen.
 echo "Size reduction complete."
+
+# ── Smoke test ──────────────────────────────────────────────────────────────
+# Run the freshly built binary BEFORE packaging it. A bundle that cannot import
+# Playwright (or cannot launch its bundled Chromium) used to sail through the
+# build and then fail 200+ scan targets at runtime with
+# "Playwright is required for DOM fallback". Fail here instead.
+echo "Smoke-testing the packaged app (Playwright + bundled Chromium)…"
+if ! PLAYWRIGHT_BROWSERS_PATH="$APP_DIR/_playwright" \
+     "$APP_DIR/$APP_NAME" --self-check --self-check-browser; then
+  echo "ERROR: the packaged app failed --self-check; aborting the build." >&2
+  echo "Re-run manually for full details:" >&2
+  echo "  PLAYWRIGHT_BROWSERS_PATH=\"$APP_DIR/_playwright\" \\" >&2
+  echo "    \"$APP_DIR/$APP_NAME\" --self-check --self-check-browser" >&2
+  exit 1
+fi
 
 mkdir -p "$BUILD_DIR/usr/bin"
 cat > "$BUILD_DIR/usr/bin/sponsorscout" <<'EOL'

@@ -1,14 +1,23 @@
-"""Tools tab i18n regression: pause/resume labels and hover texts follow the
+"""Tools tab i18n regression: pause/resume/stop labels and hover texts follow the
 language switch.
 
 Bug: button texts/tooltips were set once at construction and never refreshed
 by ``retranslate()``, so switching language left stale strings (e.g.
 "Riprendi" and an Italian Stop tooltip on an English UI).
 
-Also pins the relabel: the stop control is "Pause" — stopping checkpoints
-progress in the DB and Resume continues later (even after an app restart).
+Also pins the control model: a true in-memory ``pause_btn`` (Pause/Resume
+toggle, same run, no DB round-trip) plus a separate ``stop_btn`` (Stop —
+ends the run with a DB checkpoint that the checkpoint-Resume continues,
+even after an app restart).
 """
 import os
+
+
+# Tabs built here stay referenced for the whole session: the checkpoint probe
+# runs on a worker thread and answers through a queued signal, and delivering
+# that queued reply to a garbage-collected QWidget faults inside Qt (observed
+# as an access violation once another test runs processEvents()).
+_TABS: list = []
 
 
 def _make_tools(db_path):
@@ -21,7 +30,9 @@ def _make_tools(db_path):
     app = QApplication.instance() or QApplication([])
     assert app is not None
     from sponsorscout.ui.tabs.tools import ToolsTab
-    return ToolsTab(db_path)
+    tab = ToolsTab(db_path)
+    _TABS.append(tab)
+    return tab
 
 
 def test_pause_resume_and_tooltips_follow_language(db_path):
@@ -32,26 +43,37 @@ def test_pause_resume_and_tooltips_follow_language(db_path):
         set_locale("it")
         tab = _make_tools(db_path)
         assert tab.resume_btn.text() == "Riprendi"
-        assert tab.stop_btn.text() == "Pausa"
-        assert "Ferma ora la scansione" in tab.stop_btn.toolTip()
+        assert tab.pause_btn.text() == "Pausa"
+        assert tab.stop_btn.text() == "Ferma"
+        # The checkpoint-Resume tooltip (Resume button) keeps the
+        # stopped-run wording ("non completate" = unfinished companies).
+        assert "non completate" in tab.resume_btn.toolTip()
+        # Pause = in-place suspend, Stop = checkpoint + later resume.
+        assert "nuova scansione" in tab.pause_btn.toolTip()
+        assert "Riprendi" in tab.stop_btn.toolTip()
 
         # Switch to English: NOTHING may stay Italian.
         set_locale("en")
         tab.retranslate()
         assert tab.resume_btn.text() == "Resume"
-        assert tab.stop_btn.text() == "Pause"
+        assert tab.pause_btn.text() == "Pause"
+        assert tab.stop_btn.text() == "Stop"
         assert "Riprendi" not in (tab.resume_btn.text()
                                   + (tab.resume_btn.toolTip() or ""))
         # Hover text is English too (the reported bug).
-        assert "Press Resume later" in tab.stop_btn.toolTip()
+        assert "Press Resume to continue instantly" in tab.pause_btn.toolTip()
+        assert "checkpointed" in tab.stop_btn.toolTip()
+        assert "Continua" not in (tab.resume_btn.toolTip() or "")
         assert "Scan every seeded company" in tab.scan_btn.toolTip()
         assert "Scansiona" not in (tab.scan_btn.toolTip() or "")
 
         # ...and back to Italian re-applies Italian labels + hover texts.
         set_locale("it")
         tab.retranslate()
-        assert tab.stop_btn.text() == "Pausa"
-        assert "Ferma ora la scansione" in tab.stop_btn.toolTip()
+        assert tab.pause_btn.text() == "Pausa"
+        assert "nuova scansione" in tab.pause_btn.toolTip()
+        assert tab.stop_btn.text() == "Ferma"
+        assert "Riprendi" in tab.stop_btn.toolTip()
         assert tab.resume_btn.text() == "Riprendi"
     finally:
         set_locale("en")

@@ -3,11 +3,36 @@
 Extracted from ats_portal_scanner.py / career_scanner.py.
 
 Only what both scanners genuinely share lives here: the lean low-resource
-Chromium flag set (``BROWSER_ARGS`` / ``LOW_RESOURCE_BROWSER_ARGS``) and
-host-adaptive pool sizing (``recommended_workers``). Each scanner keeps its
-own text helpers and CSV schemas next to the code that uses them, preserving
-the pipeline's 39-column jobs output and 15-column scan log.
+Chromium flag set (``BROWSER_ARGS`` / ``LOW_RESOURCE_BROWSER_ARGS``),
+host-adaptive pool sizing (``recommended_workers``) and the pause/stop gate
+(``check_control``). Each scanner keeps its own text helpers and CSV schemas
+next to the code that uses them, preserving the pipeline's 39-column jobs
+output and 15-column scan log.
 """
+
+def check_control(cancel_event, pause_event=None, poll_sec: float = 0.1) -> bool:
+    """Wait out a pause, then report whether the scan must stop.
+
+    Returns ``True`` when the scan was cancelled — the caller must abort
+    immediately. Returns ``False`` when scanning may continue.
+
+    This is the single gate behind both desktop controls:
+
+    * **Pause** suspends the calling worker *in place* (``pause_event`` set):
+      no new work is started, browsers stay open, and the run keeps its
+      identity, so Resume continues instantly with no database round-trip.
+    * **Stop** always wins over a Pause — pressing Stop while paused still
+      ends the scan promptly instead of deadlocking behind the pause.
+
+    Both events may be ``None`` (CLI and tests), in which case this returns
+    ``False`` without blocking.
+    """
+    if pause_event is not None and pause_event.is_set():
+        while pause_event.is_set():
+            if cancel_event is not None and cancel_event.is_set():
+                return True
+            pause_event.wait(poll_sec)
+    return cancel_event is not None and cancel_event.is_set()
 
 
 def host_workers_limits() -> tuple[int, int]:

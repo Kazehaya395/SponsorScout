@@ -6,11 +6,6 @@ from sponsorscout.core.url_normalizer import normalize_url
 _INDUSTRY_CACHE: dict[str, str] = {}
 
 
-def _norm_name(name: str) -> str:
-    """Normalize company name for case/whitespace-insensitive dedup."""
-    return " ".join((name or "").strip().lower().split())
-
-
 def save_company(conn, company):
     """
     Insert or update a company.

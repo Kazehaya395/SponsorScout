@@ -57,6 +57,15 @@ if ($RepairNeeded) {
 }
 & $Python @PythonArgs -m pip install -r requirements.txt | Out-Null
 
+# Fail fast when a dependency installed but is not actually usable. A broken
+# greenlet (its compiled extension missing) makes `playwright.sync_api` raise
+# ModuleNotFoundError, which the scanner swallows and later reports as an opaque
+# "Playwright is required for DOM fallback" for every target.
+& $Python @PythonArgs -c "from playwright.sync_api import sync_playwright" 2>$null
+if ($LASTEXITCODE -ne 0) {
+    throw "playwright is not usable inside $Python (broken/missing dependency). Re-create the venv and retry."
+}
+
 Write-Host "[2/4] Building SponsorScout.exe with PyInstaller..." -ForegroundColor Cyan
 if (Test-Path $DistDir) {
     Remove-Item -Recurse -Force $DistDir
@@ -71,8 +80,10 @@ if (Test-Path $DistDir) {
     --icon sponsorscout/data/sponsorscout.ico `
     --collect-data sponsorscout `
     --collect-submodules sponsorscout `
-    --collect-submodules playwright `
+    --collect-all playwright `
     --collect-submodules PySide6 `
+    --hidden-import greenlet `
+    --hidden-import pyee `
     --exclude-module pandas `
     --exclude-module PIL `
     --exclude-module bs4 `
@@ -105,6 +116,24 @@ if (-not (Test-Path $BundledPlaywright)) {
     throw "Playwright browsers were NOT installed into $BundledPlaywright - career scanning would be broken in the packaged app."
 }
 Write-Host "Bundled Chromium verified at $BundledPlaywright" -ForegroundColor Green
+
+# ── Smoke test ──────────────────────────────────────────────────────────────
+# Run the freshly built exe BEFORE packaging it. A bundle that cannot import
+# Playwright (or cannot launch its bundled Chromium) used to sail through the
+# build and then fail 200+ scan targets at runtime with
+# "Playwright is required for DOM fallback". Fail here instead.
+Write-Host "[3.5/4] Smoke-testing the packaged app (Playwright + Chromium)..." -ForegroundColor Cyan
+$env:PLAYWRIGHT_BROWSERS_PATH = $BundledPlaywright
+try {
+    & $ExePath --self-check --self-check-browser
+    $SelfCheckExit = $LASTEXITCODE
+} finally {
+    Remove-Item Env:PLAYWRIGHT_BROWSERS_PATH -ErrorAction SilentlyContinue
+}
+if ($SelfCheckExit -ne 0) {
+    throw "Packaged app failed --self-check (exit $SelfCheckExit). Career scanning would be broken in the installed app."
+}
+Write-Host "Packaged app self-check passed." -ForegroundColor Green
 
 # ── Size reduction: caches / metadata only ─────────────────────────────────
 # Same safe set as build_deb.sh. Deletes generated caches and package metadata

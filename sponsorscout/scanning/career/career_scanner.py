@@ -8,13 +8,25 @@ import unicodedata
 import urllib.parse
 import urllib.request
 import json
+from html import unescape  # Used by _jd_plain / _static_strip_tags / fetch_static_jobs.
 from urllib.parse import urljoin, urlparse, parse_qsl, urlencode, urlunparse
 try:
     from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
-except ModuleNotFoundError:  # Provider-API-only runs can still work without a browser.
+    PLAYWRIGHT_IMPORT_ERROR = None
+except ModuleNotFoundError as _pw_exc:  # Provider-API-only runs can still work without a browser.
     sync_playwright = None
+    # Keep the reason. A bare None made every DOM target fail with an opaque
+    # "Playwright is required" banner and hid WHICH module was missing from the
+    # frozen bundle (playwright itself, greenlet or pyee).
+    PLAYWRIGHT_IMPORT_ERROR = f"{type(_pw_exc).__name__}: {_pw_exc}"
+
     class PlaywrightTimeoutError(Exception):
         pass
+
+
+def _playwright_unavailable_reason():
+    """Why sync_playwright is unusable — surfaced in errors and diagnostics."""
+    return PLAYWRIGHT_IMPORT_ERROR or "playwright.sync_api could not be imported"
 
 # Real-time logging. When a progress callback is installed (desktop app) all
 # output lines are routed to it; otherwise they print to stdout as before.
@@ -1250,7 +1262,11 @@ class ProductionScannerConfig:
 # Chromium flags have exactly one definition.  A 2-core / 8 GB machine must
 # never be handed several concurrent browsers (see recommended_workers docs).
 try:
-    from sponsorscout.scanning.common import BROWSER_ARGS, recommended_workers
+    from sponsorscout.scanning.common import (
+        BROWSER_ARGS,
+        check_control,
+        recommended_workers,
+    )
 except ImportError:  # standalone single-file mode
     def recommended_workers(kind="browser"):
         try:
@@ -1259,6 +1275,16 @@ except ImportError:  # standalone single-file mode
             return max(1, min(cpu // 2, 4)) if cpu > 2 else 1
         except Exception:
             return 1
+
+    def check_control(cancel_event, pause_event=None, poll_sec=0.1):
+        """Standalone copy of ``sponsorscout.scanning.common.check_control``."""
+        import time as _time
+        if pause_event is not None and pause_event.is_set():
+            while pause_event.is_set():
+                if cancel_event is not None and cancel_event.is_set():
+                    return True
+                _time.sleep(poll_sec)
+        return cancel_event is not None and cancel_event.is_set()
 
     BROWSER_ARGS = [
         "--no-sandbox", "--disable-dev-shm-usage", "--disable-http2",
@@ -1912,7 +1938,6 @@ def _host_free_mb():
             continue
     if avail is None:
         try:
-            import shutil  # noqa: F401  (presence check only)
             page = os.sysconf("SC_AVPHYS_PAGES")
             size = os.sysconf("SC_PAGE_SIZE")
             avail = (page * size) / (1024.0 * 1024.0)
@@ -2664,7 +2689,7 @@ class CareerPortalScanner:
     def __init__(self, input_csv="company_Career_seed.csv", output_csv="scraped_jobs_v7.csv",
                  max_workers=None, detail_scan=False, resume=False,
                  allow_synthetic=False, skip_preflight=False, cancel_event=None,
-                 only_companies=None, max_company_time_sec=None):
+                 only_companies=None, max_company_time_sec=None, pause_event=None):
         self.input_csv = input_csv
         self.output_csv = output_csv
         # Host-adaptive company-level concurrency.  Each worker drives its own
@@ -2680,9 +2705,13 @@ class CareerPortalScanner:
         # J1: retained for API compatibility but no longer gates anything —
         # #job= fragment URLs are treated as real job URLs (see process_job).
         self.allow_synthetic = bool(allow_synthetic)
-        # Cooperative cancellation for the desktop UI Stop button: checked
+        # Cooperative cancellation for the desktop Stop button: checked
         # before submitting each crawl target; in-flight targets finish.
         self.cancel_event = cancel_event
+        # Cooperative suspension for the desktop Pause button: while set, the
+        # workers block in check_control() without ending the run, so Resume
+        # continues in-place (no DB checkpoint, no new run_id).
+        self.pause_event = pause_event
         # Optional whitelist of company names (CLI --company): when set, only
         # these targets are scanned.
         self.only_companies = only_companies
@@ -5853,7 +5882,7 @@ class CareerPortalScanner:
         tripped_hosts: set = set()
         failed_network_urls: list = []
         for url_i,url in enumerate(urls,1):
-            if self.cancel_event is not None and self.cancel_event.is_set():
+            if check_control(self.cancel_event, self.pause_event):
                 print(f"   CANCELLED: stopping detail scan for {name}")
                 break
             if time.monotonic()-detail_start > self.config.DETAIL_SCAN_TIME_BUDGET_SEC:
@@ -6156,7 +6185,7 @@ class CareerPortalScanner:
         changed_lock = _threading_mod.Lock()
 
         def _fetch_one(r, url):
-            if self.cancel_event is not None and self.cancel_event.is_set():
+            if check_control(self.cancel_event, self.pause_event):
                 return "", ""
             if not url.startswith("http") or "#job=" in url.lower():
                 return "", ""
@@ -6242,7 +6271,7 @@ class CareerPortalScanner:
                         for _, r in ranked}
                 for fut in _cf.as_completed(futs):
                     r = futs[fut]
-                    if self.cancel_event is not None and self.cancel_event.is_set():
+                    if check_control(self.cancel_event, self.pause_event):
                         break
                     with self._detail_lock:
                         if self._detail_count >= cap:
@@ -6273,7 +6302,7 @@ class CareerPortalScanner:
                             need_browser.append(r)
             # Pass 2 (serial, shared browser): only rows HTTP could not read.
             for r in need_browser:
-                if self.cancel_event is not None and self.cancel_event.is_set():
+                if check_control(self.cancel_event, self.pause_event):
                     break
                 with self._detail_lock:
                     if self._detail_count >= cap:
@@ -6314,7 +6343,7 @@ class CareerPortalScanner:
         missing = [r for r in targets if str(r.get("Experience Required") or "").strip().lower() in ("", "unknown") and str(r.get("Job URL") or "").startswith("http")]
         missing = missing[:100]
         for r in missing:
-            if self.cancel_event is not None and self.cancel_event.is_set():
+            if check_control(self.cancel_event, self.pause_event):
                 break
             with self._detail_lock:
                 if self._detail_count >= cap:
@@ -6860,7 +6889,7 @@ class CareerPortalScanner:
               f"resume={self.resume}; detail={self.detail_scan}")
 
         def crawl_target(idx, target_row):
-            if self.cancel_event is not None and self.cancel_event.is_set():
+            if check_control(self.cancel_event, self.pause_event):
                 print(f"   CANCELLED: skipping target [{idx}] {target_row.get('name', '?')}")
                 return 0, 0, "cancelled"
             name = target_row["name"]
@@ -7121,7 +7150,12 @@ class CareerPortalScanner:
                         diagnostics.append(f"seed host does not resolve (DNS): {_seed_host}")
                         raise RuntimeError(f"seed host does not resolve (DNS): {_seed_host} [{seed_url}]")
                     if sync_playwright is None:
-                        raise RuntimeError("Playwright is required for DOM fallback. Install requirements and run: playwright install chromium")
+                        _pw_reason = _playwright_unavailable_reason()
+                        diagnostics.append(f"playwright unavailable: {_pw_reason}")
+                        raise RuntimeError(
+                            f"Playwright is required for DOM fallback ({_pw_reason}). "
+                            "Install requirements and run: playwright install chromium"
+                        )
                     # Verify the Chromium binary is actually present/ready
                     # before launching. Without this, a packaged build without
                     # the bundled `_playwright` browsers used to throw the raw
@@ -7219,6 +7253,14 @@ class CareerPortalScanner:
                         prev_total = -1; empty_pages = 0; low_yield = 0
                         seed_params = parse_qsl(urlparse(seed_url).query)
                         for page_num in range(1, self.config.MAX_PAGINATION_PAGES + 1):
+                            # Pause/Stop must take effect between pages. Before
+                            # this gate the only exit from the pagination loop
+                            # was MAX_COMPANY_TIME_SEC (15 min), so pressing Stop
+                            # left the scan running for many minutes and the
+                            # button looked dead.
+                            if check_control(self.cancel_event, self.pause_event):
+                                diagnostics.append(f"stopped by user at page {page_num}")
+                                break
                             if time.monotonic() - started > self.config.MAX_COMPANY_TIME_SEC:
                                 diagnostics.append(f"company budget reached at page {page_num}")
                                 break
@@ -7269,7 +7311,12 @@ class CareerPortalScanner:
                 elif self.detail_scan and company_jobs:
                     # API-first crawl still gets explicit detail evidence when requested.
                     if sync_playwright is None:
-                        raise RuntimeError("Playwright is required for --detail. Install requirements and Chromium")
+                        _pw_reason = _playwright_unavailable_reason()
+                        diagnostics.append(f"playwright unavailable: {_pw_reason}")
+                        raise RuntimeError(
+                            f"Playwright is required for --detail ({_pw_reason}). "
+                            "Install requirements and Chromium"
+                        )
                     with sync_playwright() as pw:
                         browser = pw.chromium.launch(headless=True, args=BROWSER_ARGS)
                         ctx = browser.new_context()
@@ -7346,7 +7393,7 @@ class CareerPortalScanner:
         with cf.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
             futures = []
             for i, row in enumerate(targets, 1):
-                if self.cancel_event is not None and self.cancel_event.is_set():
+                if check_control(self.cancel_event, self.pause_event):
                     print(f"   CANCELLED: not submitting remaining {len(targets) - i + 1} targets")
                     break
                 futures.append(executor.submit(crawl_target, i, row))

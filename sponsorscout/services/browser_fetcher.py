@@ -88,13 +88,23 @@ def _extract_title(html: str) -> str:
     return m.group(1).strip() if m else ""
 
 
-def _playwright_available() -> bool:
-    """Check if Playwright package is importable."""
+def _playwright_import_error() -> str | None:
+    """Return why ``playwright.sync_api`` is not importable, or None if it is.
+
+    A bare boolean hid the reason entirely, which is how a frozen bundle that
+    lost Playwright (or its ``greenlet``/``pyee`` deps) ended up reporting only
+    a generic "Chromium is not available" warning.
+    """
     try:
         from playwright.sync_api import sync_playwright  # noqa: F401
-        return True
-    except ImportError:
-        return False
+    except ImportError as exc:
+        return f"{type(exc).__name__}: {exc}"
+    return None
+
+
+def _playwright_available() -> bool:
+    """Check if Playwright package is importable."""
+    return _playwright_import_error() is None
 
 
 def _ensure_playwright_browsers() -> bool:

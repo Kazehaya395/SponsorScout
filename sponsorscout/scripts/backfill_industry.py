@@ -8,7 +8,6 @@ Usage: python -m sponsorscout.scripts.backfill_industry
 """
 
 import logging
-import sys
 
 from sponsorscout.db.database import get_connection, DB_PATH
 

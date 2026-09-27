@@ -57,9 +57,15 @@ RESUME_BTN_TOOLTIP = (
     "Continue the last stopped scan — only companies it did not finish "
     "are scanned, so no progress is lost.")
 PAUSE_BTN_TOOLTIP = (
-    "Stop the scan now and keep everything found so far. Press Resume later "
-    "to continue the remaining companies — all browsers close, so other apps "
-    "run smoothly again.")
+    "Pause the running scan in place — workers stop at the next company "
+    "and browsers wait. Press Resume to continue instantly, no new scan "
+    "is started.")
+INMEMORY_RESUME_TOOLTIP = (
+    "Continue the paused scan where it stopped — same run, no loss.")
+STOP_BTN_TOOLTIP = (
+    "Stop the scan now and keep everything found so far. The stopped run "
+    "is checkpointed — Resume (the other button) starts a new scan for "
+    "the companies that were not finished, even after an app restart.")
 
 
 class ScanLogDialog(QDialog):
@@ -397,6 +403,17 @@ class ToolsTab(QWidget):
     data_changed = Signal()        # jobs/companies data may have changed
     status_message = Signal(str)
     _freshness_done = Signal(str)  # marshals worker results to the UI thread
+    # History-table refresh result: ``refresh()`` reads the DB on a worker
+    # thread and only touches the widget when the payload arrives here — same
+    # reason as the Resume lookup.  Without it the run table (another full
+    # scan_runs read) froze the window at the exact moment a scan ended.
+    _refresh_done = Signal(object)
+    # Resume-checkpoint lookup result from the worker thread: carries the
+    # ``db.get_resumable_scan`` dict (or ``None`` / error string) back to the
+    # GUI thread.  The lookup reads scan_runs + both seed CSVs, which blocks
+    # up to the SQLite busy_timeout while a scan writes — doing it on the UI
+    # thread is what froze the window on Stop/Resume.
+    _resume_lookup_done = Signal(object)
 
     def __init__(self, db_path: str, parent=None):
         super().__init__(parent)
@@ -405,7 +422,18 @@ class ToolsTab(QWidget):
         self.coordinator.progress.connect(self._on_scan_progress)
         self.coordinator.progress_tick.connect(self._on_scan_progress_tick)
         self.coordinator.finished.connect(self._on_scan_finished)
+        self.coordinator.state_changed.connect(self._on_coordinator_state)
         self._freshness_done.connect(self._on_freshness_done)
+        self._resume_lookup_done.connect(self._on_resume_lookup_done)
+        self._refresh_done.connect(self._on_refresh_done)
+        # Guard for the async resume-checkpoint lookup: the worker writes the
+        # result through _resume_lookup_done and only the latest reply may
+        # touch the buttons / dialogs.  A superseded slow reply (e.g. a
+        # pre-scan probe that returns after the scan finished) is ignored.
+        self._resume_lookup_seq = 0
+        self._resume_dialog_armed = False
+        # Same idea for the run-history read (see refresh()).
+        self._refresh_seq = 0
 
         root = QVBoxLayout(self)
         root.setContentsMargins(12, 12, 12, 12)
@@ -460,16 +488,22 @@ class ToolsTab(QWidget):
         self.resume_btn.setEnabled(False)
         self.resume_btn.setToolTip(_(RESUME_BTN_TOOLTIP))
         self.resume_btn.clicked.connect(self.resume_scan)
-        # "Pause" (not "Stop"): stopping IS pausing — progress is checkpointed
-        # in the DB and Resume continues the remaining companies later, even
-        # after an app restart (see resume_scan / get_resumable_scan).
-        self.stop_btn = QPushButton(_("Pause"))
+        # True in-memory Pause (suspends the running workers at the next
+        # company — same run, instant continue) plus a separate Stop that
+        # ends the run with a DB checkpoint for later Resume.  The old
+        # single control conflated both, so pausing forced a Stop +
+        # DB re-scan + new thread = the laggy pause/resume.
+        self.pause_btn = QPushButton(_("Pause"))
+        self.pause_btn.setEnabled(False)
+        self.pause_btn.setToolTip(_(PAUSE_BTN_TOOLTIP))
+        self.pause_btn.clicked.connect(self.toggle_pause)
+        self.stop_btn = QPushButton(_("Stop"))
         self.stop_btn.setEnabled(False)
-        self.stop_btn.setToolTip(_(PAUSE_BTN_TOOLTIP))
-        self.stop_btn.clicked.connect(self.coordinator.stop)
+        self.stop_btn.setToolTip(_(STOP_BTN_TOOLTIP))
+        self.stop_btn.clicked.connect(self.confirm_stop)
         self.scan_status = QLabel(_("Idle"))
         for w in (self.scan_btn, self.custom_btn, self.resume_btn,
-                  self.stop_btn, self.scan_status):
+                  self.pause_btn, self.stop_btn, self.scan_status):
             row.addWidget(w)
         row.addStretch(1)
         lay.addLayout(row)
@@ -564,6 +598,78 @@ class ToolsTab(QWidget):
         lay.addStretch(1)
         return box
 
+    def _set_scan_running_ui(self, phase_text: str):
+        """Shared button/label setup when a scan campaign starts or resumes."""
+        self.scan_btn.setEnabled(False)
+        self.custom_btn.setEnabled(False)
+        self.resume_btn.setEnabled(False)
+        self.pause_btn.setEnabled(True)
+        self.pause_btn.setText(_("Pause"))
+        self.pause_btn.setToolTip(_(PAUSE_BTN_TOOLTIP))
+        self.stop_btn.setEnabled(True)
+        self.scan_status.setText(_("Running…"))
+        self.scan_bar.setValue(0)
+        self.scan_phase.setText(phase_text)
+
+    def _on_coordinator_state(self, state: str):
+        """Mirror coordinator pause/stop transitions without polling."""
+        if state == "paused":
+            self.pause_btn.setEnabled(True)
+            self.pause_btn.setText(_("Resume"))
+            self.pause_btn.setToolTip(_(INMEMORY_RESUME_TOOLTIP))
+            self.scan_status.setText(_("Paused"))
+            self.stop_btn.setEnabled(True)
+        elif state == "running":
+            self.pause_btn.setEnabled(True)
+            self.pause_btn.setText(_("Pause"))
+            self.pause_btn.setToolTip(_(PAUSE_BTN_TOOLTIP))
+            self.scan_status.setText(_("Running…"))
+            self.stop_btn.setEnabled(True)
+        elif state == "stopping":
+            # Buttons freeze so a second click cannot re-arm anything; the
+            # worker emits "idle" when it actually lands.
+            self.pause_btn.setEnabled(False)
+            self.stop_btn.setEnabled(False)
+            self.scan_status.setText(_("Stopping…"))
+
+    def toggle_pause(self):
+        """Pause a live run in place, or resume it instantly (same run)."""
+        if not self.coordinator.is_running():
+            return
+        if self.coordinator.is_paused():
+            self.coordinator.resume()
+            return
+        # Optimistic flip FIRST: pause() acknowledges on the spot through
+        # state_changed("paused") (same thread -> direct connection), so a
+        # label set after the call would overwrite the acknowledgement and
+        # leave "Pausing…" on screen for the whole pause.
+        self.pause_btn.setText(_("Resume"))
+        self.pause_btn.setToolTip(_(INMEMORY_RESUME_TOOLTIP))
+        self.scan_status.setText(_("Pausing…"))
+        # Workers honour the pause at the next company; the run keeps going
+        # in memory, so nothing is checkpointed and no new scan is started.
+        self.coordinator.pause()
+
+    def confirm_stop(self):
+        """Complete stop with confirmation: ends the run, keeps a checkpoint."""
+        if not self.coordinator.is_running():
+            return
+        answer = QMessageBox.question(
+            self, _("Stop"),
+            _("Stop the running scan? Everything found so far is kept and "
+              "can be resumed later."),
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if answer != QMessageBox.Yes:
+            return
+        # UI first, then the state machine: ``stop()`` acknowledges through
+        # state_changed("stopping") synchronously, so a label written after the
+        # call could hide a click that already landed (see toggle_pause).
+        self.pause_btn.setEnabled(False)
+        self.stop_btn.setEnabled(False)
+        self.scan_status.setText(_("Stopping…"))
+        self.scan_phase.setText(_("Stopping…"))
+        self.coordinator.stop()
+
 # ── Scanner control ──────────────────────────────────────────────────────
     def start_scan(self):
         if self.coordinator.is_running():
@@ -574,12 +680,7 @@ class ToolsTab(QWidget):
         # the app always runs the campaign that extracts the most accurate
         # data for every job.
         self.scan_log.clear()
-        self.scan_status.setText(_("Running…"))
-        self.scan_bar.setValue(0)
-        self.scan_phase.setText(_("Starting scan…"))
-        self.scan_btn.setEnabled(False)
-        self.resume_btn.setEnabled(False)
-        self.stop_btn.setEnabled(True)
+        self._set_scan_running_ui(_("Starting scan…"))
         self.status_message.emit(_("Scan started"))
         self.coordinator.start(SCAN_METHOD)
 
@@ -607,40 +708,109 @@ class ToolsTab(QWidget):
                                     _("Select at least one company."))
             return
         self.scan_log.clear()
-        self.scan_status.setText(_("Running…"))
-        self.scan_bar.setValue(0)
-        self.scan_phase.setText(_("Starting custom scan…"))
-        self.scan_btn.setEnabled(False)
-        self.custom_btn.setEnabled(False)
-        self.resume_btn.setEnabled(False)
-        self.stop_btn.setEnabled(True)
+        self._set_scan_running_ui(_("Starting custom scan…"))
         self.status_message.emit(_("Custom scan started"))
         self.coordinator.start(SCAN_METHOD, scan_scope=scope)
 
     def resume_scan(self):
         """Continue the newest stopped run (Stop-as-checkpoint).
 
-        Only companies the stopped run did not finish are scanned; the
-        progress bar restores to the checkpoint (e.g. 54%) and continues.
-        Safe across app restarts — the checkpoint lives in the DB.
+        The DB lookup runs on a worker thread and the checkpoint dialog /
+        scan starts when the result arrives — Resume never blocks the UI,
+        even while a previous scan still holds the database.
         """
         if self.coordinator.is_running():
             QMessageBox.information(self, _("SponsorScout"),
                                     _("A scan is already running."))
             return
-        try:
-            checkpoint = db.get_resumable_scan(self.db_path)
-        except Exception as exc:
-            QMessageBox.critical(self, _("SponsorScout"),
-                                 _("Could not find a scan to resume:\n{error}")
-                                 .format(error=str(exc)))
+        self._start_resume_lookup(arm_dialog=True)
+
+    def _refresh_resume_button(self):
+        """Enable Resume only when a stopped run has unfinished companies.
+
+        Always asynchronous: the lookup runs on a worker thread (it can
+        block on the scan's SQLite writes) and _on_resume_lookup_done
+        applies the result as a silent probe.  Safe to call from __init__,
+        tab entry (showEvent) and the moment a scan finishes.
+        """
+        if self.coordinator.is_running():
             return
-        if not checkpoint:
-            QMessageBox.information(self, _("SponsorScout"),
-                                    _("Nothing to resume — no stopped scan "
-                                      "with unfinished companies."))
+        self._start_resume_lookup(arm_dialog=False)
+
+    def _start_resume_lookup(self, *, arm_dialog: bool):
+        """Run get_resumable_scan() off the GUI thread (never blocks it).
+
+        ``arm_dialog`` True = the user pressed Resume: the result opens the
+        checkpoint dialog/starts the scan.  False = silent probe after
+        construction/tab entry/finish that only refreshes the button.
+        """
+        self._resume_lookup_seq += 1
+        seq = self._resume_lookup_seq
+        self._resume_dialog_armed = arm_dialog
+        if arm_dialog:
+            self.resume_btn.setEnabled(False)
+            self.scan_phase.setText(_("Looking up the last stopped scan…"))
+
+        def worker():
+            try:
+                checkpoint = db.get_resumable_scan(self.db_path)
+            except Exception as exc:  # defensive: marshal, never crash
+                self._resume_lookup_done.emit((seq, "error", str(exc)))
+            else:
+                self._resume_lookup_done.emit((seq, "ok", checkpoint))
+
+        threading.Thread(target=worker, name="ResumeLookup",
+                         daemon=True).start()
+
+    def _on_resume_lookup_done(self, payload: object):
+        """Apply the newest resume lookup; drop superseded slow replies."""
+        try:
+            seq, kind, data = payload
+        except (TypeError, ValueError):  # pragma: no cover - defensive
+            return
+        if seq != self._resume_lookup_seq:
+            return  # a newer lookup already replaced this one
+        arm_dialog = self._resume_dialog_armed
+        self._resume_dialog_armed = False
+        if not arm_dialog:
+            self._apply_resume_probe(data if kind == "ok" else None)
+            return
+        self.scan_phase.setText("")
+        if kind == "error":
+            QMessageBox.critical(
+                self, _("SponsorScout"),
+                _("Could not find a scan to resume:\n{error}")
+                .format(error=str(data)))
             self._refresh_resume_button()
             return
+        if not data:
+            QMessageBox.information(
+                self, _("SponsorScout"),
+                _("Nothing to resume — no stopped scan with unfinished "
+                  "companies."))
+            self._refresh_resume_button()
+            return
+        self._begin_checkpoint_resume(data)
+
+    def _apply_resume_probe(self, checkpoint):
+        """Silent probe result: only enable/disable Resume + its tooltip."""
+        if self.coordinator.is_running():
+            return
+        self.resume_btn.setEnabled(bool(checkpoint))
+        if checkpoint:
+            remaining = (len(checkpoint["remaining_ats"])
+                         + len(checkpoint["remaining_career"]))
+            total = checkpoint["total_ats"] + checkpoint["total_career"]
+            done = total - remaining
+            self.resume_btn.setToolTip(
+                _("Resume {run} — {done}/{total} done, {remaining} "
+                  "remaining.").format(run=checkpoint["run_id"], done=done,
+                                        total=total, remaining=remaining))
+        else:
+            self.resume_btn.setToolTip(_(RESUME_BTN_TOOLTIP))
+
+    def _begin_checkpoint_resume(self, checkpoint: dict):
+        """Start a checkpoint continuation from an already-fetched lookup."""
         remaining = (len(checkpoint["remaining_ats"])
                      + len(checkpoint["remaining_career"]))
         total = checkpoint["total_ats"] + checkpoint["total_career"]
@@ -656,41 +826,16 @@ class ToolsTab(QWidget):
                 _("(+{n} companies added to seeds since the stop — "
                   "they are included.)").format(
                     n=checkpoint["added_since_stop"]))
-        self.scan_status.setText(_("Running…"))
+        self._set_scan_running_ui(
+            _("Resuming — {done}/{total} done.").format(done=done,
+                                                        total=total))
         try:
             self.scan_bar.setValue(int(done * 1000 / total) if total else 0)
         except Exception:
             self.scan_bar.setValue(0)
-        self.scan_phase.setText(
-            _("Resuming — {done}/{total} done.").format(done=done,
-                                                        total=total))
-        self.scan_btn.setEnabled(False)
-        self.resume_btn.setEnabled(False)
-        self.stop_btn.setEnabled(True)
         self.status_message.emit(_("Resuming scan"))
         self.coordinator.start(SCAN_METHOD,
                                resume_from=checkpoint["run_id"])
-
-    def _refresh_resume_button(self):
-        """Enable Resume only when a stopped run has unfinished companies."""
-        if self.coordinator.is_running():
-            return
-        try:
-            checkpoint = db.get_resumable_scan(self.db_path)
-        except Exception:
-            checkpoint = None
-        self.resume_btn.setEnabled(bool(checkpoint))
-        if checkpoint:
-            remaining = (len(checkpoint["remaining_ats"])
-                         + len(checkpoint["remaining_career"]))
-            total = checkpoint["total_ats"] + checkpoint["total_career"]
-            done = total - remaining
-            self.resume_btn.setToolTip(
-                _("Resume {run} — {done}/{total} done, {remaining} "
-                  "remaining.").format(run=checkpoint["run_id"], done=done,
-                                        total=total, remaining=remaining))
-        else:
-            self.resume_btn.setToolTip(_(RESUME_BTN_TOOLTIP))
 
     def _on_scan_progress(self, chunk: str):
         from sponsorscout.application.scan_coordinator import PROGRESS_PREFIX
@@ -726,11 +871,17 @@ class ToolsTab(QWidget):
     def _on_scan_finished(self, summary: dict):
         self.scan_btn.setEnabled(True)
         self.custom_btn.setEnabled(True)
+        self.pause_btn.setEnabled(False)
+        self.pause_btn.setText(_("Pause"))
         self.stop_btn.setEnabled(False)
         status = summary.get("status", "error")
-        if summary.get("cancelled"):
+        stopped = bool(summary.get("cancelled"))
+        if stopped:
             status = "cancelled"
-        self.scan_status.setText(status)
+        # Show the translated "Stopped." instead of the raw pipeline status
+        # ("cancelled") — the label sits next to the buttons the user just
+        # pressed, and app.py already reports "Scan stopped." in the status bar.
+        self.scan_status.setText(_("Stopped.") if stopped else status)
         for err in summary.get("errors") or []:
             self.scan_log.appendPlainText(f"ERROR: {err}")
         self.scan_log.appendPlainText(
@@ -808,7 +959,43 @@ class ToolsTab(QWidget):
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(p.parent)))
 
     def refresh(self):
-        rows = db.list_scan_runs(self.db_path, limit=25)
+        """Rebuild the run-history table without blocking the GUI thread.
+
+        ``db.list_scan_runs`` opens its own connection; while a scan is
+        writing, that read can block up to the SQLite busy_timeout.  Doing it
+        inline is what froze the window at the exact moment a scan ended
+        (``_on_scan_finished`` → ``refresh()``), and it is also called by
+        ``app._refresh_all()``.  The rows come back through ``_refresh_done``
+        so the widget itself is only ever touched on the GUI thread.
+        """
+        self._refresh_seq += 1
+        seq = self._refresh_seq
+
+        def worker():
+            try:
+                rows = db.list_scan_runs(self.db_path, limit=25)
+            except Exception:  # defensive: a failed read must not kill the tab
+                rows = []
+            self._refresh_done.emit((seq, rows))
+
+        threading.Thread(target=worker, name="RunsRefresh", daemon=True).start()
+
+    def _on_refresh_done(self, payload: object):
+        """Apply the newest history read; superseded slow replies are dropped."""
+        try:
+            seq, rows = payload
+        except (TypeError, ValueError):  # pragma: no cover - defensive
+            return
+        if seq != self._refresh_seq:
+            return  # a newer refresh already replaced this one
+        self._populate_runs_table(rows)
+        try:
+            self._refresh_resume_button()
+        except Exception:
+            pass
+
+    def _populate_runs_table(self, rows):
+        """Fill the run table (GUI thread only; rows come from the worker)."""
         self.runs_table.setRowCount(0)
         for r in rows:
             (run_id, method, started, _fin, status, _err, _ok, _empty,
@@ -837,10 +1024,6 @@ class ToolsTab(QWidget):
             for col, val in enumerate(values):
                 self.runs_table.setItem(
                     row_idx, col, QTableWidgetItem(str(val if val is not None else "")))
-        try:
-            self._refresh_resume_button()
-        except Exception:
-            pass
 
     # ── Data-quality actions (ported from the original Tools tab) ───────────
     def _review_quarantine(self):
@@ -1010,20 +1193,37 @@ class ToolsTab(QWidget):
         self.custom_btn.setText(_("Custom Scan"))
         self.custom_btn.setToolTip(_(CUSTOM_BTN_TOOLTIP))
         self.scan_btn.setToolTip(_(SCAN_BTN_TOOLTIP))
-        # The Pause/Resume labels and their hover texts were previously
-        # missed here, leaving e.g. "Riprendi" + an Italian Stop tooltip on
-        # an English UI after a language switch.
-        self.stop_btn.setText(_("Pause"))
-        self.stop_btn.setToolTip(_(PAUSE_BTN_TOOLTIP))
+        # The Pause/Resume toggle plus the separate Stop button (and their
+        # hover texts) were previously missed here, leaving e.g. "Riprendi"
+        # + an Italian Stop tooltip on an English UI after a language switch.
+        self.pause_btn.setText(
+            _("Resume") if self.coordinator.is_paused() else _("Pause"))
+        self.pause_btn.setToolTip(
+            _(INMEMORY_RESUME_TOOLTIP) if self.coordinator.is_paused()
+            else _(PAUSE_BTN_TOOLTIP))
+        self.stop_btn.setText(_("Stop"))
+        self.stop_btn.setToolTip(_(STOP_BTN_TOOLTIP))
         self.resume_btn.setText(_("Resume"))
         self.resume_btn.setToolTip(_(RESUME_BTN_TOOLTIP))
+        # Never clobber a transitional acknowledge ("Pausing…"/"Stopping…"
+        # set by the button handlers): a language switch that rewrote them
+        # to "Running…" would hide that the click already landed.
+        current = self.scan_status.text()
+        transitional = {_("Pausing…"), _("Stopping…"),
+                        "Pausing…", "Stopping…",
+                        "Pausa in corso…", "Arresto in corso…"}
+        if current not in transitional:
+            if self.coordinator.is_paused():
+                self.scan_status.setText(_("Paused"))
+            else:
+                self.scan_status.setText(
+                    _("Running…") if self.coordinator.is_running()
+                    else _("Idle"))
         # The checkpoint-aware tooltip needs a DB read (scan_runs + seed CSVs,
         # ~25 ms idle and up to busy_timeout during a scan). A language switch
         # must stay instant, so it is NOT recomputed here: the base tooltip is
         # set above and the detailed one returns the next time the Tools tab
         # becomes visible (see showEvent) or a scan finishes.
-        self.scan_status.setText(
-            _("Running…") if self.coordinator.is_running() else _("Idle"))
         self.verify_n.setToolTip(
             _("Maximum number of active jobs to re-verify per run."))
         self.scan_log.setPlaceholderText(_("Scan output appears here…"))

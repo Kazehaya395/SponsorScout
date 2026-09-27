@@ -760,6 +760,7 @@ def _normalize_names(names) -> list[str]:
 def run_scan(method: str = "full",
              db_path=None,
              cancel_event: threading.Event | None = None,
+             pause_event: threading.Event | None = None,
              only_companies: list | None = None,
              progress: ProgressFn | None = None,
              resume_from: str | None = None,
@@ -795,8 +796,10 @@ def run_scan(method: str = "full",
       the canonical URL key, so nothing is lost or duplicated.
 
     Must be called from a worker thread (it performs network I/O); the UI
-    layer receives progress via ``progress`` and cancellation via the shared
-    ``cancel_event``.  Returns a summary dict for the Tools tab.
+    layer receives progress via ``progress``, cancellation via the shared
+    ``cancel_event`` and suspension via ``pause_event`` (while set, the
+    scanners block at their control gates without ending the run, so Resume
+    continues in-place).  Returns a summary dict for the Tools tab.
     """
     method = "full" if method == "full" else "quick"
     progress = progress or _noop_progress
@@ -1009,6 +1012,7 @@ def run_scan(method: str = "full",
                 seed_file=str(seed_manager.user_ats_path()),
                 output_file=str(ats_out),
                 cancel_event=cancel_event,
+                pause_event=pause_event,
                 only_companies=scan_only_ats,
             )
             scanner.run_id = run_id
@@ -1042,13 +1046,25 @@ def run_scan(method: str = "full",
         try:
             from sponsorscout.services.browser_fetcher import (
                 _ensure_playwright_browsers,
+                _playwright_import_error,
             )
             if not _ensure_playwright_browsers():
+                _pw_err = _playwright_import_error()
+                if _pw_err:
+                    _hint = (
+                        "the Playwright package is NOT importable in this build "
+                        f"({_pw_err}); reinstall the full installer package."
+                    )
+                else:
+                    _hint = (
+                        "the Chromium binary is missing from this installation; "
+                        "reinstall the full installer package or run "
+                        "'playwright install chromium'."
+                    )
                 progress(
                     "WARNING: Chromium browser is not available — JS-rendered "
                     "career portals (provider=auto / custom career pages) will "
-                    "return 0 jobs. Reinstall the full installer package or run "
-                    "'playwright install chromium' on this machine."
+                    f"return 0 jobs because {_hint}"
                 )
         except Exception:  # pragma: no cover - pre-flight must not kill scans
             logger.exception("Browser pre-flight check failed")
@@ -1058,6 +1074,7 @@ def run_scan(method: str = "full",
                 output_csv=str(career_out),
                 detail_scan=detail,
                 cancel_event=cancel_event,
+                pause_event=pause_event,
                 only_companies=scan_only_career,
                 # Host-adaptive: the scanner sizes its own browser pool from
                 # CPU/RAM when this is None (2-core / 8 GB machines must not

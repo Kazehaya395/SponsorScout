@@ -14,6 +14,7 @@ on your own computer.
 ## 📖 Contents
 
 - [Download](#-download)
+- [Screenshots](#-screenshots)
 - [What It Does](#-what-it-does)
 - [Quick Start](#-quick-start)
 - [The Five Tabs](#-the-five-tabs)
@@ -37,6 +38,22 @@ Installers are on the [GitHub Releases page](https://github.com/Kazake95/Sponsor
 
 Pick the file for your platform. The app and its browser are bundled, so no
 Python is needed.
+
+---
+
+## 📸 Screenshots
+
+**Dashboard — KPIs, top sponsoring companies and jobs by country**
+<img src="assets/main_dashboard.png" alt="SponsorScout Dashboard tab: total companies, verified, sponsored and remote jobs, top companies by sponsorship, jobs by country" width="860">
+
+**Search — filters, tri-state sponsorship columns and pagination**
+<img src="assets/job_search_table.png" alt="SponsorScout Search tab: title, company, location and experience filters, Sponsor, Blue Card, Reloc and Regex toggles, result counter with pagination and a sortable job table" width="860">
+
+**Tools — scan control, live progress log, run history and data quality**
+<img src="assets/scanning_tool.png" alt="SponsorScout Tools tab: Scan Now and Custom Scan, progress bar with the live scan log, scan history table with log download, data-quality and freshness actions" width="860">
+
+**Data Management — editable ATS and career seed files**
+<img src="assets/backend_data_management.png" alt="SponsorScout Data Management tab: ATS portals and career portals seed editor with Add, Edit, Delete, Save to CSV, Reload and Reset to bundled defaults" width="860">
 
 ---
 
@@ -73,6 +90,8 @@ Totals for companies, verified jobs, sponsored, remote and EU Blue Card jobs,
 plus top companies by sponsorship and jobs by country. **Rescan Companies**
 starts a full scan; **Refresh** reloads the numbers.
 
+<img src="assets/main_dashboard.png" alt="Dashboard tab: KPI cards, top companies by sponsorship and jobs by country" width="780">
+
 ### 2. Search
 The main job browser.
 
@@ -85,36 +104,52 @@ The main job browser.
   (untranslated) form in both languages, so filters never break when you switch
   language. Only labels, headers and buttons are translated.
 - **Experience** shows the requirement as stated: `4+`, `3-5`, `6 mo`, `None`
-  when the ad explicitly asks for none, `Senior` for a level, `Mentioned` when
-  it refers to experience without a figure, and `NA` when the ad never mentions
-  it. Sorting is numeric, so `3-5` comes before `11+`. Hover for the original
-  sentence.
+  when the ad explicitly asks for none, `Senior` for a level, and one single `?`
+  when the ad states no figure and no level — whether it only mentions
+  experience ("customer support experience is a plus") or never mentions it at
+  all. Sorting is numeric, so `3-5` comes before `11+`. Hover for the detail:
+  the exact figure, or what the ad actually said.
 - **Sort** by clicking any column header (click again to reverse).
+- **Column widths follow the content** — no value is cut off — and every
+  column, Title included, is **resizable**: drag a divider and it stays where
+  you put it, even after a page change or a new search. Double-click a divider
+  to fit that column to its content again; a value too long to show (or a
+  column you squeezed) shows its full text on hover.
 - **Right-click** a row to open it in your browser or save it to Applications.
 - **Pagination** — results are shown one page at a time (100, 200, 500 or 1000
   rows, default 500) with a result counter and ◀ / ▶ buttons, so large
   databases stay responsive and every row stays reachable.
+
+<img src="assets/job_search_table.png" alt="Search tab: filter row, tri-state Sponsor, Blue Card, Reloc and Regex toggles, paginated and sortable results table" width="780">
 
 ### 3. Applications
 Your pipeline. Select a saved job to set its status and add notes.
 
 ### 4. Tools
 - **Scanner** — **Scan Now** runs a full scan; **Custom Scan** lets you pick
-  companies and source types. **Pause** stops the scan with everything found so
-  far already saved; **Resume** continues exactly the remaining companies, even
-  after restarting the app. See [Scanning](#-scanning).
+  companies and source types. **Pause** suspends the running scan in place
+  (workers stop at the next company, browsers stay open) and the same button
+  becomes **Resume**, continuing instantly — no new run is started. **Stop**
+  ends the scan and keeps everything found so far; the stopped run is
+  checkpointed, so **Resume** (next to the scan buttons) starts a new scan for
+  the companies that were not finished, even after restarting the app. See
+  [Scanning](#-scanning).
 - **Scan History** — every past run; select one to read or download its
-  per-company log. Paused runs show `cancelled` and become `resumed` when a
+  per-company log. Stopped runs show `cancelled` and become `resumed` when a
   later run finishes the remaining work.
 - **Data Quality** — remove duplicate jobs/companies, clear expired jobs, or
   wipe all scanned data.
 - **Freshness Check** — re-verify saved jobs against their live pages and mark
   dead listings as expired.
 
+<img src="assets/scanning_tool.png" alt="Tools tab: Scan Now and Custom Scan buttons, progress bar with live scan log, scan history and data-quality actions" width="780">
+
 ### 5. Data Management
 Edit the company lists that get scanned (**ATS portals** and **Career
 portals**). Changes apply on the next scan; **Reset to bundled defaults**
 restores the original lists.
+
+<img src="assets/backend_data_management.png" alt="Data Management tab: ATS portals and career portals seed editor with Save to CSV, Reload and Reset actions" width="780">
 
 ---
 
@@ -184,8 +219,20 @@ removed because other applications may use it.
 check the newest **Scan History** row — an `error` status, or failures in its
 log, shows which companies returned nothing.
 
-**"Chromium browser is not available".** Career pages are crawled with
-Playwright. Installers bundle it; from source run
+**"Playwright is required for DOM fallback" / "Chromium browser is not
+available".** Career pages are crawled with Playwright, and installers bundle
+both the library and Chromium. To see exactly what is wrong in an installed
+build, run:
+
+```bash
+/opt/sponsorscout/SponsorScout --self-check --self-check-browser
+"C:\Program Files\SponsorScout\SponsorScout.exe" --self-check --self-check-browser
+```
+
+It reports whether `playwright` imports (including *why* it fails, e.g. a
+missing `greenlet`), where Playwright looks for browsers, and whether the
+bundled Chromium launches — without opening the app. Builds run this
+automatically and refuse to package a broken bundle. From source, run
 `python -m playwright install chromium`.
 
 **Some companies returned no jobs.** They may have no open roles (`EMPTY` in
@@ -195,8 +242,11 @@ Nothing is dropped silently.
 **The scan is slow.** The detail-page pass is the slow part, and it is bounded:
 SponsorScout sizes its browser pool from your CPU/RAM, runs at below-normal
 priority, and blocks images/fonts/media while crawling. The Dashboard stays
-usable. You do not have to wait it out — press **Pause** (everything found is
-saved) and **Resume** later, even after restarting the app.
+usable. You do not have to wait it out — press **Pause** to suspend the scan
+where it is (nothing is lost, browsers just wait) and click the same button
+again to continue instantly. **Stop** ends the run and keeps everything found,
+and **Resume** later continues the unfinished companies, even after restarting
+the app.
 
 **A job shows `?`.** `?` means *unknown*, never *no*. The ad had no explicit
 evidence, so SponsorScout does not guess. Unknown jobs are never removed.
@@ -274,6 +324,7 @@ MIT — see [LICENSE](LICENSE).
 ## 📖 Indice
 
 - [Scarica](#-scarica)
+- [Schermate](#-schermate)
 - [Cosa Fa](#-cosa-fa)
 - [Avvio Rapido](#-avvio-rapido)
 - [Le Cinque Schede](#-le-cinque-schede)
@@ -297,6 +348,22 @@ Gli installer sono nella [pagina GitHub Releases](https://github.com/Kazake95/Sp
 
 Scegli il file per la tua piattaforma. L'app e il browser sono inclusi, quindi
 non serve Python.
+
+---
+
+## 📸 Schermate
+
+**Pannello — KPI, migliori aziende per sponsorizzazione e lavori per paese**
+<img src="assets/main_dashboard.png" alt="Scheda Pannello di SponsorScout: totale aziende, lavori verificati, sponsorizzati e remoti, migliori aziende per sponsorizzazione, lavori per paese" width="860">
+
+**Cerca — filtri, colonne tri-stato e paginazione**
+<img src="assets/job_search_table.png" alt="Scheda Cerca di SponsorScout: filtri per posizione, azienda, località ed esperienza, opzioni Sponsor, Carta Blu, Trasferimento e Regex, contatore risultati con paginazione e tabella ordinabile" width="860">
+
+**Strumenti — controllo scansione, log live, cronologia e qualità dati**
+<img src="assets/scanning_tool.png" alt="Scheda Strumenti di SponsorScout: Scansiona Ora e Scansione Personalizzata, barra di avanzamento con log della scansione, cronologia con download dei log, azioni di qualità dati e verifica aggiornamento" width="860">
+
+**Gestione Dati — file seed ATS e Career modificabili**
+<img src="assets/backend_data_management.png" alt="Scheda Gestione Dati di SponsorScout: editor dei file seed Portali ATS e Portali Career con Aggiungi, Modifica, Elimina, Salva su CSV, Ricarica e Ripristina predefiniti" width="860">
 
 ---
 
@@ -337,6 +404,8 @@ UE, più le migliori aziende per sponsorizzazione e i lavori per paese.
 **Riscansiona Aziende** avvia una scansione completa; **Aggiorna** ricarica i
 numeri.
 
+<img src="assets/main_dashboard.png" alt="Scheda Pannello: schede KPI, migliori aziende per sponsorizzazione e lavori per paese" width="780">
+
 ### 2. Cerca
 Il browser principale dei lavori.
 
@@ -352,17 +421,27 @@ Il browser principale dei lavori.
   tradotti.
 - **Esperienza** mostra il requisito come indicato: `4+`, `3-5`, `6 mo`, `None`
   quando l'annuncio chiede esplicitamente nessuna esperienza, `Senior` per un
-  livello, `Mentioned` quando si parla di esperienza senza cifre e `NA` quando
-  l'annuncio non ne parla affatto. L'ordinamento è numerico, così `3-5`
-  precede `11+`. Passa il mouse per la frase originale.
+  livello e un unico `?` quando l'annuncio non indica né cifre né livello — sia
+  quando cita l'esperienza ("customer support experience is a plus"), sia quando
+  non ne parla affatto. L'ordinamento è numerico, così `3-5` precede `11+`.
+  Passa il mouse per il dettaglio: la cifra esatta o cosa dice davvero
+  l'annuncio.
 - **Ordina** cliccando l'intestazione di una colonna (clicca di nuovo per
   invertire).
+- **Le larghezze delle colonne seguono il contenuto** — nessun valore viene
+  tagliato — e ogni colonna, Titolo incluso, è **ridimensionabile**: trascina
+  un divisore e resta dove lo metti, anche cambiando pagina o eseguendo una
+  nuova ricerca. Fai doppio clic su un divisore per riadattare quella colonna
+  al contenuto; un valore troppo lungo (o una colonna che hai ridotto) si legge
+  per intero passando il mouse.
 - **Tasto destro** su una riga per aprirla nel browser o salvarla nelle
   Candidature.
 - **Paginazione** — i risultati sono mostrati una pagina alla volta (100, 200,
   500 o 1000 righe, 500 per impostazione predefinita) con contatore e pulsanti
   ◀ / ▶, così i database grandi restano rapidi e ogni riga resta
   raggiungibile.
+
+<img src="assets/job_search_table.png" alt="Scheda Cerca: riga di filtri, opzioni tri-stato Sponsor, Carta Blu e Trasferimento, tabella risultati paginata e ordinabile" width="780">
 
 ### 3. Candidature
 Il tuo percorso. Seleziona un lavoro salvato per impostarne lo stato e
@@ -371,11 +450,15 @@ aggiungere note.
 ### 4. Strumenti
 - **Scanner** — **Scansiona Ora** esegue una scansione completa; **Scansione
   Personalizzata** ti lascia scegliere aziende e tipi di fonte. **Pausa**
-  interrompe la scansione con tutto ciò che è stato trovato già salvato;
-  **Riprendi** continua esattamente le aziende restanti, anche dopo aver
-  riavviato l'app. Vedi [Scansione](#-scansione).
+  sospende la scansione sul posto (i worker si fermano alla prossima azienda, i
+  browser restano aperti) e lo stesso pulsante diventa **Riprendi**, per
+  continuare subito — nessuna nuova esecuzione viene avviata. **Ferma** termina
+  la scansione mantenendo tutto ciò che è stato trovato; l'esecuzione interrotta
+  viene salvata, quindi **Riprendi** (accanto ai pulsanti di scansione) avvia una
+  nuova scansione solo per le aziende non finite, anche dopo aver riavviato
+  l'app. Vedi [Scansione](#-scansione).
 - **Cronologia Scansioni** — ogni esecuzione passata; selezionane una per
-  leggere o scaricare il registro per azienda. Le scansioni interrotte mostrano
+  leggere o scaricare il registro per azienda. Le scansioni fermate mostrano
   `cancelled` e diventano `resumed` quando un'esecuzione successiva completa il
   lavoro rimanente.
 - **Qualità Dati** — rimuovi lavori/aziende duplicati, cancella lavori
@@ -383,10 +466,14 @@ aggiungere note.
 - **Verifica Aggiornamento** — riverifica i lavori salvati sulle pagine live e
   segna gli annunci non più disponibili come scaduti.
 
+<img src="assets/scanning_tool.png" alt="Scheda Strumenti: pulsanti Scansiona Ora e Scansione Personalizzata, barra di avanzamento con log, cronologia e azioni di qualità dati" width="780">
+
 ### 5. Gestione Dati
 Modifica gli elenchi di aziende che vengono scansionati (**Portali ATS** e
 **Portali Career**). Le modifiche hanno effetto dalla scansione successiva;
 **Ripristina predefiniti** riporta gli elenchi originali.
+
+<img src="assets/backend_data_management.png" alt="Scheda Gestione Dati: editor dei seed Portali ATS e Portali Career con Salva su CSV, Ricarica e Ripristino predefiniti" width="780">
 
 ---
 
@@ -462,9 +549,21 @@ ancora vuoto, controlla l'ultima riga della **Cronologia Scansioni**: uno stato
 `error`, o errori nel registro, indicano quali aziende non hanno restituito
 lavori.
 
-**"Chromium browser is not available".** Le pagine carriera vengono esplorate
-con Playwright. Gli installer lo includono; da codice sorgente esegui
-`python -m playwright install chromium`.
+**"Playwright is required for DOM fallback" / "Chromium browser is not
+available".** Le pagine carriera vengono esplorate con Playwright, e gli
+installer includono sia la libreria sia Chromium. Per vedere esattamente cosa
+non funziona in una build installata, esegui:
+
+```bash
+/opt/sponsorscout/SponsorScout --self-check --self-check-browser
+"C:\Program Files\SponsorScout\SponsorScout.exe" --self-check --self-check-browser
+```
+
+Riporta se `playwright` si importa (incluso il *motivo* di un eventuale
+errore, ad esempio `greenlet` mancante), dove Playwright cerca i browser e se
+il Chromium incluso si avvia — senza aprire l'app. Le build eseguono questo
+controllo automaticamente e rifiutano di pacchettizzare un bundle rotto. Da
+codice sorgente, esegui `python -m playwright install chromium`.
 
 **Alcune aziende non hanno restituito lavori.** Potrebbero non avere posizioni
 aperte (`EMPTY` nel log) oppure bloccare temporaneamente l'accesso automatico:
@@ -473,9 +572,11 @@ riprova più tardi. Nulla viene perso in silenzio.
 **La scansione è lenta.** La fase di dettaglio è la più lenta ed è limitata:
 SponsorScout dimensiona i browser in base a CPU/RAM, gira con priorità
 inferiore al normale e blocca immagini/font/media. Il Pannello resta
-utilizzabile. Non devi aspettare tutto: premi **Pausa** (tutto ciò che è stato
-trovato è già salvato) e **Riprendi** più tardi, anche dopo aver riavviato
-l'app.
+utilizzabile. Non devi aspettare tutto: premi **Pausa** per sospendere la
+scansione dove si trova (nulla va perso, i browser attendono) e clicca di nuovo
+lo stesso pulsante per continuare subito. **Ferma** termina l'esecuzione
+mantenendo tutto ciò che è stato trovato, e **Riprendi** più tardi continua le
+aziende non finite, anche dopo aver riavviato l'app.
 
 **Un lavoro mostra `?`.** `?` significa *sconosciuto*, mai *no*. L'annuncio non
 conteneva evidenze esplicite, quindi SponsorScout non ipotizza nulla. I lavori

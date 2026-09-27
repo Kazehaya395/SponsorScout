@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 import random
 from contextlib import contextmanager
-from typing import Any
 
 from requests import Session
 from requests.adapters import HTTPAdapter

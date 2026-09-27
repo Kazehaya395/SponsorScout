@@ -9,7 +9,7 @@ Guards four bugs:
 
 2. The Experience dropdown must contain EXACTLY the unique values shown in
    the Experience column (rendered by ``_experience_cell``: ``4+``,
-   ``Senior``, ``NA``, ...) — not raw ``experience_level`` distincts.
+   ``Senior``, ``?``, ...) — not raw ``experience_level`` distincts.
 
 3. Dropdowns must always show the FULL unique value list of the data —
    never collapse to ["All", <selected>] — so switching values is always
@@ -17,8 +17,12 @@ Guards four bugs:
 
 4. Filter option values are ABSOLUTE (English / raw data) in every app
    language: the sentinel stays "All" (never "Tutti") and Experience
-   values stay "None"/"Mentioned"/"mo", so filters keep working after a
+   values stay "None"/"?"/"mo", so filters keep working after a
    language switch.
+
+5. Table columns must fit their CONTENT and stay resizable: a divider the
+   user drags is never overwritten by the next render, and every column —
+   Title included — is draggable.
 """
 import os
 
@@ -99,7 +103,7 @@ def test_experience_dropdown_is_exact_unique_column_values(db_path):
     collapsing to ["All", <selected>] after every pick and forcing the
     All -> Search -> pick -> Search detour.
     """
-    # Four rows: rendered Experience "4+" (DE), "Senior" (DE), "NA" (DE)
+    # Four rows: rendered Experience "4+" (DE), "Senior" (DE), "?" (DE)
     # and "4+" (FR) — the France row drives the direct country-switch check.
     _seed_searchable_job(db_path)  # required="4+ years", level="Senior"
     _seed_searchable_job(
@@ -127,10 +131,10 @@ def test_experience_dropdown_is_exact_unique_column_values(db_path):
     assert tab.table.rowCount() == 4
     combo = tab.experience_combo
     # Unfiltered: dropdown is EXACTLY the unique text shown in the column,
-    # ordered like the column sorts (numbers, levels, then NA).
+    # ordered like the column sorts (numbers, levels, then the single '?').
     column_values = {tab.table.item(r, 4).text() for r in range(4)}
-    assert column_values == {"4+", "Senior", "NA"}
-    assert _combo_values(combo) == ["All", "4+", "Senior", "NA"]
+    assert column_values == {"4+", "Senior", "?"}
+    assert _combo_values(combo) == ["All", "4+", "Senior", "?"]
     assert _combo_values(tab.country_combo) == ["All", "France", "Germany"]
 
     # Pick a value: the table filters, the dropdowns keep the FULL list.
@@ -138,7 +142,7 @@ def test_experience_dropdown_is_exact_unique_column_values(db_path):
     tab.run_search()
     assert tab.table.rowCount() == 1
     assert tab.table.item(0, 0).text() == "Staff Engineer"
-    assert _combo_values(combo) == ["All", "4+", "Senior", "NA"]  # no collapse
+    assert _combo_values(combo) == ["All", "4+", "Senior", "?"]  # no collapse
     assert _combo_values(tab.country_combo) == ["All", "France", "Germany"]
 
     # Direct switch Senior -> "4+" WITHOUT the All -> Search detour.
@@ -466,7 +470,7 @@ def test_header_sort_orders_data_and_keeps_columns_aligned(db_path):
     # Sort by Experience: the numeric column uses the numeric key, not text.
     header.setSortIndicator(4, Qt.AscendingOrder)
     header.sectionClicked.emit(4)
-    assert [tab.table.item(r, 4).text() for r in range(3)] == ["3-5", "4+", "NA"]
+    assert [tab.table.item(r, 4).text() for r in range(3)] == ["3-5", "4+", "?"]
     # Still row-aligned after the second sort.
     assert tab.table.item(0, 0).text() == "Alpha Engineer"
     assert tab.table.item(1, 0).text() == "Zeta Engineer"
@@ -486,7 +490,7 @@ def test_headers_translate_but_column_order_stays_fixed(db_path):
     sort keys, tooltips and tests address.
     """
     from sponsorscout.i18n import _, set_locale
-    from sponsorscout.ui.tabs.search import HEADERS, _header_labels
+    from sponsorscout.ui.tabs.search import HEADERS
 
     try:
         tab = _make_tab(db_path)
@@ -558,4 +562,194 @@ def test_retranslate_does_not_rebuild_the_table(db_path):
     t0 = time.perf_counter()
     tab.retranslate()
     assert (time.perf_counter() - t0) < 0.05, "retranslate() got slow again"
+
+
+
+def test_columns_fit_their_content_and_stay_draggable(db_path):
+    """Every column must be wide enough for its own content — and draggable.
+
+    Regression: the sections were sized from ``QHeaderView.sectionSizeHint()``,
+    which for an item view only accounts for the HEADER LABEL (measured on the
+    real dataset: "Company" -> 88 px while the widest company cell needs
+    ~220 px). Every longer value was therefore elided at a "static" width
+    ("Amazon Italia" -> "Amazon …", "Hamburg, Germany" -> "Hambur…"). The fit
+    is measured from the displayed text, and no column is Stretch any more, so
+    even Title is draggable.
+    """
+    from PySide6.QtGui import QFontMetrics
+    from PySide6.QtWidgets import QHeaderView
+    from sponsorscout.ui.tabs.search import HEADERS, _COL_MAX_WIDTH
+
+    _seed_searchable_job(
+        db_path,
+        title="Senior Fullstack Engineer - DevOps and Infrastructure",
+        company="Amazon Italia Development Center",
+        location="Milan, Metropolitan City of Milan",
+        country="Italy", url="https://jobs.example/w1")
+    _seed_searchable_job(
+        db_path, title="Backend Engineer", company="Acme",
+        location="Berlin", country="Germany", url="https://jobs.example/w1b")
+    tab = _make_tab(db_path)
+    tab.resize(1400, 700)
+    tab.show()
+    tab.populate_static_filters()
+    tab.run_search()
+    assert tab.table.rowCount() == 2
+
+    header = tab.table.horizontalHeader()
+    metrics = QFontMetrics(tab.table.font())
+    for col in range(len(HEADERS)):
+        assert header.sectionResizeMode(col) == QHeaderView.Interactive, (
+            f"{HEADERS[col]} is not user-resizable")
+        label = tab.table.horizontalHeaderItem(col).text()
+        for r in range(tab.table.rowCount()):
+            text = tab.table.item(r, col).text()
+            need = max(metrics.horizontalAdvance(text),
+                       metrics.horizontalAdvance(label)) + 16
+            if need > _COL_MAX_WIDTH:
+                # A column does not grow past the cap (one absurd value must
+                # not push the others off the window) — but nothing is lost:
+                # the cell carries its full text as a tooltip.
+                assert header.sectionSize(col) == _COL_MAX_WIDTH
+                assert tab.table.item(r, col).toolTip() == text
+            else:
+                assert header.sectionSize(col) >= need, (
+                    f"{HEADERS[col]} is {header.sectionSize(col)} px but "
+                    f"{text!r} needs {need} px — the column is clipping it")
+
+
+def test_columns_still_fill_the_window(db_path):
+    """The fit keeps the leftover width on Title (what Stretch used to do).
+
+    All-Interactive sections would otherwise leave a grey strip after the last
+    column, so the slack is handed to column 0 — which also keeps the table
+    looking the same as before. A window resize only re-shares that slack; no
+    text is re-measured.
+    """
+    from PySide6.QtWidgets import QApplication
+    from sponsorscout.ui.tabs.search import HEADERS
+
+    _seed_searchable_job(db_path, url="https://jobs.example/w2")
+    tab = _make_tab(db_path)
+    tab.resize(1400, 700)
+    tab.show()
+    tab.populate_static_filters()
+    tab.run_search()
+
+    header = tab.table.horizontalHeader()
+    columns = range(len(HEADERS))
+
+    def total():
+        return sum(header.sectionSize(c) for c in columns)
+
+    assert total() == tab.table.viewport().width(), "empty strip after the table"
+    wide = total()
+    tab.resize(1000, 700)
+    QApplication.instance().processEvents()
+    assert total() == tab.table.viewport().width()
+    assert total() < wide, "Title did not give the slack back"
+
+
+def test_user_column_width_survives_page_change_and_search(db_path):
+    """A dragged divider is a user decision — never auto-fitted again.
+
+    Regression: every render re-sized the columns from scratch, so a manual
+    resize was silently undone by the next page change (or search) and the
+    columns felt frozen.
+    """
+    _seed_searchable_jobs(db_path, 120, "https://jobs.example/w3")
+    tab = _make_tab(db_path)
+    tab.resize(1200, 700)
+    tab.show()
+    tab.populate_static_filters()
+    tab.page_size_combo.setCurrentIndex(0)  # 100 rows -> two pages
+    tab._page_size_timer.stop()
+    tab.run_search()
+
+    header = tab.table.horizontalHeader()
+    header.resizeSection(2, 260)  # exactly what a drag of a divider does
+    assert tab._user_widths.get(2) == 260
+
+    tab._next_page()
+    assert header.sectionSize(2) == 260, "a page change undid the user's width"
+    tab._prev_page()
+    assert header.sectionSize(2) == 260
+
+    # A new search re-measures every column, but not the one the user sized.
+    tab.title_edit.setText("^Engineer 7$")
+    tab.regex_check.setChecked(True)
+    tab.run_search()
+    assert tab.table.rowCount() == 1
+    assert header.sectionSize(2) == 260, "a new search undid the user's width"
+
+
+def test_clipped_tooltip_never_survives_a_page_change(db_path):
+    """A cell may not keep the tooltip of the job a previous page showed.
+
+    Cells are reused across renders, so a "title too long to show" tooltip
+    would otherwise stay on the cell and describe a DIFFERENT job — the same
+    class of bug as a stale row index pointing at the wrong job.
+    """
+    _seed_searchable_job(
+        db_path,
+        title="Principal Platform Engineer - Distributed Systems and Reliability",
+        company="Acme", url="https://jobs.example/long")
+    _seed_searchable_job(
+        db_path, title="Backend Engineer", company="Acme",
+        url="https://jobs.example/short")
+    tab = _make_tab(db_path)
+    tab.resize(1100, 700)
+    tab.show()
+    tab.populate_static_filters()
+    tab.run_search()
+    row = next(r for r in range(tab.table.rowCount())
+               if tab.table.item(r, 0).text().startswith("Principal"))
+    assert tab.table.item(row, 0).toolTip() == (
+        "Principal Platform Engineer - Distributed Systems and Reliability")
+
+    # A new result set that does NOT contain the long title must clear it:
+    # the cell is reused and now shows a different (shorter) job.
+    tab.title_edit.setText("Backend Engineer")
+    tab.run_search()
+    assert tab.table.rowCount() == 1
+    assert tab.table.item(0, 0).text() == "Backend Engineer"
+    assert tab.table.item(0, 0).toolTip() == "", (
+        "stale tooltip of the previous job is still attached")
+
+
+def test_header_double_click_refits_a_column_to_its_content(db_path):
+    """Double-clicking a divider fits that column to its CONTENT again.
+
+    Qt's own handler resizes the section to ``sectionSizeHint()`` — the header
+    label width — which would shrink a column that shows "Amazon Italia" right
+    back to a clipped 88 px. ``_SearchHeader`` routes the double-click to the
+    tab's own measurement instead.
+    """
+    from PySide6.QtCore import QEvent, QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+    from sponsorscout.ui.tabs.search import _SearchHeader
+
+    _seed_searchable_job(
+        db_path, company="Amazon Italia Development Center",
+        location="Berlin", url="https://jobs.example/w4")
+    tab = _make_tab(db_path)
+    tab.populate_static_filters()
+    tab.run_search()
+
+    header = tab.table.horizontalHeader()
+    assert isinstance(header, _SearchHeader)
+    header.resizeSection(1, 400)
+    assert header.sectionSize(1) == 400
+
+    # Synthesise the double-click on the Company header.
+    pos = QPointF(header.sectionViewportPosition(1) + 5, 10)
+    event = QMouseEvent(QEvent.Type.MouseButtonDblClick, pos, pos,
+                        Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton,
+                        Qt.KeyboardModifier.NoModifier)
+    header.mouseDoubleClickEvent(event)
+
+    assert 1 not in tab._user_widths
+    fitted = tab._content_widths(tab._page_rows())[1]
+    assert header.sectionSize(1) == fitted
+    assert fitted > 150, "the company cell is still clipped after the refit"
 

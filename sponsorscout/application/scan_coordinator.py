@@ -27,6 +27,11 @@ class ScanCoordinator(QObject):
     progress_tick = Signal(int, int, str, str)
     #: Emitted once when the scan thread ends; carries the pipeline summary.
     finished = Signal(dict)
+    #: Control state: ``"idle" | "running" | "paused" | "stopping"``.
+    #: pause()/resume()/stop() emit it immediately (UI thread), start() emits
+    #: "running" and the worker emits "idle" when the campaign ends, so the
+    #: Tools tab never has to poll the thread to know what the buttons do.
+    state_changed = Signal(str)
 
     # Progress batching.  The scanners emit a line per company, per page and
     # per 100 detail checks; forwarding every line as its own queued Qt signal
@@ -40,11 +45,47 @@ class ScanCoordinator(QObject):
         super().__init__()
         self.db_path = db_path
         self._cancel = threading.Event()
+        # In-memory pause: set = suspend at the next control gate, clear =
+        # continue.  Distinct from _cancel so Pause never ends the run, which
+        # is what made the old single "Pause" button (a stop) so expensive to
+        # undo — it forced a DB checkpoint lookup plus a brand-new thread.
+        self._pause = threading.Event()
         self._thread: Optional[threading.Thread] = None
+        self._state = "idle"
 
     # ── Public API (main thread) ─────────────────────────────────────────────
     def is_running(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
+
+    def state(self) -> str:
+        return self._state
+
+    def is_paused(self) -> bool:
+        return self._pause.is_set()
+
+    def _emit_state(self, state: str) -> None:
+        self._state = state
+        self.state_changed.emit(state)
+
+    def pause(self) -> None:
+        """Suspend the scan in place.
+
+        Workers block at the next ``check_control`` gate; browsers stay open
+        and the run keeps its identity, so :meth:`resume` continues instantly
+        with no database round-trip.  No-op if no scan is running or it is
+        already paused.
+        """
+        if not self.is_running() or self._pause.is_set():
+            return
+        self._pause.set()
+        self._emit_state("paused")
+
+    def resume(self) -> None:
+        """Undo :meth:`pause`.  No-op when nothing is paused."""
+        if not self._pause.is_set():
+            return
+        self._pause.clear()
+        self._emit_state("running" if self.is_running() else "idle")
 
     def start(self, method: str = "full", resume_from: str | None = None,
               scan_scope: dict | None = None) -> bool:
@@ -66,7 +107,13 @@ class ScanCoordinator(QObject):
         """
         if self.is_running():
             return False
+        # A previous run may have left STOP set, or PAUSE stuck because the
+        # user paused and then closed/stopped the campaign; a new campaign
+        # must always begin with both control flags clear, or the very first
+        # gate would abort/suspend the fresh scan.
         self._cancel.clear()
+        self._pause.clear()
+        self._emit_state("running")
 
         def worker():
             from sponsorscout.scanning import pipeline
@@ -103,6 +150,7 @@ class ScanCoordinator(QObject):
                     method=method,
                     db_path=self.db_path,
                     cancel_event=self._cancel,
+                    pause_event=self._pause,
                     progress=on_progress,
                     resume_from=resume_from,
                     only_ats=scope.get("ats") if scope else None,
@@ -119,6 +167,11 @@ class ScanCoordinator(QObject):
                     "errors": [f"{type(exc).__name__}: {exc}"],
                 }
             flush_progress()
+            # A campaign that is over is never "paused": clearing the flag
+            # here stops a Pause pressed as the last company finished from
+            # leaking into the next run's Pause/Resume button state.
+            self._pause.clear()
+            self._emit_state("idle")
             self.finished.emit(summary)
 
         self._thread = threading.Thread(target=worker, name="ScanWorker", daemon=True)
@@ -126,8 +179,17 @@ class ScanCoordinator(QObject):
         return True
 
     def stop(self):
-        """Cooperative stop: scanners check this between targets/companies."""
+        """Cooperative stop: scanners check this between control gates.
+
+        A pending pause is cleared first so Stop always wins — otherwise a
+        Stop pressed while paused would queue behind the pause and look
+        ignored.  The run keeps its DB checkpoint, so the separate Resume
+        button can still continue it later (even after an app restart).
+        """
+        self._pause.clear()
         self._cancel.set()
+        if self.is_running():
+            self._emit_state("stopping")
 
 
 #: Prefix for machine-readable progress lines.  The pipeline emits e.g.

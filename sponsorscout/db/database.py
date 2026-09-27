@@ -1117,25 +1117,6 @@ def get_distinct_job_locations(db_path) -> list[str]:
             conn.close()
 
 
-def get_distinct_experience_levels(db_path) -> list[str]:
-    """Return distinct experience_level values from active jobs for dynamic filter dropdown."""
-    conn = None
-    try:
-        conn = get_connection(db_path)
-        rows = conn.execute("""
-            SELECT DISTINCT experience_level FROM jobs
-            WHERE experience_level IS NOT NULL AND experience_level != ''
-            AND verified_active = 1 AND is_expired = 0
-            ORDER BY experience_level ASC
-        """).fetchall()
-        return [r[0] for r in rows]
-    except Exception:
-        return []
-    finally:
-        if conn:
-            conn.close()
-
-
 def get_distinct_experience_specs(db_path) -> list[tuple]:
     """Return distinct (required, level, min_years) triples from active jobs.
 
