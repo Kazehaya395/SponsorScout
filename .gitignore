@@ -47,6 +47,8 @@ SponsorScout.spec
 *.db-wal
 *.db-shm
 tmp_*.db
+tmp_*.py
+tmp_*.txt
 cleanup.txt
 sponsorscout_context_pack.md
 
