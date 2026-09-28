@@ -25,6 +25,7 @@ from sponsorscout.services import browser_fetcher
 ROOT = Path(__file__).resolve().parents[2]
 DEB = (ROOT / "build_deb.sh").read_text(encoding="utf-8")
 EXE = (ROOT / "build_exe.ps1").read_text(encoding="utf-8")
+RPM = (ROOT / "build_rpm.sh").read_text(encoding="utf-8")
 PIPELINE = (ROOT / "sponsorscout" / "scanning" / "pipeline.py").read_text(
     encoding="utf-8"
 )
@@ -83,7 +84,7 @@ def test_main_routes_the_self_check_flag(monkeypatch):
 
 
 def test_build_scripts_collect_playwright_and_smoke_test_the_bundle():
-    for script in (DEB, EXE):
+    for script in (DEB, EXE, RPM):
         assert "--collect-all playwright" in script
         assert "--hidden-import greenlet" in script
         assert "--hidden-import pyee" in script

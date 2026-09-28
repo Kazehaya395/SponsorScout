@@ -157,7 +157,7 @@ def _ensure_playwright_browsers() -> bool:
     # no usable `python -m playwright` (sys.executable is SponsorScout.exe /
     # the SponsorScout ELF binary), so auto-install can never succeed there;
     # instead the browsers must ship inside the bundle's `_playwright`
-    # directory (see build_exe.ps1 / build_deb.sh and sponsorscout/paths.py).
+    # directory (see build_exe.ps1 / build_deb.sh / build_rpm.sh and sponsorscout/paths.py).
     if getattr(sys, "frozen", False):
         logger.error(
             "Playwright Chromium browser is missing from the installed app "

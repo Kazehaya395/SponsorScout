@@ -51,7 +51,7 @@ def _self_check_write(msg: str) -> None:
 
 
 def self_check(try_browser: bool) -> int:
-    """Headless smoke test for packaged builds (used by build_deb.sh/build_exe.ps1).
+    """Headless smoke test for packaged builds (used by build_deb.sh/build_rpm.sh/build_exe.ps1).
 
     Verifies that Playwright imports in the *frozen* app and, when
     ``try_browser`` is set, that the bundled Chromium actually launches — all

@@ -67,8 +67,10 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 Write-Host "[2/4] Building SponsorScout.exe with PyInstaller..." -ForegroundColor Cyan
-if (Test-Path $DistDir) {
-    Remove-Item -Recurse -Force $DistDir
+# Only remove our own PyInstaller output: dist/ also holds the .deb and .rpm
+# artifacts, which must survive so all three formats can be built side by side.
+if (Test-Path $BuildDir) {
+    Remove-Item -Recurse -Force $BuildDir
 }
 
 & $Python @PythonArgs -m PyInstaller `

@@ -13,7 +13,8 @@ def _configure_bundled_playwright_browsers_path() -> None:
     """If running as a frozen build with a bundled ``_playwright`` directory
     next to the executable, point Playwright at it.
 
-    Both ``build_exe.ps1`` and ``build_deb.sh`` bundle Chromium into a
+    All three build scripts (``build_exe.ps1``, ``build_deb.sh`` and
+    ``build_rpm.sh``) bundle Chromium into a
     ``_playwright`` folder alongside the executable so JS-rendered career
     pages work without a separate ``playwright install`` step. The Linux
     .deb wraps the binary in a launcher script that exports

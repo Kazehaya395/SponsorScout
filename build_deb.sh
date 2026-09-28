@@ -130,7 +130,9 @@ if ! "$PYTHON" -c "from playwright.sync_api import sync_playwright" >/dev/null 2
   exit 1
 fi
 
-rm -rf "$BUILD_DIR" "$DIST_DIR"
+# Only wipe our own staging area: dist/ also holds the .exe/.deb/.rpm
+# artifacts, which must survive so all three formats can be built side by side.
+rm -rf "$BUILD_DIR"
 mkdir -p "$APP_DIR" "$DEBIAN_DIR" "$DIST_DIR"
 
 "$PYTHON" -m PyInstaller \

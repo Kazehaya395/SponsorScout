@@ -296,6 +296,21 @@ recommended: those filesystems cannot store Unix permissions, so the build
 detects it and stages the package in `/tmp`. For the fastest and most
 reliable build, copy the project to a Linux filesystem such as `~/sponsorscout`.
 
+**Linux package (Fedora / RHEL / openSUSE — RPM):**
+```bash
+./build_rpm.sh               # -> dist/sponsorscout-<version>-1.<arch>.rpm
+```
+Same rules as the `.deb`: run it as your normal user (**do not use `sudo`**)
+and let it create the isolated `.build/rpm-venv`. Requires `rpmbuild`
+(`sudo dnf install rpm-build` on Fedora/RHEL, `sudo apt install rpm` on
+Debian/Ubuntu/WSL, `sudo zypper install rpm-build` on openSUSE). It bundles
+Playwright Chromium, smoke-tests the binary and never strips the bundled
+C-extensions — exactly like `build_deb.sh`. The payload compressor is probed
+on your machine (fast xz by default); for a smaller package where every
+target has rpm >= 4.14, use `RPM_COMPRESSION=zstd ./build_rpm.sh`. Like the
+other two scripts it leaves `dist/` alone apart from its own output, so the
+`.exe`, `.deb` and `.rpm` can be built side by side.
+
 **Tests:**
 ```bash
 python -m pytest sponsorscout/tests
@@ -309,7 +324,7 @@ python -m pytest sponsorscout/tests
 - Runtime: **PySide6**, **requests**, **playwright** (`requirements.txt`)
 - Playwright Chromium: `python -m playwright install chromium`
 - Dev/test: **pytest**, **pyinstaller** (`pip install ".[dev]"`)
-- Linux packaging: `python3`, `python3-venv`, and `dpkg` (`sudo apt install python3-venv`)
+- Linux packaging: `python3`, `python3-venv`, and `dpkg` (`sudo apt install python3-venv`); `rpmbuild` for the `.rpm` (`sudo dnf install rpm-build` / `sudo apt install rpm`)
 
 ---
 
@@ -629,6 +644,21 @@ simili): quei filesystem non possono memorizzare i permessi Unix, quindi la
 build lo rileva e prepara il pacchetto in `/tmp`. Per una build piu rapida e
 affidabile, copia il progetto su un filesystem Linux come `~/sponsorscout`.
 
+**Pacchetto Linux (Fedora / RHEL / openSUSE — RPM):**
+```bash
+./build_rpm.sh               # -> dist/sponsorscout-<versione>-1.<arch>.rpm
+```
+Stesse regole del `.deb`: esegui lo script come utente normale (**non usare
+`sudo`**) e lascia che crei l'ambiente isolato `.build/rpm-venv`. Richiede
+`rpmbuild` (`sudo dnf install rpm-build` su Fedora/RHEL, `sudo apt install rpm`
+su Debian/Ubuntu/WSL, `sudo zypper install rpm-build` su openSUSE). Include
+Playwright Chromium, esegue il self-check del binario e non strappa mai le
+estensioni C incluse — esattamente come `build_deb.sh`. Il compressore del
+payload viene sondato sulla macchina (di default xz veloce); per un pacchetto
+piu piccolo dove tutti i target hanno rpm >= 4.14 usa
+`RPM_COMPRESSION=zstd ./build_rpm.sh`. Anche questo script tocca `dist/` solo
+con il proprio output, quindi `.exe`, `.deb` e `.rpm` possono convivere.
+
 **Test:**
 ```bash
 python -m pytest sponsorscout/tests
@@ -642,7 +672,7 @@ python -m pytest sponsorscout/tests
 - Runtime: **PySide6**, **requests**, **playwright** (`requirements.txt`)
 - Playwright Chromium: `python -m playwright install chromium`
 - Solo sviluppo/test: **pytest**, **pyinstaller** (`pip install ".[dev]"`)
-- Pacchetto Linux: `python3`, `python3-venv` e `dpkg` (`sudo apt install python3-venv`)
+- Pacchetto Linux: `python3`, `python3-venv` e `dpkg` (`sudo apt install python3-venv`); `rpmbuild` per il `.rpm` (`sudo dnf install rpm-build` / `sudo apt install rpm`)
 
 ---
 
