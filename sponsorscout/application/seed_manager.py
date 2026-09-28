@@ -99,16 +99,30 @@ def merge_bundled_seeds(log_fn=print) -> dict:
 
     This appends any bundled rows that are missing from the user copy
     (matched by name + careers_url). Existing / user-added rows are never
-    modified or removed. Returns {"ats": N, "career": N} = rows added.
+    modified or removed -- except for curated ``_SEED_REPAIRS``, which fix
+    shipped rows that were wrong from the start (e.g. a recruiter scoped
+    to the wrong country). Repairs only apply when the user's row still
+    carries the exact old value, so a deliberate user edit is never clobbered.
+    Returns {"ats": N, "career": N} = rows added + rows repaired.
     """
     ensure_user_seeds()
     added = {"ats": 0, "career": 0}
+    seeds = {}
     for label, bundled, user in (
         ("ats", bundled_ats_path(), user_ats_path()),
         ("career", bundled_career_path(), user_career_path()),
     ):
         bundled_data = read_seed_rows(bundled)
         user_data = read_seed_rows(user)
+        # Curated repairs first: fix wrong-from-the-start shipped values on
+        # rows the user never touched (exact old-value match only).
+        n_repaired = _apply_repairs_to_rows(
+            label, user_data["rows"], log_fn=log_fn)
+        if n_repaired:
+            write_seed_rows(user, user_data["columns"], user_data["rows"])
+            added[label] += n_repaired
+        seeds[label] = (bundled_data, user_data, user)
+    for label, (bundled_data, user_data, user) in seeds.items():
         existing = {_row_key(r) for r in user_data["rows"]}
         new_rows = [
             r for r in bundled_data["rows"] if _row_key(r) not in existing
@@ -122,10 +136,52 @@ def merge_bundled_seeds(log_fn=print) -> dict:
                 cols.append(c)
         merged = list(user_data["rows"]) + new_rows
         write_seed_rows(user, cols, merged)
-        added[label] = len(new_rows)
+        added[label] += len(new_rows)
         log_fn(f"Seed update: added {len(new_rows)} new {label} "
                f"companies from bundled seeds")
     return added
+
+
+# ── Curated seed repairs ──────────────────────────────────────────────────
+# Wrong-from-the-start bundled rows that existing installs already copied.
+# merge_bundled_seeds() never touches existing user rows, so without this an
+# old copy keeps the bad value forever (e.g. A2G scoped to Netherlands while
+# its jobs are India/Pune -> permanent outside_or_unproven_target_country
+# quarantine). A repair fires ONLY when the user's row still carries the exact
+# old value -- a deliberate user edit is never clobbered.
+#   {(file, name, careers_url): ({column: old_value}, {column: new_value})}
+_SEED_REPAIRS = {
+    ("career", "A2G Technologies", "https://a2gtechnologies.com/jobs"): (
+        {"target_country": "Netherlands",
+         "notes": "verified: A2G Consulting"},
+        {"target_country": "India",
+         "notes": "verified 2026-09-28: India/Pune recruiter "
+                  "(was wrongly scoped Netherlands)"},
+    ),
+}
+
+
+def _apply_repairs_to_rows(label: str, rows: list, log_fn=print) -> int:
+    """Apply _SEED_REPAIRS for one seed file to in-memory rows."""
+    n = 0
+    for (rep_label, name, url), (old, new) in _SEED_REPAIRS.items():
+        if rep_label != label:
+            continue
+        for row in rows:
+            if ((row.get("name") or "").casefold() != name.casefold()
+                    or (row.get("careers_url") or "").casefold()
+                    != url.casefold()):
+                continue
+            if all((row.get(col) or "") == val for col, val in old.items()):
+                row.update(new)
+                n += 1
+                try:
+                    log_fn(f"Seed repair: {name} ({label}) retargeted "
+                           f"{old.get('target_country')} -> "
+                           f"{new.get('target_country')}")
+                except Exception:
+                    pass
+    return n
 
 
 def read_seed_rows(path: Path) -> dict:

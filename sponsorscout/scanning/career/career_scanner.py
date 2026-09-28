@@ -603,6 +603,7 @@ class ProductionScannerConfig:
     # FIXED: Added fallback seed-company headquarters map to guarantee no location
     # remains generic Onsite/Hybrid or "Not Specified"!
     COMPANY_HEADQUARTERS = {
+        "A2G Technologies": "Pune, India",
         "ABN AMRO": "Amsterdam, Netherlands",
         "About You": "Hamburg, Germany",
         "adjoe": "Hamburg, Germany",
@@ -4741,6 +4742,10 @@ class CareerPortalScanner:
             "netherlands": {"netherlands", "nederland", "amsterdam", "rotterdam", "utrecht", "haarlem", "delft", "eindhoven", "north holland", "noord holland", "zuid holland"},
             "united kingdom": {"united kingdom", "england", "scotland", "wales", "northern ireland", "london", "manchester", "birmingham", "edinburgh", "glasgow", "uk"},
             "ireland": {"ireland", "dublin", "cork", "galway", "limerick"},
+            # A2G Technologies retarget (2026-09-28): India/Pune recruiter was
+            # wrongly scoped to Netherlands. Major IN cities so job_location
+            # scope passes once the extractor yields a real location.
+            "india": {"india", "bharat", "pune", "mumbai", "bombay", "delhi", "new delhi", "bengaluru", "bangalore", "hyderabad", "chennai", "madras", "kolkata", "calcutta", "ahmedabad", "noida", "gurgaon", "gurugram", "kochi", "cochin"},
         }
         return any(re.search(r"(?:^|[^a-z])" + re.escape(a) + r"(?:$|[^a-z])", blob) for a in aliases.get(target.casefold(), {target.casefold()}))
 

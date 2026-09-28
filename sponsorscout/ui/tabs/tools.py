@@ -10,9 +10,9 @@ import threading
 from PySide6.QtCore import QStandardPaths, Qt, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QComboBox, QDialog, QFileDialog, QGroupBox,
+    QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QFileDialog, QGroupBox,
     QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem,
-    QMessageBox, QPlainTextEdit, QPushButton,
+    QMessageBox, QMenu, QPlainTextEdit, QPushButton,
     QProgressBar, QSpinBox,
     QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
@@ -139,9 +139,23 @@ class QuarantineDialog(QDialog):
         self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.table.setAlternatingRowColors(True)
-        self.table.horizontalHeader().setSectionResizeMode(
-            1, QHeaderView.Stretch)
+        self.table.setWordWrap(False)
+        header = self.table.horizontalHeader()
+        # Every column is user-resizable (the reported bug was Title on
+        # Stretch eating the window so Location/Reason/URL were clipped and
+        # could not be dragged wider).  Interactive everywhere; Title still
+        # absorbs leftover viewport width via stretchLastSection.
+        header.setSectionResizeMode(QHeaderView.Interactive)
+        header.setStretchLastSection(True)
+        header.setMinimumSectionSize(60)
+        # Right-click a cell to copy its value / open its URL; double-click
+        # a URL cell opens it in the browser.
+        self.table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(
+            self._cell_context_menu)
+        self.table.doubleClicked.connect(self._open_url_cell)
         lay.addWidget(self.table, stretch=1)
         bottom = QHBoxLayout()
         self.info = QLabel("")
@@ -152,6 +166,30 @@ class QuarantineDialog(QDialog):
         lay.addLayout(bottom)
         self._rows: list = []
         self._discover_files()
+
+    # ── Adjustable column widths (issue 1) ─────────────────────────────
+    def _fit_quarantine_columns(self):
+        """Content-size every column once per load, then leave them alone.
+
+        Mirrors ScanLogDialog: ``resizeColumnsToContents()`` for the fit,
+        then clamp the extremes so one 1,400 px junk title cannot push the
+        other columns off the window (URL/Reason stay visible) and an empty
+        column stays grabbable.  Sections stay Interactive (set in
+        ``__init__``) so the user can drag any of them afterwards — the fit
+        runs only right after rows are (re)built, never on resize events.
+        """
+        header = self.table.horizontalHeader()
+        self.table.resizeColumnsToContents()
+        for col in range(len(self.HEADERS)):
+            size = header.sectionSize(col)
+            if size > 420:
+                header.resizeSection(col, 420)
+            elif size < 60:
+                header.resizeSection(col, 60)
+        # Title is the long free-text column: give it a larger starting
+        # width (capped) when the content fit left it narrow.
+        if len(self.HEADERS) > 1 and header.sectionSize(1) < 220:
+            header.resizeSection(1, 220)
 
     def _discover_files(self):
         self.file_combo.clear()
@@ -205,14 +243,71 @@ class QuarantineDialog(QDialog):
                     r.get("Job Location", ""), reason,
                     r.get("Job URL", "")]
             for col, val in enumerate(vals):
-                item = QTableWidgetItem(str(val or ""))
+                text = str(val or "")
+                item = QTableWidgetItem(text)
                 if col == 0:
                     item.setData(Qt.UserRole, idx)
+                # Full text stays reachable when the column is narrower
+                # than the value (URL / long titles especially).
+                if text:
+                    item.setToolTip(text)
                 self.table.setItem(i, col, item)
             shown += 1
         self.info.setText(
             _("{shown} of {total} quarantined rows.").format(
                 shown=shown, total=len(self._rows)))
+        self._fit_quarantine_columns()
+
+    # ── Copy / open cell values (issue 3) ──────────────────────────────
+    def _cell_text_at(self, pos) -> tuple[int, int, str]:
+        """Return (row, col, text) for the cell under ``pos`` (viewport coords)."""
+        index = self.table.indexAt(pos)
+        if not index.isValid():
+            return -1, -1, ""
+        item = self.table.item(index.row(), index.column())
+        text = item.text() if item is not None else ""
+        return index.row(), index.column(), text
+
+    def _cell_context_menu(self, pos):
+        row, col, text = self._cell_text_at(pos)
+        menu = QMenu(self.table)
+        if row < 0 or not text:
+            act_none = menu.addAction(_("No value under cursor"))
+            act_none.setEnabled(False)
+            menu.exec(self.table.viewport().mapToGlobal(pos))
+            return
+        header = (self.HEADERS[col] if 0 <= col < len(self.HEADERS)
+                  else _("Cell"))
+        act_copy = menu.addAction(_("Copy {header}").format(header=header))
+        act_copy_all = menu.addAction(_("Copy row"))
+        url = text.strip()
+        act_open = None
+        if url.lower().startswith(("http://", "https://")):
+            act_open = menu.addAction(_("Open URL"))
+        chosen = menu.exec(self.table.viewport().mapToGlobal(pos))
+        if chosen is None:
+            return
+        if chosen is act_copy:
+            QApplication.clipboard().setText(text)
+        elif chosen is act_copy_all:
+            parts = []
+            for c in range(len(self.HEADERS)):
+                item = self.table.item(row, c)
+                parts.append(item.text() if item is not None else "")
+            QApplication.clipboard().setText("\t".join(parts))
+        elif act_open is not None and chosen is act_open:
+            QDesktopServices.openUrl(QUrl(url))
+
+    def _open_url_cell(self, index):
+        """Double-click a URL cell to open it in the browser."""
+        if not index.isValid():
+            return
+        if index.column() != 4:  # URL column
+            return
+        item = self.table.item(index.row(), index.column())
+        url = (item.text() if item is not None else "").strip()
+        if url.lower().startswith(("http://", "https://")):
+            QDesktopServices.openUrl(QUrl(url))
 
     def _promote_selected(self):
         sel = sorted({i.row() for i in self.table.selectedIndexes()})
@@ -221,29 +316,99 @@ class QuarantineDialog(QDialog):
                 self, _("Quarantine"), _("Select rows first."))
             return
         from sponsorscout.core import persistence
+        from sponsorscout.core.url_normalizer import normalize_url
         from sponsorscout.scanning import pipeline
         conn = db.get_connection(self.db_path)
         promoted = 0
+        updated = 0
+        skipped = 0
+        errors: list = []
         try:
             for table_row in sel:
-                src_idx = self.table.item(table_row, 0).data(Qt.UserRole)
-                row = self._rows[src_idx]
+                first = self.table.item(table_row, 0)
+                if first is None:
+                    skipped += 1
+                    continue
+                try:
+                    src_idx = first.data(Qt.UserRole)
+                    row = self._rows[src_idx]
+                except (IndexError, TypeError):
+                    skipped += 1
+                    continue
                 subtype = ("recruiter"
                            if (row.get("Source Type") or "") == "recruiter"
                            else "direct")
-                job = pipeline._row_to_job(
-                    row, source_subtype=subtype,
-                    run_id=row.get("Run ID") or "manual-promote")
-                if job is None:
+                try:
+                    job = pipeline._row_to_job(
+                        row, source_subtype=subtype,
+                        run_id=row.get("Run ID") or "manual-promote")
+                except Exception as exc:  # never abort the batch silently
+                    skipped += 1
+                    errors.append(str(row.get("Job Title") or "?")[:60]
+                                  + ": " + str(exc))
                     continue
-                persistence.upsert_job(conn, job, commit=False)
-                promoted += 1
+                if job is None:
+                    skipped += 1
+                    continue
+                norm_url = normalize_url(job.get("url", ""))
+                if not norm_url:
+                    skipped += 1
+                    continue
+                try:
+                    exists = conn.execute(
+                        "SELECT 1 FROM jobs WHERE url=?",
+                        (norm_url,)).fetchone()
+                    # Savepoint per row: one bad row must not roll back the
+                    # whole batch (previously ANY exception left conn in a
+                    # failed-transaction state, conn.commit() raised, and the
+                    # dialog showed nothing at all — the reported "button does
+                    # nothing" bug).
+                    conn.execute("SAVEPOINT promote_row")
+                    try:
+                        persistence.upsert_job(conn, job, commit=False)
+                    except Exception:
+                        conn.execute("ROLLBACK TO promote_row")
+                        raise
+                    else:
+                        conn.execute("RELEASE promote_row")
+                except Exception as exc:
+                    skipped += 1
+                    errors.append(str(job.get("title") or "?")[:60]
+                                  + ": " + str(exc))
+                    continue
+                if exists:
+                    updated += 1
+                else:
+                    promoted += 1
             conn.commit()
         finally:
             conn.close()
-        QMessageBox.information(
-            self, _("Quarantine"),
-            _("{n} row(s) promoted into jobs.").format(n=promoted))
+        # Verify what the DB actually holds for these URLs (dedup/merge can
+        # mean fewer NEW rows than upserts) and tell the user exactly that.
+        parts = [_("{n} row(s) promoted into jobs.").format(
+            n=promoted + updated)]
+        if updated:
+            parts.append(_("{n} already in jobs (updated).").format(
+                n=updated))
+        if skipped:
+            parts.append(_("{n} skipped (missing URL/title or error).").format(
+                n=skipped))
+        parts.append(_("Close this dialog to refresh the Search list."))
+        msg = "\n".join(parts)
+        if errors:
+            msg += "\n\n" + _("Errors:") + "\n" + "\n".join(errors[:5])
+            if len(errors) > 5:
+                msg += "\n" + _("…and {n} more.").format(
+                    n=len(errors) - 5)
+        QMessageBox.information(self, _("Quarantine"), msg)
+        # Refresh the main views immediately (not only when this modal
+        # dialog closes) so the Search list behind already holds the rows.
+        try:
+            parent = self.parent()
+            if parent is not None and hasattr(parent, "data_changed"):
+                parent.data_changed.emit()
+        except Exception:
+            pass
 
 
 class _CompanyPicker(QWidget):
