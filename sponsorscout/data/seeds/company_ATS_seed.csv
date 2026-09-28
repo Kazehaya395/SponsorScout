@@ -56,3 +56,9 @@ Vercel,https://job-boards.greenhouse.io/vercel,greenhouse,vercel,direct_employer
 Wolt,https://boards.greenhouse.io/wolt,greenhouse,wolt,direct_employer,Global,global,Delivery,80,85,55,
 Zalando,https://zalando.wd3.myworkdayjobs.com/ZalandoSiteWD,workday,zalando/ZalandoSiteWD,direct_employer,Global,global,E-Commerce,80,80,55,FIX P0-20: workday API adapter
 Zendesk,https://zendesk.wd1.myworkdayjobs.com/zendesk,workday,zendesk/zendesk,direct_employer,Global,global,SaaS,80,85,65,FIX P0-20: workday API adapter
+Akur8,https://jobs.ashbyhq.com/akur8,workable,akur8,direct_employer,France,job_location,Unknown,,,,added 2026-09 batch; scores unset
+Celus,https://celus.jobs.personio.de/?language=en,personio,celus,direct_employer,Portugal,job_location,Unknown,,,,added 2026-09 batch; scores unset
+GreenFlux,https://greenflux.recruitee.com/,recruitee,greenflux,direct_employer,Netherlands,job_location,Unknown,,,,added 2026-09 batch; scores unset
+HousingAnywhere,https://job-boards.greenhouse.io/housinganywhere,greenhouse,housinganywhere,direct_employer,Netherlands,job_location,Unknown,,,,added 2026-09 batch; scores unset
+Virtuagym,https://jobs.virtuagym.com/jobs,recruitee,virtuagym,direct_employer,Netherlands,job_location,Unknown,,,,added 2026-09 batch; scores unset
+Wolters Kluwer,https://wk.wd3.myworkdayjobs.com/External,workday,Wolters Kluwer,direct_employer,Netherlands,seed_url,Unknown,,,,added 2026-09 batch; scores unset
