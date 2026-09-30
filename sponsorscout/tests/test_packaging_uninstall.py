@@ -175,3 +175,110 @@ def test_rpm_bundles_chromium_and_smoke_tests_the_bundle():
     assert "/usr/bin/sponsorscout" in RPM
     assert "/usr/share/applications/sponsorscout.desktop" in RPM
     assert "/opt/sponsorscout" in RPM
+
+
+# ── Build-script correctness (2026-09 audit) ─────────────────────────────────
+
+def test_windows_installer_writes_browser_path_to_the_per_user_hive():
+    """HKCU, not HKLM.
+
+    {app} is {autopf}\\SponsorScout — a PER-USER directory — so a machine-wide
+    environment variable would point every account on the PC at whichever user
+    installed last, and everyone else would fail to find Chromium.
+    """
+    registry = INN.split("[Registry]", 1)[1].split("[Tasks]", 1)[0]
+    assert "PLAYWRIGHT_BROWSERS_PATH" in registry
+    # Judge the directives only — the section carries a comment explaining
+    # WHY it is HKCU, and that prose must not be mistaken for configuration.
+    directives = [ln for ln in registry.splitlines()
+                  if ln.strip() and not ln.strip().startswith(";")]
+    body = "\n".join(directives)
+    assert "Root: HKCU" in body
+    assert "Root: HKLM" not in body, (
+        "a machine-wide env var must not point at a per-user install path")
+    # `Permissions: everyone-modify` on that variable would let any non-admin
+    # rewrite something injected into every new process on the machine.
+    assert "everyone-modify" not in body
+    # uninsdeletevalue must only clear the installing user's own value.
+    assert "uninsdeletevalue" in body
+
+
+def test_installer_has_no_placeholder_publisher_url():
+    """A 'yourusername' placeholder shipped to users as the support URL."""
+    assert "yourusername" not in INN.lower()
+    # ...and it must agree with pyproject, which has the real repository.
+    pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    repo = next(
+        line.split("=", 1)[1].strip().strip('"')
+        for line in pyproject.splitlines()
+        if line.strip().startswith("Repository")
+    )
+    assert repo in INN
+
+
+def test_debian_arch_is_derived_not_hardcoded():
+    """A hard-coded 'amd64' produces an uninstallable .deb on arm64."""
+    assert 'DEB_ARCH="$(dpkg --print-architecture' in DEB
+    header = DEB.split("APP_DIR=", 1)[0]
+    assert 'DEB_ARCH="amd64"\n' not in header.replace(
+        'DEB_ARCH="amd64"\nfi\n', ""), (
+        "DEB_ARCH must not be pinned before the dpkg-derived value")
+
+
+def test_readme_documents_the_rpm_artifact():
+    """RPM support is built and must be visible where users look for it."""
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    # The download table (before the Italian half starts) must list it.
+    download = readme.split("## 📥 Download", 1)[1].split("## 📸", 1)[0]
+    assert ".rpm" in download, "the RPM is missing from the Download table"
+    assert ".deb" in download and ".exe" in download
+    # ...and so must the Italian mirror, not just the English one.
+    it_download = readme.split("## 📥 Scarica", 1)[1].split("## 📸", 1)[0]
+    assert ".rpm" in it_download, "the RPM is missing from the Italian table"
+    # Uninstalling must mention it too — the .deb-only wording was stale.
+    uninstall = readme.split("### Uninstalling", 1)[1].split("## 🧰", 1)[0]
+    assert ".rpm" in uninstall
+    it_uninstall = readme.split("### Disinstallazione", 1)[1].split("## 🧰", 1)[0]
+    assert ".rpm" in it_uninstall
+
+
+def test_readme_artifact_names_match_the_build_scripts():
+    """`<version>`/`<arch>` placeholders must reflect the real output names."""
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    # build_deb.sh: DEB_OUT="$DIST_DIR/${PKG_NAME}_${VERSION}_${DEB_ARCH}.deb"
+    assert "${PKG_NAME}_${VERSION}_${DEB_ARCH}.deb" in DEB
+    assert "sponsorscout_<version>_<arch>.deb" in readme
+    assert "sponsorscout_<versione>_<arch>.deb" in readme
+    # build_rpm.sh: RPM_BASE="${PKG_NAME}-${VERSION}-${RPM_RELEASE}.${RPM_ARCH}"
+    assert '${PKG_NAME}-${VERSION}-${RPM_RELEASE}.${RPM_ARCH}"' in RPM
+    assert 'RPM_RELEASE="1"' in RPM  # the documented "-1." release is real
+    assert "sponsorscout-<version>-1.<arch>.rpm" in readme
+    assert "sponsorscout-<versione>-1.<arch>.rpm" in readme
+    # A stale hard-coded amd64 in the docs would now be wrong.
+    assert "sponsorscout_<version>_amd64.deb" not in readme
+
+
+def test_readme_documents_the_opt_in_browser_download():
+    """The auto-download behaviour changed; both languages must say so."""
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    assert readme.count("SPONSORSCOUT_AUTO_INSTALL_BROWSERS") >= 4, (
+        "document the opt-in flag in EN + IT, troubleshooting + requirements")
+    assert "SPONSORSCOUT_AUTO_INSTALL_BROWSERS" in readme
+
+
+def test_debian_third_party_test_cleanup_is_not_a_no_op():
+    """`-not -path '*/sponsorscout/*'` matched the WHOLE bundle.
+
+    APP_DIR is .build/deb/opt/sponsorscout, so every path inside it matched
+    that glob and the find removed nothing while still claiming a 5-20 MB
+    saving. Only our own test package should be spared.
+    """
+    guard = [ln for ln in DEB.splitlines()
+             if "-not -path" in ln and "test" in ln.lower()]
+    assert guard, "the third-party tests cleanup rule disappeared"
+    assert any("*/sponsorscout/tests" in g for g in guard), (
+        "the exclusion must target sponsorscout/tests specifically, not the "
+        "entire bundle")
+    assert not any('"*/sponsorscout/*"' in g for g in guard), (
+        "that glob matches every path under APP_DIR, so the rule is a no-op")
+

@@ -226,9 +226,32 @@ def initialize(db_path=DB_PATH):
         if not table_exists:
             _apply_migrations(conn)
 
-        # Fix country/location mismatch for any existing records
+        # Fix country/location mismatch for any existing records.
+        #
+        # PERFORMANCE: this used to run unconditionally on EVERY app start.
+        # migrate_job_countries() does `SELECT id, location, country,
+        # country_source FROM jobs` — a full table fetch into Python memory on
+        # every launch — and then re-derives the country for every row whose
+        # value is empty/"Remote".  On a database with tens of thousands of
+        # rows that is a multi-second startup stall, repeated for no benefit
+        # once the backlog is cleared.
+        #
+        # It is a ONE-SHOT repair, so record completion in the database's
+        # `user_version` pragma (unused elsewhere in this project) and skip it
+        # on subsequent starts.  `force=True` still re-runs it on demand, and
+        # deleting the DB resets the flag automatically.
         from sponsorscout.db.migrate_countries import migrate_job_countries
-        migrate_job_countries(conn)
+        try:
+            _marker = int(
+                (conn.execute("PRAGMA user_version").fetchone() or [0])[0] or 0)
+        except Exception:
+            _marker = 0
+        if _marker < 1:
+            try:
+                migrate_job_countries(conn)
+                conn.execute("PRAGMA user_version = 1")
+            except Exception:
+                logger.exception("Country migration failed; will retry next start")
         conn.commit()
     finally:
         conn.close()
@@ -242,9 +265,16 @@ def search_jobs(db_path, title="", company="", location="", country="All", sourc
     conn = None
     try:
         conn = get_connection(db_path)
+        # NOTE: `description` is deliberately NOT selected.  It holds a full job
+        # description (often 10-50 KB) that no Search-tab cell, tooltip, sort
+        # key or column-width measurement ever reads — yet the query has no
+        # LIMIT and run_search() materialises EVERY matching row into a dict on
+        # the GUI thread before rendering a single page.  Selecting it turned a
+        # 50k-job search into tens of MB of throwaway strings on an 8 GB /
+        # 2-core machine.
         query = """SELECT title, company, country, location, source_type, source_name,
                    trust_score, freshness_score, sponsorship_score, match_score,
-                   verified_active, is_expired, url, last_verified_at, description,
+                   verified_active, is_expired, url, last_verified_at,
                    first_seen_at,
                    COALESCE(remote_type, 'onsite') as remote_type,
                    COALESCE(eu_blue_card, 0) as eu_blue_card,

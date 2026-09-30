@@ -1,0 +1,30 @@
+# Windows
+python -m venv venv  &&  venv\Scripts\activate
+pip install playwright  &&  playwright install chromium
+
+# macOS / Linux
+python3 -m venv venv  &&  source venv/bin/activate
+pip install playwright  &&  playwright install chromium
+# Linux only, if Chromium won't launch (missing system libs):
+sudo playwright install-deps chromium
+
+
+
+# ATS — all 46 targets, API-only, takes a few minutes
+python ats_portal_scanner.py --input company_ATS_seed.csv --output ats_full.csv --skip-preflight
+
+# Career — all 138 targets, 3 parallel workers, expect ~30–60 min
+python career_scanner.py --input company_Career_seed.csv --output career_full.csv --skip-preflight
+
+
+
+(Use python3 instead of python on macOS/Linux if that's your setup.)
+
+--skip-preflight skips the startup connectivity probe — safe on a normal connection, faster start. Omit it if you suspect network issues.
+Expect two loud one-line warnings on the career run (jd_support… Unknown, browser_fetcher… skipping pre-check) — that's the normal standalone mode: visa verdicts degrade to Unknown, everything else is intact.
+Tip: test one company first — python career_scanner.py --input company_Career_seed.csv --output test.csv --company Pitch --skip-preflight (repeat --company X to add more). And save a console log by appending > run.log 2>&1.
+Interrupted? Re-run the exact same command plus --resume — it appends instead of overwriting. Don't use --detail on the first full run (it's a slow enrichment pass).
+You can run both scripts at the same time in two terminals — they're fully independent.
+
+
+

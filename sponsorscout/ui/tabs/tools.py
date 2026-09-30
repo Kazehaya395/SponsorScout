@@ -1294,26 +1294,40 @@ class ToolsTab(QWidget):
                          args=(n,), daemon=True).start()
 
     def _freshness_worker(self, n: int):
-        """Background thread; results marshalled via _freshness_done."""
+        """Background thread; results marshalled via _freshness_done.
+
+        Two things this loop must NOT do (both used to, and both hurt a
+        low-end machine badly):
+
+        * Hold one write transaction open across the whole run.  Each
+          ``verify_job`` is a network round-trip with a 25 s timeout that may
+          even launch a Chromium, so the connection could sit inside an
+          uncommitted write for minutes.  WAL allows exactly one writer, so the
+          scan's live ingester would hit ``SQLITE_BUSY``, and because that code
+          swallows its exceptions, live ingestion would silently stop for the
+          rest of the scan.  Each verdict is therefore committed as soon as it
+          is reached.
+        * Re-read each job with a second ``SELECT *``.  The row is fetched
+          once, up front, and the per-row query (which also dragged the whole
+          ``description`` blob back) is gone.
+        """
         try:
             from sponsorscout.core.persistence import upsert_job
             from sponsorscout.core.verification_service import verify_job
             conn = db.get_connection(self.db_path)
             try:
                 rows = conn.execute("""
-                    SELECT url FROM jobs
+                    SELECT * FROM jobs
                     WHERE verified_active=1 AND is_expired=0
                       AND (last_verified_at IS NULL OR
                            last_verified_at < datetime('now','-7 days'))
                     ORDER BY last_verified_at ASC LIMIT ?""",
                     (n,)).fetchall()
                 expired = checked = 0
-                for row in rows:
-                    jr = conn.execute(
-                        "SELECT * FROM jobs WHERE url=?",
-                        (row["url"],)).fetchone()
-                    if not jr:
-                        continue
+                for jr in rows:
+                    # Commit before the next network call so this connection
+                    # never holds the writer lock across an I/O wait.
+                    conn.commit()
                     result = verify_job(dict(jr))
                     upsert_job(conn, result, commit=False)
                     if result.get("is_expired"):

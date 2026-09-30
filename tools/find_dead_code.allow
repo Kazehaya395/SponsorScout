@@ -1,0 +1,28 @@
+# tools/find_dead_code.allow — deliberate keepers.
+#
+# One entry per line: either a bare symbol name (suppresses it anywhere) or
+# `path::symbol` to scope it. Append `# reason` to explain why it stays.
+#
+# This tool is READ-ONLY and never deletes. Adding a name here is the way to
+# say "I know, and it must stay".
+
+# Entrypoints and documented public API of core/, db/, application/.
+# Documented in CODEBASE.md section 4; reachable from the GUI or the CLI.
+mark_job_expired
+dedup_jobs
+dedup_companies_in_db
+normalize_job
+utc_now_stamp
+check_url
+is_bot_blocked
+build_session
+detect_ats_from_links
+LOW_RESOURCE_BROWSER_ARGS
+host_workers_limits
+ensure_scan_output_dir
+migrate_job_countries
+export_scan_run_csv
+
+# main.py imports sponsorscout.paths purely for its import-time side effect
+# (configures PLAYWRIGHT_BROWSERS_PATH for a frozen bundle). Never "unused".
+sponsorscout.main::paths

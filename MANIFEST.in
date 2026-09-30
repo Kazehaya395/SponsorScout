@@ -2,7 +2,7 @@ recursive-include sponsorscout/data *.json *.csv *.png *.ico
 recursive-include sponsorscout/data/icons *.png
 recursive-include sponsorscout/db *.sql
 include README.md
+include CODEBASE.md
 include LICENSE
-include CONTRIBUTING.md
 include requirements.txt
-recursive-include docs *.md
+include SponsorScout.spec

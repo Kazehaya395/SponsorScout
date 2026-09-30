@@ -37,9 +37,10 @@ Thumbs.db
 .coverage
 htmlcov/
 *.spec.bak
-SponsorScout.spec
-.gitattributes
-.editorconfig
+
+# SponsorScout.spec is BUILD SOURCE (PyInstaller), not an output — an older
+# cleanup.txt globbed *.spec and silently deleted it.  It is tracked; do not
+# re-add it here.
 
 # ── Backup / temp files ────────────────────────────────────────────────────
 *.bak
@@ -58,10 +59,17 @@ data/*.csv
 data/*.json
 # Bundled seed CSVs are committed resources — don't ignore them:
 !data/seeds/*.csv
-.clineignore
-extra_for_dev_purpose(do not delete)
-original files
 CODEBASE.md
+
+# ── Tracked source that must NEVER be ignored ─────────────────────────────
+# NOTE: CODEBASE.md, SponsorScout.spec, .gitattributes, .editorconfig and the
+# legacy reference scanners used to be listed here, which meant a fresh clone
+# had no architecture guide and no PyInstaller spec.  They are source; they
+# are tracked.
+
+# Large third-party installers cached inside the legacy reference folder are
+# NOT source and are not committed.
+extra_for_dev_purpose(do not delete)/*.exe
 
 # ── Build tools (large binaries, not for git) ─────────────────────────────
 windows_build_tools/

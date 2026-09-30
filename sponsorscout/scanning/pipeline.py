@@ -25,6 +25,7 @@ from __future__ import annotations
 import csv
 import io
 import logging
+import os
 import re
 import threading
 import time
@@ -324,6 +325,64 @@ def _row_to_job(row: dict, *, source_subtype: str = "direct", run_id: str) -> di
 
 # ── Ingestion ────────────────────────────────────────────────────────────────
 
+#: Bytes read from the front of a CSV when we need its header row only.
+_HEADER_PROBE = 65536
+
+
+def _read_csv_window(path: Path, start_offset: int) -> tuple[list[str] | None, str, int]:
+    """Return ``(fieldnames, body_text, next_offset)`` for the records appended
+    after ``start_offset`` bytes of ``path``.
+
+    Only the newly appended bytes are read and decoded, so a tailing consumer
+    costs O(appended) per pass instead of O(file size).  The previous
+    implementation re-read the whole growing CSV and re-parsed every record on
+    every poll, skipping the already-consumed ones only at the row-processing
+    stage — so the disk read and CSV parse were still O(n) per poll and O(n^2)
+    across a scan, which is what made long scans progressively heavier.
+
+    ``start_offset`` must be 0 or a value previously returned as
+    ``next_offset``; if the file was truncated or replaced, it is clamped and
+    the file is read from the start again.
+
+    Only complete, newline-terminated records are returned.  Both scanners
+    append rows company-by-company while this runs, so the file can end
+    mid-record (OS buffer flush); a half-written row is left for the next pass
+    and is never ingested as a truncated job.  A newline is always a UTF-8
+    character boundary, so slicing at the last newline can never split a
+    multi-byte character.
+    """
+    with open(path, "rb") as f:
+        size = f.seek(0, os.SEEK_END)
+        off = start_offset if 0 < start_offset <= size else 0
+        f.seek(0)
+        if off:
+            head = f.read(_HEADER_PROBE)
+            nl = head.find(b"\n")
+            header_bytes = head if nl < 0 else head[: nl + 1]
+            f.seek(off)
+            tail = f.read()
+            tail_start = off
+        else:
+            blob = f.read()
+            nl = blob.find(b"\n")
+            if nl < 0:
+                return None, "", 0
+            header_bytes = blob[: nl + 1]
+            tail = blob[nl + 1:]
+            # The body begins AFTER the header, so the next offset must be
+            # measured from there — not from byte 0, or the next pass would
+            # re-read the header as if it were data.
+            tail_start = nl + 1
+
+    if tail and not tail.endswith(b"\n"):
+        cut = tail.rfind(b"\n")
+        tail = tail[: cut + 1] if cut >= 0 else b""
+
+    # utf-8-sig strips the BOM the scanners write; a mid-file slice never has one.
+    fieldnames = next(csv.reader(io.StringIO(header_bytes.decode("utf-8-sig"))), None)
+    return fieldnames, tail.decode("utf-8"), tail_start + len(tail)
+
+
 def _ingest_output_csv(db_path, path: Path, run_id: str, source_subtype: str,
                        seen_canonical: set,
                        seen_fuzzy: set | None = None,
@@ -337,12 +396,17 @@ def _ingest_output_csv(db_path, path: Path, run_id: str, source_subtype: str,
     rows instead of once per row (F11).
 
     ``skip_box`` enables incremental tailing: pass a one-element list and the
-    reader skips the records already consumed by earlier passes, recording the
-    new record count back into it.  The live ingester uses this so a long scan
-    no longer re-parses (and re-dedupes) the whole growing CSV every few
-    seconds — that was O(n^2) work over a run and a major cause of the machine
-    becoming sluggish during scans.  A plain call (``skip_box=None``) reads the
-    file from the start, which the final bulk pass relies on for its counts.
+    reader resumes from the byte offset recorded by the previous pass, writing
+    the new offset back into it.  The live ingester uses this so a long scan
+    reads and parses only the rows appended since the last poll — it used to
+    re-read and re-parse the entire growing CSV every few seconds, which stayed
+    O(n) per poll (and so O(n^2) across a run) and was a major cause of the
+    machine becoming sluggish during scans.  A plain call
+    (``skip_box=None``) reads the file from the start, which the final bulk
+    pass relies on for its counts.
+
+    Timeline events raised while ingesting are buffered and written in one
+    transaction *after* this connection is closed.
     """
     if not path or not path.exists():
         return 0, 0
@@ -350,32 +414,26 @@ def _ingest_output_csv(db_path, path: Path, run_id: str, source_subtype: str,
         seen_fuzzy = set()
     ingested = duplicates = 0
     pending = 0
-    skip = int(skip_box[0]) if skip_box else 0
-    consumed = 0
+    start_offset = int(skip_box[0]) if skip_box else 0
+    next_offset = start_offset
+    # BUGFIX: these used to be written inline via db.record_scan_event(), which
+    # opens its OWN connection and commits — while this one still held an
+    # uncommitted write transaction (rows accumulate towards the 500-row batch
+    # below).  WAL permits a single writer, so the nested call blocked for the
+    # whole busy_timeout (5 s, measured 5.46 s) and then raised
+    # "database is locked".  Nothing caught it here, so it escaped
+    # _ingest_output_csv and took the REST OF THE FILE with it: in the final
+    # bulk pass run_scan's `except` swallowed it and every remaining row was
+    # silently never ingested.  Buffering and flushing after close() removes
+    # both the stall and the data loss.
+    events: list[tuple[str, str, str, str]] = []
     conn = db.get_connection(db_path)
     try:
-        with open(path, "r", encoding="utf-8-sig", newline="") as f:
-            raw = f.read()
-        # Both scanners append rows company-by-company while this may run, so
-        # the file can end mid-record (OS buffer flush).  A half-written row
-        # must NEVER be ingested as a truncated job: only complete,
-        # newline-terminated records are considered — the partial tail is
-        # simply left for the next pass.  csv.reader (rather than line
-        # splitting) is still used so quoted fields containing newlines —
-        # legitimately produced by the scanners — parse correctly.
-        if raw and not raw.endswith("\n"):
-            cut = raw.rfind("\n")
-            raw = raw[:cut + 1] if cut >= 0 else ""
-        if not raw:
+        fieldnames, body, next_offset = _read_csv_window(path, start_offset)
+        if not fieldnames or not body:
             return 0, 0
-        reader = csv.reader(io.StringIO(raw))
-        fieldnames = next(reader, None)
-        if not fieldnames:
-            return 0, 0
+        reader = csv.reader(io.StringIO(body))
         for values in reader:
-            consumed += 1
-            if consumed <= skip:
-                continue
             if len(values) != len(fieldnames):
                 # Never let an extra/missing column shift values into the
                 # wrong field (the header is the contract).
@@ -387,11 +445,11 @@ def _ingest_output_csv(db_path, path: Path, run_id: str, source_subtype: str,
                 continue
             job = _row_to_job(row, source_subtype=source_subtype, run_id=run_id)
             if job is None:
-                db.record_scan_event(
-                    db_path, run_id, level="warning", phase="ingest",
-                    company=str(row.get("Company Name") or row.get("Seed Name") or ""),
-                    message="Skipped row (no valid URL / unparsable): "
-                            + str(row.get("Job Title") or "")[:120])
+                events.append((
+                    "warning", "ingest",
+                    str(row.get("Company Name") or row.get("Seed Name") or ""),
+                    "Skipped row (no valid URL / unparsable): "
+                    + str(row.get("Job Title") or "")[:120]))
                 continue
             # G3 fuzzy fallback: only for rows WITHOUT a canonical ID.
             # Rows with an ID keep trusting it — the same title+city can
@@ -410,10 +468,9 @@ def _ingest_output_csv(db_path, path: Path, run_id: str, source_subtype: str,
                 persistence.upsert_job(conn, job, commit=False)
             except Exception:
                 logger.exception("Failed to upsert job %s", job.get("url"))
-                db.record_scan_event(
-                    db_path, run_id, level="error", phase="ingest",
-                    company=job.get("company", ""),
-                    message=f"Failed to ingest job {job.get('url')}")
+                events.append((
+                    "error", "ingest", job.get("company", ""),
+                    f"Failed to ingest job {job.get('url')}"))
                 continue
             if cid:
                 seen_canonical.add(cid)
@@ -426,8 +483,15 @@ def _ingest_output_csv(db_path, path: Path, run_id: str, source_subtype: str,
             conn.commit()
     finally:
         conn.close()
+    # The connection is closed, so this second writer no longer contends for
+    # WAL's single writer lock.  One transaction for the whole batch.
+    if events:
+        try:
+            db.record_scan_events(db_path, run_id, events)
+        except Exception:  # pragma: no cover - evidence logging must not crash
+            logger.exception("Failed to record ingest events")
     if skip_box is not None:
-        skip_box[0] = consumed
+        skip_box[0] = next_offset
     return ingested, duplicates
 
 
@@ -716,10 +780,13 @@ class _LiveIngester(threading.Thread):
         self.interval = interval
         self.progress = progress or _noop_progress
         self._stop = threading.Event()
-        # Per-CSV record counters so each cycle parses only newly appended
-        # rows.  Without this the poller re-read the entire (constantly
-        # growing) CSV every interval, which is O(n^2) across a scan and made
-        # long scans progressively heavier on CPU and disk.
+        # Per-CSV byte offsets so each cycle reads and parses ONLY the rows
+        # appended since the previous poll.  Previously the poller re-read the
+        # entire (constantly growing) CSV every interval and skipped already
+        # consumed records only at the row-processing stage, so the disk read
+        # and the CSV parse were still O(n) per cycle and O(n^2) across a scan
+        # — a major cause of the machine becoming sluggish mid-scan.  The
+        # offsets are byte positions returned by pipeline._read_csv_window.
         self._offsets: dict[str, list[int]] = {}
 
     def stop(self):

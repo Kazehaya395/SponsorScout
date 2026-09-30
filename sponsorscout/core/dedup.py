@@ -37,6 +37,31 @@ def job_fingerprint(title: str, company: str, location: str = "", url: str = "")
     return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
 
+def _delete_in_chunks(conn, table: str, ids: list[int], chunk: int = 500) -> None:
+    """DELETE ``ids`` from ``table`` in bounded batches, then commit once.
+
+    BUGFIX: both dedup routines used to build a single
+    ``DELETE ... WHERE id IN (?,?,...)`` with one placeholder per row.  SQLite
+    caps the number of bound parameters per statement, so a database holding
+    more duplicates than that cap raises ``too many SQL variables`` and the
+    whole dedup aborts — leaving the table exactly as dirty as before.
+
+    Note we DELETE rather than set is_expired=1: is_expired hides the job from
+    the UI and suppresses future re-scanning, which is wrong when the job is
+    still active but was seen from two sources (e.g. Greenhouse API +
+    official_careers scrape).  Deleting the lower-priority duplicate is safer:
+    the canonical row (lowest id, from the first source seen) stays active.
+    """
+    for start in range(0, len(ids), chunk):
+        batch = ids[start:start + chunk]
+        placeholders = ",".join("?" * len(batch))
+        conn.execute(
+            f"DELETE FROM {table} WHERE id IN ({placeholders})",  # noqa: S608
+            batch,
+        )
+    conn.commit()
+
+
 def dedup_jobs(jobs: list[dict]) -> list[dict]:
     """Remove duplicate jobs from a list using URL + title+company fingerprint."""
     seen_urls = set()
@@ -74,18 +99,7 @@ def dedup_jobs_in_db(conn) -> int:
             seen_fps[fp] = row["id"]
 
     if dupe_ids:
-        placeholders = ",".join("?" * len(dupe_ids))
-        # DELETE the duplicate row rather than marking it is_expired=1.
-        # is_expired=1 hides the job from the UI and also suppresses future
-        # re-scanning — which is wrong when the job is still active but was
-        # seen from two sources (e.g. Greenhouse API + official_careers scrape).
-        # Deleting the lower-priority duplicate is safer: the canonical row
-        # (lowest id, from the first source seen) is kept active.
-        conn.execute(
-            f"DELETE FROM jobs WHERE id IN ({placeholders})",
-            dupe_ids,
-        )
-        conn.commit()
+        _delete_in_chunks(conn, "jobs", dupe_ids)
     return len(dupe_ids)
 
 
@@ -119,7 +133,5 @@ def dedup_companies_in_db(conn) -> int:
         else:
             seen[key] = row["id"]
     if dupe_ids:
-        placeholders = ",".join("?" * len(dupe_ids))
-        conn.execute(f"DELETE FROM companies WHERE id IN ({placeholders})", dupe_ids)
-        conn.commit()
+        _delete_in_chunks(conn, "companies", dupe_ids)
     return len(dupe_ids)

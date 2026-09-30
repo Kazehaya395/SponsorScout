@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import random
 import re
 import sys
@@ -107,10 +108,31 @@ def _playwright_available() -> bool:
     return _playwright_import_error() is None
 
 
+#: Set this environment variable to a truthy value to let the app download the
+#: Chromium binary itself when it is missing.  Off by default — see
+#: :func:`_ensure_playwright_browsers`.
+_AUTO_INSTALL_ENV = "SPONSORSCOUT_AUTO_INSTALL_BROWSERS"
+
+#: Hard ceiling for the optional `playwright install chromium` download.
+_INSTALL_TIMEOUT = 300
+
+_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+def _browser_auto_install_enabled() -> bool:
+    """Whether a missing Chromium binary may be downloaded automatically.
+
+    Defaults to **off**.  A ~130 MB download that blocks the caller for minutes
+    is never an acceptable surprise for a desktop app (and it made the test
+    suite hang); the user opts in explicitly instead.
+    """
+    return os.environ.get(_AUTO_INSTALL_ENV, "").strip().lower() in _TRUTHY
+
+
 def _ensure_playwright_browsers() -> bool:
     """
-    Verify browser binaries are present and auto-install if missing.
-    Called once per process; result is cached on the function itself.
+    Verify browser binaries are present.  Called once per process; the result
+    is cached on the function itself.
 
     The error seen in production:
       BrowserType.launch: Executable doesn't exist at
@@ -119,6 +141,16 @@ def _ensure_playwright_browsers() -> bool:
     This happens when `pip install playwright` was run but
     `playwright install chromium` was never run — the Python package
     exists but no browser binary was downloaded.
+
+    Recovery is **opt-in** (see :func:`_browser_auto_install_enabled`).  It was
+    previously automatic, which meant a missing browser made the first career
+    scan of every session block for up to ``_INSTALL_TIMEOUT`` seconds inside a
+    ``subprocess.run`` — Pause/Stop could not interrupt it (no ``check_control``
+    gate is reachable), and in a console-less PyInstaller build the child
+    inherited an invalid stdio handle.  It also made the whole pytest suite
+    hang: ``pipeline.run_scan``'s career pre-flight calls this function, and a
+    dev machine without a warm Chromium cache triggered a real ~130 MB
+    download from inside the tests.
 
     Returns True if browsers are ready, False if install failed/unavailable.
     """
@@ -170,15 +202,36 @@ def _ensure_playwright_browsers() -> bool:
         _ensure_playwright_browsers._ok = False
         return False
 
+    if not _browser_auto_install_enabled():
+        logger.warning(
+            "Playwright Chromium browser is missing.  Automatic download is "
+            "disabled, so JS-rendered career pages will return 0 jobs.  Run "
+            "`python -m playwright install chromium` once, then restart the app. "
+            "(Set %s=1 to restore the automatic download.)",
+            _AUTO_INSTALL_ENV,
+        )
+        _ensure_playwright_browsers._ok = False
+        return False
+
     logger.info(
         "Playwright browser not installed. Running 'playwright install chromium' now. "
         "This downloads ~130 MB and takes ~30 seconds on first run."
     )
     try:
         import subprocess
+        cmd = [sys.executable, "-m", "playwright", "install", "chromium"]
+        if sys.platform.startswith("linux"):
+            # --with-deps shells out to apt and needs root; never attempt it
+            # implicitly from a desktop app.
+            cmd.append("--with-deps")
         result = subprocess.run(
-            [sys.executable, "-m", "playwright", "install", "chromium", "--with-deps"],
-            timeout=360,
+            cmd,
+            timeout=_INSTALL_TIMEOUT,
+            # Never inherit stdio: a console-less (windowed / PyInstaller) build
+            # has no valid handles and the child would crash or block on them.
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
         )
         if result.returncode == 0:
             logger.info("playwright install chromium completed successfully.")

@@ -15,7 +15,7 @@
   #define MyAppVersion "0.1.1"
 #endif
 #define MyAppPublisher "SponsorScout"
-#define MyAppURL       "https://github.com/yourusername/sponsorscout"
+#define MyAppURL       "https://github.com/Kazake95/SponsorScout"
 #define MyAppExeName   "SponsorScout.exe"
 #define MyAppIcoName   "sponsorscout.ico"
 #define MyAppDataDirName "SponsorScout"
@@ -48,8 +48,15 @@ SolidCompression=yes
 ShowTasksTreeLines=yes
 DisableFinishedPage=no
 
-; Natively detect if SponsorScout is already running
-AppMutex=SponsorScoutAppMutex
+; Detect a running instance before installing over it.
+;
+; NOTE: there is deliberately NO AppMutex= entry. Inno's CloseApplications
+; detects the app through its top-level window, which is enough here, and an
+; AppMutex naming a mutex the app never creates (it only sets an AppUserModelID
+; via SetCurrentProcessExplicitAppUserModelID) would advertise a guarantee the
+; app does not provide. If a real single-instance mutex is ever added to
+; main.py, add the matching AppMutex line here.
+;
 ; Force-close the app during both install and uninstall
 CloseApplications=force
 RestartApplications=no
@@ -67,9 +74,24 @@ Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFile
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\{#MyAppIcoName}"; Tasks: desktopicon
 
 [Registry]
-; Set PLAYWRIGHT_BROWSERS_PATH to use the bundled _playwright directory
-; for offline operation without requiring internet on first run.
-Root: HKLM; Subkey: "SYSTEM\CurrentControlSet\Control\Session Manager\Environment"; ValueType: expandsz; ValueName: "PLAYWRIGHT_BROWSERS_PATH"; ValueData: "{app}\_playwright"; Flags: uninsdeletevalue; Permissions: everyone-modify
+; Point Playwright at the bundled _playwright directory so the app works on the
+; very first launch and offline (no ~130 MB download).
+;
+; This MUST be HKCU, not HKLM:
+;   * {app} is {autopf}\SponsorScout — a PER-USER directory. A machine-wide
+;     (HKLM) variable would point every account on the PC at whichever user
+;     installed last, and every other user would fail to find the browser.
+;   * An HKLM value with `Permissions: everyone-modify` lets any non-admin
+;     rewrite an environment variable that is injected into EVERY new process
+;     on the machine. HKCU needs no Permissions directive at all.
+;   * `uninsdeletevalue` then only clears the installing user's own value
+;     instead of deleting the shared one out from under other installations.
+;
+; Note: a registry change does not reach a process launched by a shell that has
+; not re-read the environment, so the very first run after install would miss
+; it. sponsorscout/paths.py handles exactly that by falling back to
+; exe_dir\_playwright, so this entry is a convenience, not a dependency.
+Root: HKCU; Subkey: "Environment"; ValueType: expandsz; ValueName: "PLAYWRIGHT_BROWSERS_PATH"; ValueData: "{app}\_playwright"; Flags: uninsdeletevalue
 
 [Tasks]
 Name: "desktopicon"; Description: "Create Desktop Shortcut"; GroupDescription: "Additional Icons"; Flags: unchecked

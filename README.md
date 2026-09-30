@@ -34,10 +34,25 @@ Installers are on the [GitHub Releases page](https://github.com/Kazake95/Sponsor
 | Platform | File |
 |----------|------|
 | Windows 10 / 11 | `sponsorscout-<version>-setup.exe` |
-| Linux (Debian / Ubuntu) | `sponsorscout_<version>_amd64.deb` |
+| Linux (Debian / Ubuntu / Mint) | `sponsorscout_<version>_<arch>.deb` |
+| Linux (Fedora / RHEL / openSUSE) | `sponsorscout-<version>-1.<arch>.rpm` |
 
-Pick the file for your platform. The app and its browser are bundled, so no
-Python is needed.
+`<arch>` is your machine's architecture (`amd64` on most desktops, `arm64` on
+Raspberry Pi / Graviton). Pick the file for your platform. The app and its
+browser are bundled, so no Python is needed.
+
+Installing the Linux packages:
+
+```bash
+# Debian / Ubuntu / Mint
+sudo apt install ./sponsorscout_<version>_<arch>.deb
+
+# Fedora / RHEL / openSUSE
+sudo dnf install ./sponsorscout-<version>-1.<arch>.rpm   # or: sudo zypper install ...
+```
+
+Both packages install to `/opt/sponsorscout` and add a launcher plus a desktop
+entry; the bundled Chromium is used automatically.
 
 ---
 
@@ -202,14 +217,17 @@ Copy `sponsorscout.db` to back everything up. Override the location with the
 
 ### Uninstalling
 
-The Windows installer and the Linux `.deb` package remove SponsorScout-owned
-user data during uninstall, including the SQLite database, editable seeds,
-language setting and scan logs. The default locations are cleaned for the
-current Windows user and for local Linux user accounts. Custom data paths are
-also removed when their `SPONSORSCOUT_DATA_DIR` / `SPONSORSCOUT_DB_PATH`
-environment variables are available to the uninstaller. Back up anything you
-want to keep before uninstalling. The shared Playwright browser cache is not
-removed because other applications may use it.
+The Windows installer, the Linux `.deb` and the Linux `.rpm` all remove
+SponsorScout-owned user data when the app is uninstalled — the SQLite database,
+editable seeds, language setting and scan logs. The default locations are
+cleaned for the current Windows user and for local Linux user accounts. Custom
+data paths are also removed when their `SPONSORSCOUT_DATA_DIR` /
+`SPONSORSCOUT_DB_PATH` environment variables are available to the uninstaller.
+Back up anything you want to keep before uninstalling. The shared Playwright
+browser cache is not removed because other applications may use it.
+
+On Linux the two packages behave identically; `apt remove sponsorscout` /
+`dnf remove sponsorscout` does the same as the Windows uninstaller.
 
 ---
 
@@ -234,6 +252,14 @@ missing `greenlet`), where Playwright looks for browsers, and whether the
 bundled Chromium launches — without opening the app. Builds run this
 automatically and refuse to package a broken bundle. From source, run
 `python -m playwright install chromium`.
+
+**SponsorScout will not download a browser by itself.** If Chromium is missing
+the app logs a warning and keeps working, but JS-rendered career pages return 0
+jobs. Install it once with `python -m playwright install chromium`. To restore
+the old automatic behaviour set `SPONSORSCOUT_AUTO_INSTALL_BROWSERS=1` — it is
+off by default because a ~130 MB download can block the scan for minutes.
+Installed builds are unaffected: the browser ships inside the `.exe`, `.deb`
+and `.rpm`.
 
 **Some companies returned no jobs.** They may have no open roles (`EMPTY` in
 the log), or they may temporarily block automated access — try again later.
@@ -268,10 +294,19 @@ the job listings you asked for.
 ```powershell
 python -m venv venv
 venv\Scripts\activate
-pip install -r requirements.txt
-pip install ".[dev]"          # pytest + pyinstaller
+pip install -r requirements.txt   # runtime + pyinstaller (used by the build scripts)
+pip install -e ".[dev]"          # pytest, for the test suite
 python -m playwright install chromium
 ```
+
+`requirements.txt` is what the build scripts (`build_exe.ps1`, `build_deb.sh`,
+`build_rpm.sh`) consume, so it must keep `pyinstaller`. The `.[dev]` extra adds
+`pytest` for the suite; `pip install -e .` alone is enough if you only want to
+run the app.
+
+If you skip `playwright install chromium`, the app still starts but
+JS-rendered career pages return 0 jobs. It will **not** download ~130 MB on its
+own; set `SPONSORSCOUT_AUTO_INSTALL_BROWSERS=1` if you want that behaviour back.
 
 **Windows installer:**
 ```powershell
@@ -281,7 +316,7 @@ python -m playwright install chromium
 
 **Linux package (Debian / Ubuntu):**
 ```bash
-./build_deb.sh                # -> dist/sponsorscout_<version>_amd64.deb
+./build_deb.sh                # -> dist/sponsorscout_<version>_<arch>.deb
 ```
 Run it as your normal user: **do not use `sudo`**. The script creates an
 isolated build environment in `.build/deb-venv`, so it never modifies the
@@ -325,6 +360,7 @@ python -m pytest sponsorscout/tests
 - Playwright Chromium: `python -m playwright install chromium`
 - Dev/test: **pytest**, **pyinstaller** (`pip install ".[dev]"`)
 - Linux packaging: `python3`, `python3-venv`, and `dpkg` (`sudo apt install python3-venv`); `rpmbuild` for the `.rpm` (`sudo dnf install rpm-build` / `sudo apt install rpm`)
+- Optional: `SPONSORSCOUT_AUTO_INSTALL_BROWSERS=1` lets the app download Chromium itself when it is missing (off by default)
 
 ---
 
@@ -359,10 +395,26 @@ Gli installer sono nella [pagina GitHub Releases](https://github.com/Kazake95/Sp
 | Piattaforma | File |
 |-------------|------|
 | Windows 10 / 11 | `sponsorscout-<versione>-setup.exe` |
-| Linux (Debian / Ubuntu) | `sponsorscout_<versione>_amd64.deb` |
+| Linux (Debian / Ubuntu / Mint) | `sponsorscout_<versione>_<arch>.deb` |
+| Linux (Fedora / RHEL / openSUSE) | `sponsorscout-<versione>-1.<arch>.rpm` |
 
-Scegli il file per la tua piattaforma. L'app e il browser sono inclusi, quindi
-non serve Python.
+`<arch>` è l'architettura della tua macchina (`amd64` sulla maggior parte dei
+desktop, `arm64` su Raspberry Pi / Graviton). Scegli il file per la tua
+piattaforma. L'app e il browser sono inclusi, quindi non serve Python.
+
+Installare i pacchetti Linux:
+
+```bash
+# Debian / Ubuntu / Mint
+sudo apt install ./sponsorscout_<versione>_<arch>.deb
+
+# Fedora / RHEL / openSUSE
+sudo dnf install ./sponsorscout-<versione>-1.<arch>.rpm   # oppure: sudo zypper install ...
+```
+
+Entrambi i pacchetti installano in `/opt/sponsorscout` e aggiungono un launcher
+più una voce nel menu applicazioni; il Chromium incluso viene usato
+automaticamente.
 
 ---
 
@@ -545,15 +597,19 @@ variabile d'ambiente `SPONSORSCOUT_DATA_DIR` (o `SPONSORSCOUT_DB_PATH`).
 
 ### Disinstallazione
 
-L'installer Windows e il pacchetto Linux `.deb` rimuovono durante la
-disinstallazione tutti i dati locali di SponsorScout: database SQLite, elenchi
-modificabili, lingua e log delle scansioni. Vengono pulite le posizioni
-predefinite dell'utente Windows e degli account Linux locali. Vengono rimosse
-anche le posizioni personalizzate se le variabili `SPONSORSCOUT_DATA_DIR` /
-`SPONSORSCOUT_DB_PATH` sono disponibili al programma di disinstallazione.
-Fai una copia di cio che vuoi conservare prima di disinstallare. La cache
-condivisa dei browser Playwright non viene rimossa, perche potrebbe servire
-ad altre applicazioni.
+L'installer Windows, il pacchetto Linux `.deb` e il pacchetto Linux `.rpm`
+rimuovono durante la disinstallazione tutti i dati locali di SponsorScout:
+database SQLite, elenchi modificabili, lingua e log delle scansioni. Vengono
+pulite le posizioni predefinite dell'utente Windows e degli account Linux
+locali. Vengono rimosse anche le posizioni personalizzate se le variabili
+`SPONSORSCOUT_DATA_DIR` / `SPONSORSCOUT_DB_PATH` sono disponibili al programma
+di disinstallazione. Fai una copia di cio che vuoi conservare prima di
+disinstallare. La cache condivisa dei browser Playwright non viene rimossa,
+perche potrebbe servire ad altre applicazioni.
+
+Su Linux i due pacchetti si comportano allo stesso modo; `apt remove
+sponsorscout` / `dnf remove sponsorscout` equivalgono alla disinstallazione
+Windows.
 
 ---
 
@@ -579,6 +635,15 @@ errore, ad esempio `greenlet` mancante), dove Playwright cerca i browser e se
 il Chromium incluso si avvia — senza aprire l'app. Le build eseguono questo
 controllo automaticamente e rifiutano di pacchettizzare un bundle rotto. Da
 codice sorgente, esegui `python -m playwright install chromium`.
+
+**SponsorScout non scarica un browser da solo.** Se Chromium manca, l'app
+scrive un avviso e continua a funzionare, ma le pagine carriera renderizzate via
+JavaScript restituiscono 0 lavori. Installalo una volta con
+`python -m playwright install chromium`. Per riattivare il comportamento
+automatico di prima imposta `SPONSORSCOUT_AUTO_INSTALL_BROWSERS=1`: e disattivato
+perche un download di ~130 MB puo bloccare la scansione per minuti. Le build
+installate non ne risentono: il browser e incluso dentro `.exe`, `.deb` e
+`.rpm`.
 
 **Alcune aziende non hanno restituito lavori.** Potrebbero non avere posizioni
 aperte (`EMPTY` nel log) oppure bloccare temporaneamente l'accesso automatico:
@@ -615,10 +680,14 @@ annunci lavori che hai chiesto di scaricare.
 ```powershell
 python -m venv venv
 venv\Scripts\activate
-pip install -r requirements.txt
-pip install ".[dev]"          # pytest + pyinstaller
+pip install -r requirements.txt   # runtime + pyinstaller (usati dagli script di build)
+pip install -e ".[dev]"          # pytest, per la suite di test
 python -m playwright install chromium
 ```
+
+Se salti `playwright install chromium` l'app parte comunque, ma le pagine
+carriere renderizzate via JavaScript restituiscono 0 lavori. Non scarica da solo
+~130 MB; imposta `SPONSORSCOUT_AUTO_INSTALL_BROWSERS=1` per riattivarlo.
 
 **Installer Windows:**
 ```powershell
@@ -628,7 +697,7 @@ python -m playwright install chromium
 
 **Pacchetto Linux (Debian / Ubuntu):**
 ```bash
-./build_deb.sh                # -> dist/sponsorscout_<versione>_amd64.deb
+./build_deb.sh                # -> dist/sponsorscout_<versione>_<arch>.deb
 ```
 Esegui lo script come utente normale: **non usare `sudo`**. Lo script crea un
 ambiente di compilazione isolato in `.build/deb-venv`, quindi non modifica mai
@@ -673,6 +742,7 @@ python -m pytest sponsorscout/tests
 - Playwright Chromium: `python -m playwright install chromium`
 - Solo sviluppo/test: **pytest**, **pyinstaller** (`pip install ".[dev]"`)
 - Pacchetto Linux: `python3`, `python3-venv` e `dpkg` (`sudo apt install python3-venv`); `rpmbuild` per il `.rpm` (`sudo dnf install rpm-build` / `sudo apt install rpm`)
+- Opzionale: `SPONSORSCOUT_AUTO_INSTALL_BROWSERS=1` permette all'app di scaricare da sola Chromium quando manca (disattivato per impostazione predefinita)
 
 ---
 

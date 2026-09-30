@@ -35,18 +35,32 @@ def check_control(cancel_event, pause_event=None, poll_sec: float = 0.1) -> bool
     return cancel_event is not None and cancel_event.is_set()
 
 
-def host_workers_limits() -> tuple[int, int]:
-    """Return ``(cpu_count, total_ram_bytes)`` for this machine.
+#: Absolute memory floor for pool sizing (2 GiB).  Sizing reads AVAILABLE RAM,
+#: not total; this only prevents a transient dip from pinning a scan to one
+#: worker for the whole run.
+_MIN_USABLE_RAM = 2 * 1024 ** 3
+
+#: Below this, we assume a low-end machine and stay deliberately small.
+_LOW_MEMORY_RAM = 6 * 1024 ** 3
+
+
+def host_workers_limits() -> tuple[int, int, int]:
+    """Return ``(cpu_count, total_ram_bytes, available_ram_bytes)`` for this machine.
 
     RAM is read via ``GlobalMemoryStatusEx`` on Windows and ``sysconf`` on
     POSIX; when neither works (exotic platform / sandbox) a conservative
     8 GiB is assumed so the pool sizing stays *small* rather than optimistic.
+
+    Available RAM is reported alongside total because total alone is
+    misleading on a low-end machine: a 16 GB box that is currently 14 GB into
+    swap reads as "plenty of memory" while it is in fact thrashing.  Sizing
+    pools on total was how a single scan could still exhaust a machine.
     """
     import os
 
     cpu = os.cpu_count() or 2
 
-    ram = 0
+    ram = avail = 0
     try:
         if os.name == "nt":
             import ctypes
@@ -68,14 +82,21 @@ def host_workers_limits() -> tuple[int, int]:
             stat.dwLength = ctypes.sizeof(_MEMORYSTATUSEX)
             if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
                 ram = int(stat.ullTotalPhys)
+                avail = int(stat.ullAvailPhys)
         else:
             ram = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+            try:
+                avail = os.sysconf("SC_AVPHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")
+            except (ValueError, OSError, AttributeError):
+                avail = 0
     except Exception:
-        ram = 0
+        ram = avail = 0
 
     if ram <= 0:
         ram = 8 * 1024 ** 3
-    return cpu, ram
+    if avail <= 0:
+        avail = ram
+    return cpu, ram, avail
 
 
 def recommended_workers(kind: str = "browser") -> int:
@@ -86,6 +107,14 @@ def recommended_workers(kind: str = "browser") -> int:
     fetches) can exhaust the RAM of an 8 GB laptop and stall the whole OS —
     exactly the "scanning freezes my system" failure mode.
 
+    Sizing uses *available* RAM (floored at half of total, so a transient dip
+    under memory pressure cannot starve the scan to a single worker forever),
+    not total RAM.  Both phases draw on the same budget: on a 2-core / 8 GB box
+    the browser pool correctly drops to 1, but the lightweight HTTP pool used
+    to be computed independently from *total* RAM and still returned 4 — so a
+    career scan ran four concurrent fetchers on top of one Chromium on two
+    cores.
+
     ``kind``:
       * ``"browser"`` — concurrent browser contexts for the career crawl.
       * ``"http"``    — concurrent lightweight HTTP detail fetches.
@@ -93,13 +122,19 @@ def recommended_workers(kind: str = "browser") -> int:
     Returned values are always >= 1 and deliberately conservative; the scans
     stay correct at any concurrency, they are merely slower.
     """
-    cpu, ram = host_workers_limits()
+    cpu, ram_total, ram_avail = host_workers_limits()
+    # Use available RAM, floored at 2 GiB.  The floor exists only so a
+    # momentary spike in another application's memory cannot pin a scan to a
+    # single worker forever — but the floor must be an ABSOLUTE one, not a
+    # fraction of total: on a 32 GB box that is currently swapping, total/2 is
+    # 16 GB and would hand back the very large pool the machine cannot run.
+    ram = max(ram_avail, _MIN_USABLE_RAM)
     if kind == "http":
-        if ram < 6 * 1024 ** 3:
+        if ram < _LOW_MEMORY_RAM:
             return 3 if cpu >= 2 else 2
         return max(2, min(cpu * 2, 8))
     # browser contexts: the heavy case
-    if ram < 6 * 1024 ** 3 or cpu <= 2:
+    if ram < _LOW_MEMORY_RAM or cpu <= 2:
         return 1
     if cpu <= 4:
         return 2

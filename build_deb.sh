@@ -6,7 +6,16 @@ cd "$ROOT_DIR"
 
 APP_NAME="SponsorScout"
 PKG_NAME="sponsorscout"
-DEB_ARCH="amd64"
+# Derive the package architecture from the host dpkg instead of hard-coding
+# "amd64". The hard-coded value silently produced an amd64 .deb on an arm64
+# machine (Raspberry Pi, Graviton, ...), where dpkg then refuses it with
+# "package architecture (amd64) does not match system (arm64)". build_rpm.sh
+# has always done this correctly via `rpmbuild --eval '%{_arch}'`.
+DEB_ARCH="$(dpkg --print-architecture 2>/dev/null || true)"
+if [ -z "$DEB_ARCH" ]; then
+  echo "WARNING: 'dpkg --print-architecture' produced nothing; defaulting to amd64." >&2
+  DEB_ARCH="amd64"
+fi
 
 BUILD_DIR=".build/deb"
 VENV_DIR=".build/deb-venv"
@@ -176,9 +185,15 @@ find "$APP_DIR" -type d -name "*.dist-info" -exec rm -rf {} + 2>/dev/null || tru
 # Remove unnecessary locale data (saves 2-5 MB)
 find "$APP_DIR" -type d -name "locale" -exec rm -rf {} + 2>/dev/null || true
 
-# Remove test directories bundled from packages (saves 5-20 MB)
+# Remove test directories bundled from third-party packages (saves 5-20 MB).
+#
+# BUGFIX: the guard used to be `-not -path "*/sponsorscout/*"`, but APP_DIR is
+# ".build/deb/opt/sponsorscout" — so EVERY path inside the bundle matched
+# "*/sponsorscout/*" and the find removed nothing at all. The rule silently
+# did nothing while still claiming a 5-20 MB saving. Narrow the exception to
+# our own test package only, so third-party tests are actually dropped.
 find "$APP_DIR" -type d \( -name "tests" -o -name "test" -o -name "testing" \) \
-  -not -path "*/sponsorscout/*" -exec rm -rf {} + 2>/dev/null || true
+  -not -path "*/sponsorscout/tests" -exec rm -rf {} + 2>/dev/null || true
 
 # ── Bundled Playwright Chromium ──────────────────────────────────────────────
 # Install Chromium DIRECTLY into the package's `_playwright` directory so it

@@ -138,6 +138,14 @@ def upsert_job(conn, job, commit: bool = True):
              match_score=excluded.match_score,
              verified_active=excluded.verified_active,
              is_expired=excluded.is_expired,
+-- BUGFIX: this column was missing from the UPDATE clause, so
+             -- mark_verified()'s timestamp was silently dropped on every
+             -- re-upsert of an existing URL.  The freshness query in the
+             -- Tools tab selects `last_verified_at IS NULL OR < 7 days`, so
+             -- the same oldest N rows were re-verified forever and the check
+             -- never advanced to a new job.  COALESCE keeps a NULL (never
+             -- verified) from erasing an older stamp.
+             last_verified_at=COALESCE(excluded.last_verified_at, last_verified_at),
              last_seen_at=CURRENT_TIMESTAMP,
              updated_at=CURRENT_TIMESTAMP,
              remote_type=excluded.remote_type,
