@@ -1,6 +1,6 @@
 name,careers_url,provider,board_slug,source_type,target_country,scope_policy,industry,sponsorship_history,english_friendly,remote_score,notes
 3 Banken IT,https://www.3bankenit.at/jobs/offene-jobangebote/,auto,,direct_employer,Austria,job_location,Banking IT,50,60,30,German-language site
-A2G Technologies,https://a2gtechnologies.com/jobs,auto,,recruiter,India,job_location,Consulting/IT,75,85,40,verified 2026-09-28: India/Pune recruiter (was wrongly scoped Netherlands)
+A2G Technologies,https://a2gtechnologies.com/jobs,auto,,recruiter,Global,job_location,Consulting/IT,75,85,40,verified 2026-10-02: posts in NL (Eindhoven/Best) and IN (Pune) - Global so both sides are kept
 ABN AMRO,https://www.werkenbijabnamro.nl/en/vacancies,auto,,direct_employer,Global,global,Banking,75,75,45,
 About You,https://corporate.aboutyou.de/en/career/jobs,auto,,direct_employer,Global,global,Fashion,75,85,55,
 Action Italia Post,https://it.action.jobs/offerte-di-lavoro/negozio,auto,,direct_employer,Italy,seed_url,Retail/Discount,10,45,10,user-added sub-URL (344 jobs live); extractor fix H1 in this patch

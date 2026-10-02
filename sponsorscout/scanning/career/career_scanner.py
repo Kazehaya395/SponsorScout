@@ -3449,70 +3449,6 @@ class CareerPortalScanner:
             return level_map[m.group(1).lower()] + " " + title[m.end():]
         return title
 
-    def _looks_like_location_fragment(self, frag):
-        s = (frag or "").strip()
-        if not s:
-            return False
-        # a fragment that contains a role word is a title, not a location
-        # (e.g. "Payments Consultant Germany & Austria")
-        if self.config.ROLE_WORD_PATTERN.search(s):
-            return False
-        low = re.sub(r"^[\(\[]|[\)\]]$", "", s).strip(" .,;").lower()
-        if low in ("remote", "hybrid", "onsite", "on-site", "on site",
-                   "home office", "anywhere", "worldwide", "global"):
-            return True
-        # diacritic-aware known-place check (Gda\u0144sk, K\u00f6ln, Wroc\u0142aw)
-        if low in self.KNOWN_PLACES or self._norm(low) in self.NORM_KNOWN:
-            return True
-        # slash-separated city list ("Linkou/Hsinchu/Taichung") is a location fragment
-        if "/" in low:
-            for part in low.split("/"):
-                part = part.strip()
-                if part and (part in self.KNOWN_PLACES or self._norm(part) in self.NORM_KNOWN):
-                    return True
-        # office / work-mode keywords ("In-Office", "Onsite")
-        if re.search(r"\b(in[- ]?office|on[- ]?site|remote|hybrid|home office|"
-                     r"work from home|flexible)\b", low):
-            return True
-        # known boilerplate phrases ("Target Optical", "Sunglass Hut")
-        if any(ph in low for ph in self.config.LOCATION_REJECT_PHRASES):
-            return True
-        if low in self.KNOWN_PLACES:
-            return True
-        if re.fullmatch(r"[a-z]{2}", low):
-            return True
-        words = low.split()
-        if words and words[-1] in self.config.COUNTRIES_AND_REGIONS:
-            return True
-        if re.search(
-            r"\b(ny|ca|tx|ma|il|wa|fl|az|co|ga|nj|pa|mi|oh|mn|nc|va|md|ct|"
-            r"or|ut|in|mo|wi|tn|sc|ky|la|al|ok|ks|ia|ar|nv|ne|id|nh|me|ri|"
-            r"vt|wv|mt|nd|sd|wy|ak|hi|de|dc|on|bc|ab|qc|ns|mb|sk|nt|yt|nu|"
-            r"pe|nl|nb)\b$", low,
-        ):
-            return True
-        return False
-
-    def _looks_like_contract_fragment(self, frag):
-        low = (frag or "").strip().lower()
-        if not low or len(low) > 80:
-            return False
-        # short fragments that START with a contract/type term
-        # (e.g. "fixed term until June 30th, 2027" — but NOT
-        #  "Campus Undergraduate Summer Internship Program")
-        if re.search(
-            r"^(fixed[- ]?term|permanent|temporary|temporaire|contract|"
-            r"full[- ]?time|part[- ]?time|internship|trainee|werkstudent|"
-            r"working student|praktikum|ausbildung|duales studium|"
-            r"apprenticeship|apprentice|secondment)\b", low,
-        ):
-            return True
-        # year + contract-word combo (e.g. "2027 fixed term")
-        if re.search(r"\b20\d\d\b", low) and re.search(
-            r"\b(term|until|ending|contract|fixed|year|month)\b", low):
-            return True
-        return False
-
     def clean_job_title(self, title):
         """Conservative, multilingual title normalization.
 
@@ -4523,9 +4459,11 @@ class CareerPortalScanner:
             "netherlands": {"netherlands", "nederland", "amsterdam", "rotterdam", "utrecht", "haarlem", "delft", "eindhoven", "north holland", "noord holland", "zuid holland"},
             "united kingdom": {"united kingdom", "england", "scotland", "wales", "northern ireland", "london", "manchester", "birmingham", "edinburgh", "glasgow", "uk"},
             "ireland": {"ireland", "dublin", "cork", "galway", "limerick"},
-            # A2G Technologies retarget (2026-09-28): India/Pune recruiter was
-            # wrongly scoped to Netherlands. Major IN cities so job_location
-            # scope passes once the extractor yields a real location.
+            # Major cities per country, so a job_location scope can actually
+            # match a real posting. (The "india" set was added for the A2G
+            # retarget of 2026-09-28, which has since been superseded -- A2G
+            # posts in both regions and is now scoped Global. The city list
+            # itself stays: India is a real scope target for other rows.)
             "india": {"india", "bharat", "pune", "mumbai", "bombay", "delhi", "new delhi", "bengaluru", "bangalore", "hyderabad", "chennai", "madras", "kolkata", "calcutta", "ahmedabad", "noida", "gurgaon", "gurugram", "kochi", "cochin"},
         }
         return any(re.search(r"(?:^|[^a-z])" + re.escape(a) + r"(?:$|[^a-z])", blob) for a in aliases.get(target.casefold(), {target.casefold()}))
@@ -5539,8 +5477,12 @@ class CareerPortalScanner:
         try:
             page.goto(url,wait_until="domcontentloaded",timeout=self.config.DETAIL_SCAN_TIMEOUT_MS)
             page.wait_for_timeout(500)
-            data=page.evaluate("""() => {
-                const out={desc:'',type:'',loc:'',remote:false};
+            # NOTE: raw string — the JS below contains regex/string escapes
+            # (\s, \n). In a non-raw Python literal \n would be turned into a
+            # REAL newline inside a single-quoted JS string literal, which is a
+            # JavaScript syntax error and would abort every detail visit.
+            data=page.evaluate(r"""() => {
+                const out={desc:'',type:'',loc:'',remote:false,hdr:''};
                 for (const s of document.querySelectorAll('script[type="application/ld+json"]')) {
                     try {
                         const d=JSON.parse(s.textContent);
@@ -5564,6 +5506,24 @@ class CareerPortalScanner:
                     } catch(e) {}
                 }
                 out.desc=(document.body?document.body.innerText:'').slice(0,12000);
+                // BUGFIX (B12): a large share of career pages publish NO
+                // JobPosting ld+json at all (WordPress/Elementor templates
+                // ship only a Yoast WebSite graph), so out.loc stays '' and the
+                // detail pass had no location to apply. Those pages still print
+                // country and city as plain text directly under the <h1>, so
+                // capture that short header block. It is only ever a CANDIDATE:
+                // the Python side re-validates it against the known-place
+                // gazetteer before it can reach a row.
+                try {
+                    const h1=document.querySelector('h1');
+                    const title=(h1?h1.innerText:'').replace(/\s+/g,' ').trim();
+                    if (title) {
+                        const lines=out.desc.split('\n')
+                            .map(s=>s.replace(/\s+/g,' ').trim()).filter(Boolean);
+                        const i=lines.findIndex(l=>l.toLowerCase()===title.toLowerCase());
+                        if (i>=0) out.hdr=lines.slice(i+1,i+5).join('\n');
+                    }
+                } catch(e) {}
                 return out;
             }""") or {}
         except Exception as exc:
@@ -5620,12 +5580,70 @@ class CareerPortalScanner:
         if workload or mode:
             rec["Job Type"]=f"{workload or old_parts[0]} / {mode or (old_parts[1] if len(old_parts)>1 else 'Unknown')}"
 
+        # BUGFIX (B12): the detail page is the AUTHORITATIVE source for this one
+        # posting's location, so it may replace a value that was never
+        # observed. It previously overwrote only "Unknown"/"Not Specified",
+        # which meant the company_hq guess (P0-11) was permanent: a multi-site
+        # employer stamped every row with its HQ city, and a job actually
+        # posted in Eindhoven was reported as Pune, India. A hardcoded
+        # headquarters is a fact about the COMPANY, not about the JOB, so it
+        # is treated as a guess that real page evidence always outranks.
         loc=(data.get("loc") or "").strip()
-        if loc and rec.get("Job Location") in {"Unknown","Not Specified"}:
+        detail_location = ""
+        if loc:
             parsed=self.extract_location(loc)
             if parsed!="Not Specified":
-                rec["Job Location"]=parsed; rec["Location Source"]="detail"
+                detail_location=parsed
+        if not detail_location:
+            detail_location=self._location_from_detail_header(data.get("hdr") or "")
+        if detail_location and self._location_is_unverified(rec):
+            rec["Job Location"]=detail_location
+            rec["Location Source"]="detail"
+            # Keep the harvested text so the country can be re-derived later
+            # without re-crawling the page.
+            rec["Raw Location"]=data.get("hdr") or loc
         return "ok"
+
+    @staticmethod
+    def _location_is_unverified(rec) -> bool:
+        """True when a row's location is a placeholder or an inferred guess.
+
+        Only those may be replaced by detail-page evidence. A location that
+        was actually read off the listing card ("card", "detail", "api", ...)
+        is left alone, so this can never rewrite a real observation.
+        """
+        current = str(rec.get("Job Location") or "").strip()
+        if current.lower() in {"", "unknown", "not specified", "global", "united"}:
+            return True
+        return str(rec.get("Location Source") or "").strip().lower() in {
+            "", "none", "unknown", "company_hq"}
+
+    def _location_from_detail_header(self, hdr) -> str:
+        """Parse country/city printed directly under the detail page's <h1>.
+
+        WordPress/Elementor career templates publish no JobPosting ld+json, so
+        the structured location never reaches the scanner, yet the page still
+        states it as two short lines under the title:
+
+            Sr. Scrum Master
+            Netherlands
+            Eindhoven
+            Any Masters Degree
+
+        Only the first two lines are treated as the location, and every
+        candidate must survive ``extract_location``'s known-place validation
+        before it is returned, so an education line ("Any Masters Degree") or
+        a call to action can never be mistaken for a place. An empty string
+        means "no usable evidence", and the row keeps whatever it had.
+        """
+        lines=[l.strip() for l in str(hdr or "").splitlines() if l.strip()]
+        if not lines:
+            return ""
+        for candidate in (", ".join(lines[:2]), "\n".join(lines[:3]), lines[0]):
+            parsed=self.extract_location(candidate)
+            if parsed!="Not Specified":
+                return parsed
+        return ""
 
     @staticmethod
     def _detail_priority(rec) -> tuple:
@@ -5637,8 +5655,13 @@ class CareerPortalScanner:
         evidence rules and the same writers apply, so no row can lose data it
         would otherwise have received.
         """
-        weak_location = str(rec.get("Job Location") or "").strip().lower() in (
+        weak_location = (str(rec.get("Job Location") or "").strip().lower() in (
             "", "unknown", "not specified", "global")
+            # BUGFIX (B12): a company_hq value LOOKS like a usable location, so
+            # these rows sorted as "strong" and were visited last -- exactly
+            # backwards, since they are the rows a detail visit can correct.
+            # A guess is weak evidence by definition.
+            or str(rec.get("Location Source") or "").strip().lower() == "company_hq")
         weak_verdict = str(rec.get("Visa Sponsorship") or "").strip().lower() not in (
             "y", "n", "yes", "no")
         weak_evidence = not str(rec.get("Support Evidence") or "").strip()
@@ -6298,129 +6321,6 @@ class CareerPortalScanner:
                   "w", encoding="utf-8") as f:
             f.write(report)
 
-    def _try_ats_fallback(self, p, name, process_job):
-        """Zero-yield rescue: pull jobs from public ATS JSON/XML APIs
-        (Greenhouse / Lever / Ashby / Personio / Recruitee / Workable).
-        Returns number of jobs added."""
-        import xml.etree.ElementTree as ET
-        entries = self.config.ATS_FALLBACK.get(name)
-        if not entries:
-            return 0
-        api_builders = {
-            "ashby": lambda slug: ("https://api.ashbyhq.com/posting-api/job-board/"
-                                   f"{slug}?includeCompensation=false", "json"),
-            "lever": lambda slug: (f"https://api.lever.co/v0/postings/{slug}?mode=json", "json"),
-            "greenhouse": lambda slug: (f"https://boards-api.greenhouse.io/v1/boards/{slug}/jobs", "json"),
-            "personio": lambda slug: (f"https://{slug}.jobs.personio.de/xml?language=en", "xml"),
-            "recruitee": lambda slug: (f"https://{slug}.recruitee.com/api/offers/", "json"),
-            "workable": lambda slug: (f"https://www.workable.com/api/accounts/{slug}?details=true", "json"),
-        }
-        added = 0
-        for ats, slugs in entries.items():
-            if ats not in api_builders:
-                continue
-            for slug in slugs:
-                url, fmt = api_builders[ats](slug)
-                try:
-                    req = urllib.request.Request(url, headers={
-                        "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                                       "AppleWebKit/537.36 Chrome/126.0.0.0 Safari/537.36"),
-                        "Accept": "application/json,text/xml,*/*",
-                    })
-                    with urllib.request.urlopen(req, timeout=15) as resp:
-                        if resp.status != 200:
-                            continue
-                        raw = resp.read().decode("utf-8", "replace")
-                    jobs = []
-                    if fmt == "json":
-                        import json as _json
-                        data = _json.loads(raw)
-                        if ats == "greenhouse":
-                            for it in data.get("jobs") or []:
-                                jobs.append({
-                                    "job_title": it.get("title") or "",
-                                    "job_url": it.get("absolute_url") or "",
-                                    "location_hint": (it.get("location") or {}).get("name") or "",
-                                    "card_context": " | ".join(filter(None, [
-                                        it.get("department") or "",
-                                        it.get("employment_type") or "",
-                                    ])),
-                                })
-                        elif ats == "lever":
-                            for it in data:
-                                cats = it.get("categories") or {}
-                                loc = cats.get("location") or cats.get("allLocations") or ""
-                                if isinstance(loc, list):
-                                    loc = ", ".join(loc)
-                                jobs.append({
-                                    "job_title": it.get("text") or "",
-                                    "job_url": it.get("hostedUrl") or "",
-                                    "location_hint": str(loc),
-                                    "card_context": " | ".join(filter(None, [
-                                        cats.get("team") or "",
-                                        cats.get("commitment") or "",
-                                        it.get("workplaceType") or "",
-                                    ])),
-                                })
-                        elif ats == "ashby":
-                            for it in (data.get("jobs") or []):
-                                jobs.append({
-                                    "job_title": it.get("title") or "",
-                                    "job_url": it.get("jobUrl") or it.get("applyUrl") or "",
-                                    "location_hint": it.get("location") or "",
-                                    "card_context": " | ".join(filter(None, [
-                                        it.get("department") or "",
-                                        it.get("employmentType") or "",
-                                    ])),
-                                })
-                        elif ats == "recruitee":
-                            for it in (data.get("offers") or []):
-                                jobs.append({
-                                    "job_title": it.get("title") or "",
-                                    "job_url": it.get("careers_url") or "",
-                                    "location_hint": it.get("location") or "",
-                                    "card_context": it.get("department") or "",
-                                })
-                        elif ats == "workable":
-                            for it in (data.get("jobs") or []):
-                                loc = " ".join(filter(None, [
-                                    it.get("city") or "", it.get("country") or ""])).strip()
-                                jobs.append({
-                                    "job_title": it.get("title") or "",
-                                    "job_url": it.get("url") or "",
-                                    "location_hint": loc,
-                                    "card_context": " | ".join(filter(None, [
-                                        it.get("department") or "",
-                                        it.get("employment_type") or "",
-                                        it.get("worktype") or "",
-                                    ])),
-                                })
-                    else:  # personio xml
-                        try:
-                            root = ET.fromstring(raw)
-                        except Exception:
-                            continue
-                        for pos in root.findall(".//position"):
-                            jobs.append({
-                                "job_title": (pos.findtext("name") or "").strip(),
-                                "job_url": (pos.findtext("jobUrl") or "").strip(),
-                                "location_hint": (pos.findtext("office") or "").strip(),
-                                "card_context": " | ".join(filter(None, [
-                                    (pos.findtext("department") or "").strip(),
-                                    (pos.findtext("employmentType") or "").strip(),
-                                    (pos.findtext("schedule") or "").strip(),
-                                ])),
-                            })
-                    for j in jobs:
-                        if process_job(j):
-                            added += 1
-                    if added:
-                        print(f"   -> {name}: ATS API fallback ({ats}/{slug}) added {added} jobs")
-                        return added
-                except Exception:
-                    continue
-        return added
-
     def _ensure_output_header(self, columns, path=None):
         path = path or self.output_csv
         if not columns:
@@ -6437,36 +6337,6 @@ class CareerPortalScanner:
                 f"Output schema mismatch for {path}. Expected {columns!r}, found {first!r}. "
                 "Use a fresh output path or explicitly migrate the file."
             )
-
-    def _kill_child_processes(self):
-        """Kill lingering Playwright node-driver / chrome child processes
-        (descendants of THIS process only) so they cannot dump EPIPE /
-        unhandled-error output to the terminal after the script exits."""
-        import signal, subprocess
-        try:
-            def _kill_children(ppid):
-                try:
-                    out = subprocess.run(["pgrep", "-P", str(ppid)],
-                                         capture_output=True, text=True, timeout=5)
-                    kids = [int(x) for x in out.stdout.split() if x.strip()]
-                except Exception:
-                    return []
-                for k in kids:
-                    try:
-                        os.kill(k, signal.SIGKILL)
-                    except Exception:
-                        pass
-                return kids
-            level = [os.getpid()]
-            for _ in range(4):  # python -> node driver -> chrome -> zygotes
-                nxt = []
-                for pid in level:
-                    nxt += _kill_children(pid)
-                if not nxt:
-                    break
-                level = nxt
-        except Exception:
-            pass
 
     def _write_errors_header(self, path):
         with open(path, "w", newline="", encoding="utf-8-sig") as f:
@@ -6796,8 +6666,15 @@ class CareerPortalScanner:
                     hq = self.config.COMPANY_HEADQUARTERS.get(name)
                     if hq:
                         out_location, loc_source = hq, "company_hq"
-                # Regional seed context resolves known local administrative-code collisions.
-                if target_row.get("target_country") == "Italy" and out_location in {"Milan, MI", "Milan, Spain"}:
+                # "Milan, MI" is an ambiguous City/ST stub (MI = Michigan), and
+                # the country parser already resolves "Milan" to Italy on its
+                # own, so this only tidies the DISPLAY string -- the country is
+                # the same either way. "Milan, Spain" used to be in this set
+                # too, which meant a posting that genuinely parsed as Spain had
+                # its country overwritten from the seed's scope. A real
+                # country read off the page outranks a preset one, so that
+                # case is now left alone.
+                if target_row.get("target_country") == "Italy" and out_location == "Milan, MI":
                     out_location, loc_source = "Milan, Italy", "seed_scope+card"
                 # J1: same job as an accepted row but in the other URL form
                 # (fragment vs clean) — quarantine as a variant dupe (still

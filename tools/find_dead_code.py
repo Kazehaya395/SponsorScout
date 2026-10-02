@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import argparse
 import ast
-import re
 import sys
 from pathlib import Path
 
@@ -32,8 +31,11 @@ ROOT = Path(__file__).resolve().parents[1]
 PKG = ROOT / "sponsorscout"
 ALLOW_FILE = Path(__file__).with_name("find_dead_code.allow")
 
-_TS_FENCE_RE = re.compile(r"^\s*(```|~~~)")
-_I18N_CALL_RE = re.compile(r"_\(\s*(\"|')((?:\\.|(?!\1).)*)\1")
+# The i18n scan used to be a line-level regex that toggled a "inside a Markdown
+# fence" flag and matched ``_("...")`` textually.  Both were wrong for Python
+# source: implicit string concatenation hid real keys, and keys dispatched
+# dynamically (``_(h)`` over HEADERS/CARD_KEYS) looked unused while being live
+# UI text.  It is an AST walk now — see ``_i18n_keys_used`` / ``_i18n_keys_dispatched``.
 
 
 def _iter_sources(include_tests: bool = False):
@@ -138,6 +140,59 @@ def find_unreferenced_defs(include_tests: bool) -> list[str]:
 
 # ── dead i18n keys ───────────────────────────────────────────────────────────
 
+#: Module-level constants whose string-literal elements are translated at
+#: runtime through ``_(h)``-style dispatch instead of a literal ``_("...")``
+#: call.  Without this, every header / card label / column title is reported
+#: as dead and a well-meaning cleanup deletes LIVE UI text (the Dashboard and
+#: Search headers silently lose their Italian labels).  Keep in sync with the
+#: ``HEADERS`` / ``HEADERS_RUNS`` / ``CARD_KEYS`` lists in ``ui/tabs/*.py``.
+_DISPATCH_CONSTANTS = ("HEADERS", "HEADERS_RUNS", "HEADERS_LOG", "CARD_KEYS")
+
+
+def _i18n_keys_used(path: Path) -> set[str]:
+    """Literal ``_("...")`` keys used in one module, via the AST.
+
+    AST rather than the line regex: the regex misses implicit string
+    concatenation (``_("a" "b")``) and matches unrelated text, while the AST
+    sees exactly the ``_(<str constant>)`` calls the real translation helper
+    receives.  This mirrors ``tests/test_i18n_parity.py``.
+    """
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+    except SyntaxError:
+        return set()
+    keys: set[str] = set()
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "_"
+                and node.args
+                and isinstance(node.args[0], ast.Constant)
+                and isinstance(node.args[0].value, str)):
+            keys.add(node.args[0].value)
+    return keys
+
+
+def _i18n_keys_dispatched(path: Path) -> set[str]:
+    """Strings translated indirectly via ``_(variable)`` over a known list."""
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+    except SyntaxError:
+        return set()
+    dispatched: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        if not any(getattr(t, "id", "") in _DISPATCH_CONSTANTS
+                   for t in node.targets):
+            continue
+        for sub in ast.walk(node.value):
+            if (isinstance(sub, ast.Constant)
+                    and isinstance(sub.value, str)):
+                dispatched.add(sub.value)
+    return dispatched
+
+
 def find_dead_i18n_keys(include_tests: bool) -> list[str]:
     sys.path.insert(0, str(ROOT))
     try:
@@ -147,15 +202,8 @@ def find_dead_i18n_keys(include_tests: bool) -> list[str]:
 
     used: set[str] = set()
     for _rel, path in _iter_sources(include_tests):
-        in_fence = False
-        for line in path.read_text(encoding="utf-8").splitlines():
-            if _TS_FENCE_RE.match(line):
-                in_fence = not in_fence
-                continue
-            if in_fence:
-                continue
-            for _q, key in _I18N_CALL_RE.findall(line):
-                used.add(key)
+        used |= _i18n_keys_used(path)
+        used |= _i18n_keys_dispatched(path)
 
     return [
         f"i18n: unused EN key {key!r}"

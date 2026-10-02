@@ -145,26 +145,46 @@ def merge_bundled_seeds(log_fn=print) -> dict:
 # ── Curated seed repairs ──────────────────────────────────────────────────
 # Wrong-from-the-start bundled rows that existing installs already copied.
 # merge_bundled_seeds() never touches existing user rows, so without this an
-# old copy keeps the bad value forever (e.g. A2G scoped to Netherlands while
-# its jobs are India/Pune -> permanent outside_or_unproven_target_country
-# quarantine). A repair fires ONLY when the user's row still carries the exact
-# old value -- a deliberate user edit is never clobbered.
-#   {(file, name, careers_url): ({column: old_value}, {column: new_value})}
+# old copy keeps the bad value forever. A repair fires ONLY when the user's row
+# still carries the exact old value -- a deliberate user edit is never clobbered.
+#   {(file, name, careers_url): [(old_values, new_values), ...]}
+#
+# The value is a LIST of transitions applied IN ORDER, so a row can be walked
+# forward through every value we have ever shipped wrongly and still land on the
+# correct one. Each transition re-checks the row's current value, so a row
+# already on the final value matches nothing and is left alone.
+#
+# Only the SEMANTIC column is matched on. The first version also pinned the
+# free-text ``notes`` field, which made the repair silently inert the moment
+# anything rewrote that sentence -- and a repair that cannot fire is worse than
+# no repair, because the wrong value looks handled. A deliberate user edit is
+# still protected, because the user edits ``target_country``, which is exactly
+# what the match tests.
 _SEED_REPAIRS = {
-    ("career", "A2G Technologies", "https://a2gtechnologies.com/jobs"): (
-        {"target_country": "Netherlands",
-         "notes": "verified: A2G Consulting"},
-        {"target_country": "India",
-         "notes": "verified 2026-09-28: India/Pune recruiter "
-                  "(was wrongly scoped Netherlands)"},
-    ),
+    ("career", "A2G Technologies", "https://a2gtechnologies.com/jobs"): [
+        # (1) Historical: this row shipped scoped to the Netherlands.
+        ({"target_country": "Netherlands"},
+         {"target_country": "India",
+          "notes": "verified 2026-09-28: India/Pune recruiter "
+                   "(was wrongly scoped Netherlands)"}),
+        # (2) Current: the live detail pages show this employer posts in BOTH
+        # regions -- Sr. Scrum Master (Netherlands/Eindhoven), Security Project
+        # Manager (Netherlands/Best) and Testing Engineer (India/Pune). Any
+        # single-country scope therefore quarantines half the board, and the
+        # survivors all inherit the HQ guess. "Global" is the only scope that
+        # describes the actual board.
+        ({"target_country": "India"},
+         {"target_country": "Global",
+          "notes": "verified 2026-10-02: posts in NL (Eindhoven/Best) and "
+                   "IN (Pune) - Global so both sides are kept"}),
+    ],
 }
 
 
 def _apply_repairs_to_rows(label: str, rows: list, log_fn=print) -> int:
     """Apply _SEED_REPAIRS for one seed file to in-memory rows."""
     n = 0
-    for (rep_label, name, url), (old, new) in _SEED_REPAIRS.items():
+    for (rep_label, name, url), transitions in _SEED_REPAIRS.items():
         if rep_label != label:
             continue
         for row in rows:
@@ -172,15 +192,16 @@ def _apply_repairs_to_rows(label: str, rows: list, log_fn=print) -> int:
                     or (row.get("careers_url") or "").casefold()
                     != url.casefold()):
                 continue
-            if all((row.get(col) or "") == val for col, val in old.items()):
-                row.update(new)
-                n += 1
-                try:
-                    log_fn(f"Seed repair: {name} ({label}) retargeted "
-                           f"{old.get('target_country')} -> "
-                           f"{new.get('target_country')}")
-                except Exception:
-                    pass
+            for old, new in transitions:
+                if all((row.get(col) or "") == val for col, val in old.items()):
+                    row.update(new)
+                    n += 1
+                    try:
+                        log_fn(f"Seed repair: {name} ({label}) retargeted "
+                               f"{old.get('target_country')} -> "
+                               f"{new.get('target_country')}")
+                    except Exception:
+                        pass
     return n
 
 

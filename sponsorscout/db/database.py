@@ -112,6 +112,15 @@ def _apply_migrations(conn):
                 logger.exception("Failed to apply migration for column %s", col)
                 raise
 
+    # BUGFIX: re-read the column set AFTER the ALTERs above.  The snapshot
+    # taken at the top of this function predates the migration loop, so on a
+    # legacy database that was missing these columns the ALTER added them but
+    # the index guards below (which tested the stale snapshot) skipped the
+    # CREATE entirely — the index was then silently never created, on every
+    # subsequent launch too.  Both columns are (re)added by the loop above, so
+    # re-reading here is always correct and stays idempotent.
+    existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()}
+
     # New tables and indexes that depend on migration-added columns.
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS scan_runs (
@@ -193,7 +202,6 @@ def _apply_migrations(conn):
 
     # Sanity check that essential migration columns exist.
     expected_cols = {"remote_type", "eu_blue_card", "has_relocation", "experience_level", "source_subtype"}
-    existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()}
     missing = expected_cols - existing_cols
     if missing:
         logger.error(
@@ -552,17 +560,32 @@ def get_distinct_job_countries(db_path) -> list[str]:
 
 def upsert_application(db_path, job_url, company, title, status="saved",
                        applied_at=None, next_followup_at=None, notes=""):
+    """Insert or update one saved application (keyed on ``job_url``).
+
+    BUGFIX: ``applied_at`` used to be written unconditionally as
+    ``excluded.applied_at``.  Neither caller (Search "Save to Applications" and
+    the Applications edit form) passes it, so the parameter default ``None``
+    was written over the stored value on every edit — and the INSERT stored
+    NULL too.  The Applications tab renders that column as "Saved on", so the
+    date could never appear and was destroyed by the first status change.
+
+    The column is now stamped once on insert (``COALESCE(..., CURRENT_TIMESTAMP)``)
+    and preserved on update when the caller does not supply a new value
+    (``COALESCE(excluded.applied_at, applications.applied_at)``), so editing
+    status/notes never wipes the original save date.  Passing ``applied_at``
+    explicitly still overwrites it.
+    """
     conn = None
     try:
         conn = get_connection(db_path)
         conn.execute("""
             INSERT INTO applications (job_url, company, title, status, applied_at, next_followup_at, notes, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            VALUES (?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), ?, ?, CURRENT_TIMESTAMP)
             ON CONFLICT(job_url) DO UPDATE SET
                 company=excluded.company,
                 title=excluded.title,
                 status=excluded.status,
-                applied_at=excluded.applied_at,
+                applied_at=COALESCE(excluded.applied_at, applications.applied_at),
                 next_followup_at=excluded.next_followup_at,
                 notes=excluded.notes,
                 updated_at=CURRENT_TIMESTAMP

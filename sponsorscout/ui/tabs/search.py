@@ -267,7 +267,12 @@ def _row_values(row) -> list:
     return [
         row["title"],
         row["company"],
-        row["country"],
+        # A country we could not read off the posting shows as an explicit
+        # "Unknown" rather than a blank cell. It used to be blank, and the
+        # blank was indistinguishable from a rendering bug; it is also what
+        # keeps "no evidence" visibly different from the seed's preset scope,
+        # which must never be presented as the job's country.
+        (row["country"] or "").strip() or _("Unknown"),
         row["location"],
         row["_exp_display"],                        # rendered once in run_search
         _verdict_cell(row["visa_sponsorship"]),

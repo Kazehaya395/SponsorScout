@@ -73,6 +73,7 @@ extra_for_dev_purpose(do not delete)/*.exe
 
 # ── Build tools (large binaries, not for git) ─────────────────────────────
 windows_build_tools/
+tools/
 
 
 # ── OS-specific ────────────────────────────────────────────────────────────

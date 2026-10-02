@@ -37,6 +37,7 @@ from sponsorscout.application import seed_manager
 from sponsorscout.scanning.ats import ats_scanner as ats_module
 from sponsorscout.scanning.career import career_scanner as career_module
 from sponsorscout.scanning.common import recommended_workers
+from sponsorscout.core.integrity import check_integrity
 from sponsorscout.core.location_country import country_from_location
 from sponsorscout.core import persistence
 from sponsorscout.db import database as db
@@ -176,23 +177,32 @@ def _remote_type(row: dict) -> str:
 
 
 def _job_country(row: dict) -> str:
-    """Best-effort country (locked decision Q8): job-location parse first,
-    then the seed's target country when it names a concrete country."""
+    """The job's country, derived ONLY from the posting's own location text.
+
+    BUGFIX: this used to fall back to the seed's ``Target Country``, which is a
+    SCOPING input (the country the user asked us to look for), not evidence
+    about this posting. Leaking it in meant every job whose location text could
+    not be parsed silently inherited the seed's country and was displayed, and
+    filtered on, as if it had been observed -- which is precisely how an
+    Eindhoven posting ends up labelled "India" in the Search tab's Country
+    column. A country we could not read is Unknown, and Unknown is honest;
+    the UI renders it as such.
+
+    Returns "" when the location text names no country.
+    """
     loc = _norm_location(row.get("Job Location"))
     if loc:
         country = country_from_location(loc)
         if country:
             return country
-    # F6 fix: fall back to Raw Location before the seed target — the raw
-    # string often holds "Kuala Lumpur, MY" when Job Location is Unknown.
+    # F6 fix: Raw Location is the better evidence when Job Location is Unknown
+    # -- the raw string often holds "Kuala Lumpur, MY" where the cleaned one
+    # was dropped.
     raw_loc = _norm_location(row.get("Raw Location"))
     if raw_loc and raw_loc != loc:
         country = country_from_location(raw_loc)
         if country:
             return country
-    target = str(row.get("Target Country") or "").strip()
-    if target and target.lower() not in ("global", "unknown"):
-        return target
     return ""
 
 
@@ -250,7 +260,32 @@ def _exp_required(value) -> str:
 
 
 def _row_to_job(row: dict, *, source_subtype: str = "direct", run_id: str) -> dict | None:
-    """Map one 39-column scanner output row to an ``upsert_job`` dict."""
+    """Map one 39-column scanner output row to an ``upsert_job`` dict.
+
+    Wrapper around ``_row_to_job_unverified`` that then applies the
+    location-aware integrity guards (``core.integrity``).  The split exists so
+    the raw mapping stays a pure function of the row, and the one place that
+    can DEMOTE a verdict is obvious and separately testable.
+    """
+    job = _row_to_job_unverified(row, source_subtype=source_subtype,
+                                 run_id=run_id)
+    if job is None:
+        return None
+    job, violations = check_integrity(job)
+    if violations:
+        # Keep the reason visible in the row's own diagnostics rather than
+        # dropping it silently, so a suspicious verdict can be audited.
+        note = "; ".join(violations)
+        existing = str(job.get("support_evidence_type") or "").strip()
+        job["support_evidence_type"] = (
+            f"{existing}; integrity: {note}" if existing else f"integrity: {note}"
+        )
+    return job
+
+
+def _row_to_job_unverified(row: dict, *, source_subtype: str = "direct",
+                           run_id: str) -> dict | None:
+    """Raw 39-column scanner output row -> ``upsert_job`` dict (no guards)."""
     url = str(row.get("Job URL") or "").strip()
     title = str(row.get("Job Title") or "").strip()
     if not url or not title or title.lower() == "unknown":
@@ -320,6 +355,49 @@ def _row_to_job(row: dict, *, source_subtype: str = "direct", run_id: str) -> di
         "experience_required": _exp_required(row.get("Experience Required")),
         "experience_min_years": _exp_min_years(row.get("Experience Min Years")),
         "experience_source": str(row.get("Experience Source") or "").strip(),
+    }
+
+
+def _company_record(row: dict, job: dict) -> dict:
+    """Build the ``save_company`` record for one scanner output row.
+
+    Built ONLY from columns the 39-field jobs output actually carries
+    (``ats_scanner.OUTPUT_FIELDS``), so the registry is populated from real
+    scan evidence rather than invented values:
+
+    * ``name``        — the attributed company (same fallback chain as the job)
+    * ``country``     — the same derivation as the job row, i.e. the country
+                        read off the posting's own location. It deliberately
+                        does NOT fall back to the seed's Target Country (the
+                        same rule as ``_job_country``): a registry row that
+                        claims a country nobody observed is worse than one
+                        that admits it does not know yet.
+    * ``ats_type``    — the ATS/provider that served the row
+    * ``industry``    — the seed's industry tag; this is the one column
+                        ``upsert_job``'s backfill reads, which is why writing the
+                        registry at all restores that feature
+    * the three seed scores — carried straight through
+
+    ``careers_url`` is intentionally left empty: the jobs output has no seed-URL
+    column (only the per-company scan_log CSV does), and the schema declares it
+    NOT NULL.  ``save_company``'s ON CONFLICT clause COALESCEs an empty URL
+    against the stored value, so a later seed-backed write can still fill it
+    without this ever blanking an existing one.
+    """
+    name = str(job.get("company") or "").strip()
+    country = str(job.get("country") or "").strip()
+    industry = str(row.get("Industry Type") or "").strip()
+    if industry.lower() == "unknown":
+        industry = ""
+    return {
+        "name": name,
+        "country": country,
+        "ats_type": str(row.get("Provider") or "").strip(),
+        "careers_url": "",
+        "industry": industry,
+        "sponsorship_history": str(row.get("Sponsorship History Score") or "0"),
+        "english_friendly": str(row.get("English Friendly Score") or "0"),
+        "remote_score": str(row.get("Remote Score") or "0"),
     }
 
 
@@ -416,6 +494,14 @@ def _ingest_output_csv(db_path, path: Path, run_id: str, source_subtype: str,
     pending = 0
     start_offset = int(skip_box[0]) if skip_box else 0
     next_offset = start_offset
+    # BUGFIX: save_company() was the ONLY writer of the `companies` table and
+    # nothing ever called it, so the registry stayed permanently empty. That
+    # silently disabled two documented features: the Dashboard's "Total
+    # Companies" KPI and upsert_job()'s industry backfill (which SELECTs from
+    # companies).  Each newly seen company is now registered once per file,
+    # after the job rows are committed, from the metadata the scanners already
+    # emit per row — no new plumbing, no extra pass.
+    company_records: dict[str, dict] = {}
     # BUGFIX: these used to be written inline via db.record_scan_event(), which
     # opens its OWN connection and commits — while this one still held an
     # uncommitted write transaction (rows accumulate towards the 500-row batch
@@ -443,7 +529,27 @@ def _ingest_output_csv(db_path, path: Path, run_id: str, source_subtype: str,
             if cid and cid in seen_canonical:
                 duplicates += 1
                 continue
-            job = _row_to_job(row, source_subtype=source_subtype, run_id=run_id)
+            # BUGFIX (B11): a per-row mapping failure must cost exactly ONE
+            # row, not the rest of the file.  This call was unguarded, so a
+            # single bad row (a NameError/TypeError inside the mapper) escaped
+            # the loop, and both callers silently swallowed it: the live
+            # ingester logged "Live ingestion cycle failed" and run_scan's
+            # final pass caught it too.  The result was a scan that reported
+            # "wrote=N" for every company and a `jobs` table with zero rows,
+            # so the Dashboard and Search tabs both rendered 0 with no visible
+            # cause.  Recording it as a run event makes the loss auditable
+            # ("Download Scan Log") instead of invisible.
+            try:
+                job = _row_to_job(row, source_subtype=source_subtype,
+                                  run_id=run_id)
+            except Exception:
+                logger.exception("Row mapping failed for %s",
+                                 row.get("Job URL"))
+                events.append((
+                    "error", "ingest",
+                    str(row.get("Company Name") or row.get("Seed Name") or ""),
+                    "Row mapping failed: " + str(row.get("Job URL") or "")[:200]))
+                continue
             if job is None:
                 events.append((
                     "warning", "ingest",
@@ -464,6 +570,14 @@ def _ingest_output_csv(db_path, path: Path, run_id: str, source_subtype: str,
                     duplicates += 1
                     continue
                 seen_fuzzy.add(fuzzy)
+            # Collect the company registry record the first time this run sees
+            # it.  The write itself happens AFTER the job loop commits (see
+            # below): save_company() commits internally, and calling it here
+            # would flush the open 500-row job batch on every new company and
+            # defeat the batch cadence this loop depends on.
+            company_name = str(job.get("company") or "").strip()
+            if company_name and company_name not in company_records:
+                company_records[company_name] = _company_record(row, job)
             try:
                 persistence.upsert_job(conn, job, commit=False)
             except Exception:
@@ -481,6 +595,18 @@ def _ingest_output_csv(db_path, path: Path, run_id: str, source_subtype: str,
                 pending = 0
         if pending:
             conn.commit()
+        # Company registry: written only now, with no open job transaction, so
+        # save_company()'s internal commit cannot flush a partial job batch.
+        # One row per distinct company per output file; a failure here must
+        # never discard the jobs already committed above, so it is logged into
+        # the event timeline instead of raised.
+        for company_name, record in company_records.items():
+            try:
+                persistence.save_company(conn, record)
+            except Exception:
+                logger.exception("Failed to save company %s", company_name)
+                events.append(("warning", "ingest", company_name,
+                               "Company registry write failed"))
     finally:
         conn.close()
     # The connection is closed, so this second writer no longer contends for

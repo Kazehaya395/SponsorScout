@@ -99,7 +99,18 @@ def upsert_job(conn, job, commit: bool = True):
                 pass
             if len(_INDUSTRY_CACHE) > 5000:
                 _INDUSTRY_CACHE.clear()
-            _INDUSTRY_CACHE[company_name] = job_industry
+            # BUGFIX: a MISS is not a fact.  The old code cached the fallback
+            # value unconditionally, so the very first lookup for a company
+            # that had no registry row yet pinned "" in the cache for the
+            # whole process lifetime — and because that cache is only cleared
+            # by save_company(), the backfill could never pick up an industry
+            # that appeared later in the same run.  Only a real hit is cached;
+            # a miss simply re-queries next time (the SELECT is indexed and
+            # cheap, and misses are the minority once the registry is loaded).
+            if job_industry:
+                _INDUSTRY_CACHE[company_name] = job_industry
+            else:
+                _INDUSTRY_CACHE.pop(company_name, None)
 
     # Country chain (Q8 decision): explicit job country wins; otherwise
     # derive a best-effort country from the job location text.

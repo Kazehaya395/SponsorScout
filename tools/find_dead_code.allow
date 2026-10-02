@@ -23,6 +23,11 @@ ensure_scan_output_dir
 migrate_job_countries
 export_scan_run_csv
 
+# save_company is the companies-registry writer invoked from
+# scanning/pipeline.py::_ingest_output_csv (keeps the Dashboard "Total
+# Companies" KPI and the upsert_job industry backfill working).
+save_company
+
 # main.py imports sponsorscout.paths purely for its import-time side effect
 # (configures PLAYWRIGHT_BROWSERS_PATH for a frozen bundle). Never "unused".
 sponsorscout.main::paths
