@@ -1262,263 +1262,68 @@ class ProductionScannerConfig:
 # Kept in sponsorscout.scanning.common so the concurrency caps and the lean
 # Chromium flags have exactly one definition.  A 2-core / 8 GB machine must
 # never be handed several concurrent browsers (see recommended_workers docs).
-try:
-    from sponsorscout.scanning.common import (
-        BROWSER_ARGS,
-        check_control,
-        recommended_workers,
-    )
-except ImportError:  # standalone single-file mode
-    def recommended_workers(kind="browser"):
-        try:
-            import os
-            cpu = os.cpu_count() or 2
-            return max(1, min(cpu // 2, 4)) if cpu > 2 else 1
-        except Exception:
-            return 1
+# Mandatory. These three were previously duplicated here behind an
+# ``except ImportError`` for "standalone single-file mode" -- and the copies
+# were WORSE than the originals:
+#   * BROWSER_ARGS carried 10 flags instead of 25, dropping
+#     --renderer-process-limit, --js-flags=--max-old-space-size,
+#     --disable-background-timer-throttling and the rest. A fallback would have
+#     quietly doubled a browser's RAM and CPU footprint on exactly the low-end
+#     machines those flags exist to protect.
+#   * recommended_workers sized from cpu_count alone and ignored RAM entirely
+#     -- the very bug fixed in common.py.
+# The copies are gone. The __main__ block below already puts the repo root on
+# sys.path, so `python career_scanner.py` still works from inside the repo.
+from sponsorscout.scanning.common import (
+    BROWSER_ARGS,
+    check_control,
+    recommended_workers,
+)
 
-    def check_control(cancel_event, pause_event=None, poll_sec=0.1):
-        """Standalone copy of ``sponsorscout.scanning.common.check_control``."""
-        import time as _time
-        if pause_event is not None and pause_event.is_set():
-            while pause_event.is_set():
-                if cancel_event is not None and cancel_event.is_set():
-                    return True
-                _time.sleep(poll_sec)
-        return cancel_event is not None and cancel_event.is_set()
-
-    BROWSER_ARGS = [
-        "--no-sandbox", "--disable-dev-shm-usage", "--disable-http2",
-        "--ignore-certificate-errors", "--blink-settings=imagesEnabled=false",
-        "--disable-background-networking", "--disable-extensions",
-        "--disable-gpu", "--no-first-run",
-    ]
-
-
-# Single source of truth moved to sponsorscout.scanning.jd_support.
+# Single source of truth: ``sponsorscout.scanning.jd_support``, shared with
+# ats_scanner.py.
+#
+# REMOVED 2026-09 (audit): this block used to carry a SECOND, hand-written copy
+# of the sponsorship/relocation/Blue Card classifier behind an
+# ``except ImportError``, on the theory that the file should stay runnable if
+# someone copied it away from the repository. Measured facts:
+#
+#   * It never loads. The import below cannot fail while the file lives in the
+#     repo -- the ``__main__`` bootstrap further down already puts the repo
+#     root on sys.path -- and importing the module showed the fallback's names
+#     defined nowhere at module level.
+#   * The copy was an OLDER, WEAKER version of the classifier.
+#   * Its own header recorded the incident that motivated it: a run in which
+#     12,298 rows had EVERY Visa Sponsorship / Relocation Support / EU Blue Card
+#     value set to "Unknown" -- i.e. the app's headline feature silently
+#     evaluated to nothing, with a single WARNING line to explain it.
+#
+# A silent downgrade to a weaker classifier is far more dangerous than a loud
+# error, so the fallback is gone and the import is now mandatory. ats_scanner.py
+# had already taken this exact decision ("so the two scanners can never drift
+# apart"); this brings career_scanner.py in line with it.
 try:
     from sponsorscout.scanning.jd_support import (
         JDSupportDetector,
         VERDICT_YES,
         VERDICT_NO,
-        VERDICT_UNKNOWN,
         detect_blue_card,
     )
-except ImportError:  # standalone single-file mode (no app repo on sys.path)
-    # ─────────────────────────────────────────────────────────────────────
-    # FIX P0-16: SELF-CONTAINED VISA / RELOCATION DETECTOR
-    #
-    # This block used to be a stub that returned "Unknown" for everything.
-    # Consequence: the 2026-09-15 run produced 12,298 rows in which *every
-    # single* Visa Sponsorship, Relocation Support and EU Blue Card value was
-    # "Unknown" — i.e. the entire point of a visa-sponsorship tool silently
-    # evaluated to nothing, with only a one-line WARNING to say so.
-    #
-    # The real classifier now lives here so the file is genuinely standalone.
-    # It is evidence-based, never keyword-alone: every hit is judged inside
-    # its own sentence, with negation / requirement / conditional qualifiers,
-    # in EN + DE + IT + NL + FR + ES.
-    # ─────────────────────────────────────────────────────────────────────
-    VERDICT_YES, VERDICT_NO, VERDICT_UNKNOWN = "Yes", "No", "Unknown"
-
-    _JD_SENT_SPLIT = re.compile(r"(?<=[.!?;:])\s+|[\n\r]+|\s*[•·▪]\s*")
-
-    # Sponsorship / relocation offered by the employer.
-    _VISA_POS = re.compile(
-        r"(visa\s+sponsorship|sponsor(?:ing|ship)?\s+(?:a\s+)?(?:work\s+)?visa|"
-        r"we\s+sponsor|will\s+sponsor|can\s+sponsor|able\s+to\s+sponsor|"
-        r"sponsorship\s+(?:is\s+)?(?:available|offered|provided)|"
-        r"work\s+permit\s+(?:support|assistance|sponsorship)|"
-        r"visa\s+(?:support|assistance)|immigration\s+support|"
-        r"visum(?:sponsoring|unterst[üu]tzung)|arbeitserlaubnis|"
-        r"sponsorizzazione\s+(?:del\s+)?visto|visto\s+di\s+lavoro|"
-        r"visumsponsoring|werkvergunning|"
-        r"parrainage\s+de\s+visa|patrocinio\s+de\s+visado)", re.I)
-
-    _RELOC_POS = re.compile(
-        r"(relocation\s+(?:package|support|assistance|bonus|allowance|budget|"
-        r"expenses|costs?)|we\s+(?:offer|provide|cover)[^.]{0,40}relocat|"
-        r"relocation\s+(?:is\s+)?(?:available|offered|provided|covered|reimbursed)|"
-        r"help\s+(?:you\s+)?relocat|assist[^.]{0,30}relocat|"
-        r"umzugs(?:kosten|hilfe|paket|unterst[üu]tzung)|"
-        r"pacchetto\s+di\s+trasferimento|supporto\s+al\s+trasferimento|"
-        r"verhuis(?:kosten|vergoeding|pakket)|"
-        r"aide\s+[àa]\s+la\s+relocalisation|ayuda\s+(?:a|para)\s+la\s+reubicaci[óo]n)", re.I)
-
-    # Explicit refusals.
-    _NEG_NEAR = re.compile(
-        r"\b(no|not|non|nicht|keine|geen|pas\s+de|sin|unable|cannot|can'?t|"
-        r"won'?t|will\s+not|do\s+not|does\s+not|are\s+not|is\s+not|without|"
-        r"unfortunately|regrettably|ineligible|excluded)\b", re.I)
-    _NEG_PHRASE = re.compile(
-        r"(no\s+(?:visa\s+)?sponsorship|not\s+(?:able\s+to\s+)?sponsor|"
-        r"cannot\s+sponsor|can'?t\s+sponsor|unable\s+to\s+sponsor|"
-        r"do(?:es)?\s+not\s+(?:offer|provide)\s+(?:visa\s+)?sponsorship|"
-        r"sponsorship\s+is\s+not\s+(?:available|offered|provided)|"
-        r"no\s+relocation|relocation\s+is\s+not\s+(?:available|offered|provided|covered)|"
-        r"without\s+(?:visa\s+)?sponsorship|"
-        r"keine\s+(?:visum|umzugs)|geen\s+(?:visum|verhuis))", re.I)
-
-    # Candidate must already be authorised / must move at own cost.
-    _REQUIRE = re.compile(
-        r"(must\s+(?:already\s+)?(?:have|hold|possess|be)\s+[^.]{0,50}"
-        r"(?:authoriz|authoris|permit|visa|right\s+to\s+work|eligib)|"
-        r"(?:legally\s+)?authoriz(?:ed|ation)\s+to\s+work|"
-        r"right\s+to\s+work\s+in|eligible\s+to\s+work\s+in|"
-        r"valid\s+(?:work\s+)?(?:permit|visa)\s+(?:is\s+)?required|"
-        r"requires?\s+[^.]{0,30}work\s+permit|"
-        r"applicants?\s+must\s+be\s+[^.]{0,40}(?:citizen|resident)|"
-        r"willing(?:ness)?\s+to\s+relocate|ready\s+to\s+relocate|"
-        r"at\s+(?:your|their|own)\s+(?:own\s+)?(?:cost|expense))", re.I)
-
-    # Hedged / case-by-case.
-    _CONDITIONAL = re.compile(
-        r"(may\s+be\s+(?:available|provided|offered|considered)|"
-        r"case[- ]by[- ]case|on\s+a\s+case|depending\s+on|"
-        r"where\s+applicable|if\s+(?:applicable|eligible|required|needed)|"
-        r"potential(?:ly)?|possibl[ey]|could\s+be\s+(?:available|provided|offered)|"
-        r"subject\s+to|at\s+(?:our|the\s+company'?s)\s+discretion)", re.I)
-
-    _BLUE_CARD = re.compile(
-        r"\b(?:eu\s+)?blue[\s-]?card\b|blaue\s+karte|carta\s+blu|"
-        r"blauwe\s+kaart|carte\s+bleue|tarjeta\s+azul", re.I)
-
-    class JDSupportDetector:
-        """Sentence-scoped, negation-aware visa/relocation classifier.
-
-        Same public API as sponsorscout.scanning.jd_support.JDSupportDetector:
-            detect(text)                -> {"visa": {...}, "relocation": {...}}
-            best_evidence(result, limit)-> str
-            split_sentences(text)       -> list[str]
-        """
-
-        def split_sentences(self, text):
-            if not text:
-                return []
-            return [s.strip() for s in _JD_SENT_SPLIT.split(text) if s and s.strip()]
-
-        def _classify(self, sentences, pos_re):
-            verdict, conf, evidence = VERDICT_UNKNOWN, 0.0, []
-            required = False
-            for sent in sentences:
-                s = sent[:400]
-                hit_pos = pos_re.search(s)
-                hit_negphrase = _NEG_PHRASE.search(s)
-                hit_require = _REQUIRE.search(s)
-
-                # 1. Explicit refusal wins outright.
-                if hit_negphrase:
-                    if conf < 0.95:
-                        verdict, conf = VERDICT_NO, 0.95
-                        evidence = [s]
-                    continue
-
-                # 2. "You must already be authorised" / "willing to relocate"
-                #    => the employer is NOT offering support.
-                if hit_require and not hit_pos:
-                    required = True
-                    if conf < 0.7:
-                        verdict, conf = VERDICT_NO, 0.7
-                        evidence = [s]
-                    continue
-
-                if not hit_pos:
-                    continue
-
-                # 3. Positive phrase, but check for negation in the same clause.
-                window = s[max(0, hit_pos.start() - 60):hit_pos.end() + 20]
-                if _NEG_NEAR.search(window):
-                    if conf < 0.9:
-                        verdict, conf = VERDICT_NO, 0.9
-                        evidence = [s]
-                    continue
-
-                # 4. Hedged language => Unknown, do not claim a Yes.
-                if _CONDITIONAL.search(s):
-                    if conf < 0.4:
-                        verdict, conf = VERDICT_UNKNOWN, 0.4
-                        evidence = [s]
-                    continue
-
-                # 5. Clean positive.
-                if hit_require:
-                    required = True
-                if conf < 0.9:
-                    verdict, conf = VERDICT_YES, 0.9
-                    evidence = [s]
-            return {"verdict": verdict, "confidence": conf,
-                    "evidence": evidence, "required": required}
-
-        def detect(self, text):
-            sents = self.split_sentences(text or "")
-            visa = self._classify(sents, _VISA_POS)
-            reloc = self._classify(sents, _RELOC_POS)
-            return {
-                "visa": {"verdict": visa["verdict"], "confidence": visa["confidence"],
-                         "evidence": visa["evidence"]},
-                "relocation": {"verdict": reloc["verdict"], "confidence": reloc["confidence"],
-                               "evidence": reloc["evidence"], "required": reloc["required"]},
-            }
-
-        def best_evidence(self, result, limit=2):
-            ev = (result or {}).get("evidence") or []
-            return "; ".join(e[:300] for e in ev[:limit])
-
-    def detect_blue_card(detector, desc):
-        """Blue Card is judged independently of general visa sponsorship."""
-        if not desc:
-            return VERDICT_UNKNOWN
-        for sent in detector.split_sentences(desc):
-            if not _BLUE_CARD.search(sent):
-                continue
-            if _NEG_PHRASE.search(sent) or _NEG_NEAR.search(sent):
-                return VERDICT_NO
-            if _CONDITIONAL.search(sent):
-                return VERDICT_UNKNOWN
-            return VERDICT_YES
-        return VERDICT_UNKNOWN
+except ImportError as exc:  # pragma: no cover
+    raise ImportError(
+        "career_scanner.py needs the SponsorScout package for sponsorship "
+        "detection (sponsorscout/scanning/jd_support.py). Run it from inside "
+        "the repository, or use `python -m sponsorscout.scripts.run_scan`. "
+        "Refusing to fall back to a weaker classifier: it would silently "
+        "report every job as Unknown."
+    ) from exc
 
 # ───────────── COUNTRY RESOLVER (G3 Europe target) ─────────────
-try:
-    from sponsorscout.core.location_country import country_from_location
-except ImportError:  # standalone single-file mode
-    # FIX P0-16b: resolve a country from a location string without the app
-    # repo. Order matters: explicit country name/alias first, then the
-    # gazetteer (installed separately), then None. Kept deliberately small —
-    # EUROPE_COUNTRIES/_COUNTRY_ALIASES below are the real allowlist.
-    def country_from_location(location):
-        text = (location or "").strip()
-        if not text:
-            return None
-        low = text.casefold()
-        # Trailing segment is usually the country: "Milan, Italy".
-        for seg in reversed([s.strip() for s in re.split(r"[,/|·—–-]", text) if s.strip()]):
-            seg_l = seg.casefold()
-            try:
-                alias = _COUNTRY_ALIASES.get(seg_l)
-            except NameError:
-                alias = None
-            if alias:
-                return alias
-            try:
-                if seg_l in EUROPE_COUNTRIES:
-                    return seg_l
-            except NameError:
-                pass
-        try:
-            for country in EUROPE_COUNTRIES:
-                if re.search(r"\b" + re.escape(country) + r"\b", low):
-                    return country
-        except NameError:
-            pass
-        # Gazetteer fallback (returns (city, country) or None).
-        try:
-            hit = gazetteer_lookup(text, text)
-            if hit and hit[1]:
-                return hit[1].casefold()
-        except Exception:
-            pass
-        return None
+# Mandatory -- was duplicated here behind an ``except ImportError``. The copy
+# returned None for anything it could not match, and None from this function
+# means "not a European location", which QUARANTINES the row: a plausible-looking
+# wrong result instead of a visible error.
+from sponsorscout.core.location_country import country_from_location
 
 # ───── legacy comment block retained below for historical context ─────
 # Context-aware detection of Visa Sponsorship / Relocation Support in JD text.
@@ -1938,53 +1743,29 @@ def _host_free_mb():
         except Exception:
             continue
     if avail is None:
+        # BUGFIX: this used to fall back to os.sysconf, which only exists on
+        # POSIX — so on Windows (this app's primary platform) the run header
+        # always printed "unknown available RAM", defeating the whole point of
+        # a self-diagnosis line on the machines that most need it. Defer to the
+        # cross-platform reader in scanning.common instead.
         try:
-            page = os.sysconf("SC_AVPHYS_PAGES")
-            size = os.sysconf("SC_PAGE_SIZE")
-            avail = (page * size) / (1024.0 * 1024.0)
+            from sponsorscout.scanning.common import host_workers_limits
+            avail = host_workers_limits()[2] / (1024.0 * 1024.0)
         except Exception:
             avail = None
     return avail
 
 
-# Measured peak RSS of one headless Chromium with a real job board loaded.
-_BROWSER_RSS_MB = 600
-# Leave this much for the OS, the user's other apps, and this process.
-_RESERVE_MB = 1200
+# NOTE: this module used to define its OWN ``recommended_workers`` here, which
+# SHADOWED the import from ``sponsorscout.scanning.common`` above -- so the
+# scanner silently ran on different numbers than the pipeline sized it with.
+# Measured on a 2-core / 8 GB box: the browser pool agreed (1 == 1), but the
+# HTTP detail pool diverged 3 vs 6, i.e. six concurrent fetches on top of a
+# Chromium on two cores. The local copy is gone; ``recommended_workers`` now
+# has exactly one definition in ``common`` for both scanners and the pipeline.
+# The ``requested=`` cap it used to offer is preserved there, so no caller
+# lost functionality.
 
-
-def recommended_workers(kind="browser", requested=None):
-    """Size a worker pool for THIS machine.
-
-    kind="browser" -> each worker may hold a Chromium (~600 MB measured)
-    kind="http"    -> each worker is a socket + parser (cheap)
-
-    The previous code called this function without ever defining it. Beyond
-    fixing the NameError, the point is that a fixed pool of 3 is wrong on an
-    8 GB laptop: 3 x 600 MB of Chromium plus the OS is a swap storm.
-    """
-    cpus = _host_cpu_count()
-    free = _host_free_mb()
-
-    if kind == "http":
-        # Network-bound: oversubscribe CPUs, but stay modest on small boxes.
-        cap = 12 if cpus >= 4 else 6
-        n = min(cap, max(2, cpus * 3))
-        if free is not None and free < 1500:
-            n = min(n, 3)
-        return n if requested is None else max(1, min(requested, n))
-
-    # Browser work: RAM is the binding constraint, not CPU.
-    by_cpu = max(1, cpus - 1) if cpus > 1 else 1
-    if free is None:
-        by_ram = 2
-    else:
-        by_ram = int(max(0, free - _RESERVE_MB) // _BROWSER_RSS_MB)
-    n = max(1, min(by_cpu, by_ram if by_ram > 0 else 1))
-    n = min(n, 4)  # diminishing returns; also politeness to target sites
-    if requested is not None:
-        n = max(1, min(requested, n))
-    return n
 
 
 def describe_host_budget():

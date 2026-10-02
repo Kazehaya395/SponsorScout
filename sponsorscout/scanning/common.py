@@ -99,7 +99,7 @@ def host_workers_limits() -> tuple[int, int, int]:
     return cpu, ram, avail
 
 
-def recommended_workers(kind: str = "browser") -> int:
+def recommended_workers(kind: str = "browser", requested: int | None = None) -> int:
     """Concurrency level suited to *this* machine, not to a dev workstation.
 
     Each Playwright Chromium instance costs roughly 150-400 MB resident, so the
@@ -107,17 +107,18 @@ def recommended_workers(kind: str = "browser") -> int:
     fetches) can exhaust the RAM of an 8 GB laptop and stall the whole OS —
     exactly the "scanning freezes my system" failure mode.
 
-    Sizing uses *available* RAM (floored at half of total, so a transient dip
-    under memory pressure cannot starve the scan to a single worker forever),
-    not total RAM.  Both phases draw on the same budget: on a 2-core / 8 GB box
-    the browser pool correctly drops to 1, but the lightweight HTTP pool used
-    to be computed independently from *total* RAM and still returned 4 — so a
-    career scan ran four concurrent fetchers on top of one Chromium on two
-    cores.
+    Sizing uses *available* RAM (floored at ``_MIN_USABLE_RAM``), not total
+    RAM.  Both phases draw on the same budget: on a 2-core / 8 GB box the
+    browser pool correctly drops to 1, but the lightweight HTTP pool used to be
+    computed independently from *total* RAM and still returned 4 — so a career
+    scan ran four concurrent fetchers on top of one Chromium on two cores.
 
     ``kind``:
       * ``"browser"`` — concurrent browser contexts for the career crawl.
       * ``"http"``    — concurrent lightweight HTTP detail fetches.
+
+    ``requested`` caps the result without ever raising it, so a caller that
+    knows a tighter budget (or a test) can clamp it.
 
     Returned values are always >= 1 and deliberately conservative; the scans
     stay correct at any concurrency, they are merely slower.
@@ -131,14 +132,22 @@ def recommended_workers(kind: str = "browser") -> int:
     ram = max(ram_avail, _MIN_USABLE_RAM)
     if kind == "http":
         if ram < _LOW_MEMORY_RAM:
-            return 3 if cpu >= 2 else 2
-        return max(2, min(cpu * 2, 8))
-    # browser contexts: the heavy case
-    if ram < _LOW_MEMORY_RAM or cpu <= 2:
-        return 1
-    if cpu <= 4:
-        return 2
-    return max(2, min(cpu // 2, 4))
+            n = 3 if cpu >= 2 else 2
+        else:
+            n = max(2, min(cpu * 2, 8))
+    elif ram < _LOW_MEMORY_RAM or cpu <= 2:
+        # browser contexts: the heavy case
+        n = 1
+    elif cpu <= 4:
+        n = 2
+    else:
+        n = max(2, min(cpu // 2, 4))
+    if requested is not None:
+        try:
+            n = max(1, min(int(requested), n))
+        except (TypeError, ValueError):
+            pass
+    return n
 
 
 # Lean Chromium flags.  ``--blink-settings=imagesEnabled=false`` alone removes

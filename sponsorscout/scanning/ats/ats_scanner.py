@@ -1084,18 +1084,10 @@ except ModuleNotFoundError:  # standalone single-file mode
     )
 
 
-try:
-    from sponsorscout.scanning.common import check_control
-except ModuleNotFoundError:  # standalone single-file mode
-    def check_control(cancel_event, pause_event=None, poll_sec=0.1):
-        """Standalone copy of ``sponsorscout.scanning.common.check_control``."""
-        if pause_event is not None and pause_event.is_set():
-            while pause_event.is_set():
-                if cancel_event is not None and cancel_event.is_set():
-                    return True
-                time.sleep(poll_sec)
-        return cancel_event is not None and cancel_event.is_set()
-
+# Mandatory -- was a hand copy here behind an ``except ModuleNotFoundError``.
+# Keep the single definition in common.check_control so the Pause/Stop gate
+# behaves identically in both scanners.
+from sponsorscout.scanning.common import check_control
 
 class ATSScanner:
     def __init__(self, seed_file="company_ATS_seed.csv",
