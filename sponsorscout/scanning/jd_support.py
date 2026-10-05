@@ -10,9 +10,220 @@ Policy:
   * Verdicts are Yes / No / Unknown.  No fabricated "No" when evidence is absent.
 """
 
+import html as _html
 import re
 
 VERDICT_YES, VERDICT_NO, VERDICT_UNKNOWN = "Yes", "No", "Unknown"
+
+
+# FIX W-1: one place that folds every apostrophe variant to ASCII "'".
+_APOSTROPHE_RE = re.compile("[\u2019\u2018\u02bc\u02b9\u00b4`\u055a]")
+
+
+def _norm_apostrophes(text):
+    """Return `text` with curly/typographic apostrophes folded to ASCII."""
+    return _APOSTROPHE_RE.sub("'", text or "")
+
+
+# ── FIX P22/P23 (2026-10-04): normalise JD text before ANY cue matching ────
+# Every provider adapter hands this detector the description EXACTLY as the
+# ATS returns it, which for greenhouse / workable / smartrecruiters / jobs.msd
+# is HTML -- tags and character entities included. Two measured failures in
+# run 20261004T202946:
+#   * "<p>We can&rsquo;t offer visa sponsorship for this role.</p>" scored
+#     Yes 0.9. The apostrophe fold (W-1/P20) only folds real U+2019; it never
+#     sees "&rsquo;", so "can&rsquo;t" is not "can't", the NEGATION cue misses
+#     and the POSITIVE verb "offer" carries the sentence. A false YES on a JD
+#     that says the opposite is the worst failure direction this tool has.
+#   * 36 accepted rows carried "&lt;" / "&nbsp;" and 9 carried raw "<li>" in
+#     the stored evidence, i.e. markup was being classified as prose.
+# Block-level tags become sentence boundaries so that one <li> per benefit
+# does not merge into a single 2,000-character "sentence" whose +-90 char
+# qualifier window then straddles unrelated bullets.
+_BLOCK_TAG_RE = re.compile(
+    r"(?is)</?(?:p|div|li|ul|ol|br|tr|td|th|h[1-6]|section|article"
+    r"|table|dl|dt|dd|blockquote|hr)\b[^>]*>")
+_ANY_TAG_RE = re.compile(r"(?s)<[^<>]{0,400}?>")
+_SCRIPT_STYLE_RE = re.compile(r"(?is)<(script|style)[^>]*>.*?</\1>")
+
+
+def normalize_jd_text(text):
+    """Return `text` as plain prose: entities decoded, markup removed.
+
+    Idempotent and safe on text that was never HTML. Entities are unescaped
+    TWICE because several ATS payloads are double-encoded ("&amp;rsquo;").
+    """
+    if not text:
+        return ""
+    t = str(text)
+    if "<" in t or "&" in t:
+        t = _SCRIPT_STYLE_RE.sub(" ", t)
+        t = _BLOCK_TAG_RE.sub(" . ", t)
+        t = _ANY_TAG_RE.sub(" ", t)
+        t = _html.unescape(t)
+        if "&" in t:
+            t = _html.unescape(t)
+        # A second pass: unescaping can REVEAL markup ("&lt;li&gt;").
+        if "<" in t:
+            t = _BLOCK_TAG_RE.sub(" . ", t)
+            t = _ANY_TAG_RE.sub(" ", t)
+    t = t.replace("\u00a0", " ").replace("\u200b", "")
+    t = re.sub(r"(?:\s*\.\s*){2,}", ". ", t)
+    t = re.sub(r"[ \t\x0b\f\r]+", " ", t)
+    return t.strip()
+
+
+# ── FIX P21 (2026-10-04): structured "Label: Value" support fields ────────
+# Workday-family boards (jobs.msd.com, wd3.myworkdayjobs.com) append a fixed
+# field block to every JD:
+#     Employee Status: Regular  Relocation: No relocation
+#     VISA Sponsorship: No  Travel Requirements: 50%  Shift: Not Applicable
+# That is the employer's OWN structured answer and outranks anything the prose
+# says. Sentence classification handled it only by accident: the "No" form
+# scored 0.9 but the "Yes" form scored 0.20 -> Unknown, because "Yes" carries
+# no POSITIVE_VERBS cue. Asymmetric by construction, so a Workday "Yes" could
+# never surface. In run 20261004T202946, 50 accepted rows carried an explicit
+# "VISA Sponsorship:" label and 43 of them came out Unknown.
+#: The field block has no delimiter between "value of field N" and "name of
+#: field N+1" -- "... VISA Sponsorship: No Travel Requirements: 50%". Given a
+#: chunk that starts just after a label's colon, strip the trailing words that
+#: belong to the NEXT label. Only the MINIMAL trailing run is removed: the
+#: value is read anchored at the start, so leaving a stray label word at the
+#: end is harmless, while removing one word too many silently deletes the
+#: answer (the first cut of this fix matched up to 4 trailing words and turned
+#: "VISA Sponsorship: Yes Travel Requirements: 10%" into an empty field).
+_TRAILING_LABEL_WORD_RE = re.compile(
+    r"[A-Za-z\u00c0-\u024f][\w\u00c0-\u024f/&'.-]*[ \t]*$")
+
+
+def _strip_next_label(chunk):
+    """Return `chunk` up to the start of the following "Label:" field."""
+    i = chunk.find(":")
+    if i == -1:
+        return chunk
+    before = chunk[:i]
+    m = _TRAILING_LABEL_WORD_RE.search(before)
+    return before[:m.start()] if m else before
+
+_LABEL_FIELD_RES = {
+    "visa": re.compile(
+        r"(?<![A-Za-z])("
+        r"visa\s+sponsorship|sponsorship\s+visa|visa\s+support|visa\s+status|"
+        r"immigration\s+sponsorship|employment\s+sponsorship|work\s+sponsorship|"
+        r"sponsorship\s+available|sponsorship\s+offered|sponsorship|"
+        r"visa\s+sponsoring|visumsponsoring|visum\s*sponsoring|"
+        r"sponsorizzazione\s+(?:del\s+)?visto|parrainage\s+de\s+visa|"
+        r"visa|work\s+permit|werkvergunning|arbeitserlaubnis"
+        r")\s*:", re.I),
+    "relocation": re.compile(
+        r"(?<![A-Za-z])("
+        r"relocation\s+(?:assistance|support|package|allowance|benefit|offered|"
+        r"provided|eligible)|relocation|umzugs?(?:hilfe|unterst\u00fctzung|pauschale)?|"
+        r"verhuis(?:kosten|vergoeding|kostenvergoeding)?|"
+        r"indennit\u00e0\s+di\s+trasferimento|trasferimento|"
+        r"aide\s+au\s+d\u00e9m\u00e9nagement|ayuda\s+de\s+reubicaci\u00f3n"
+        r")\s*:", re.I),
+}
+
+#: Values that answer the label. Anchored at the start of the value chunk, so
+#: "No relocation" is NO but "Nordic markets" is not (word boundary required).
+_LABEL_YES_RE = re.compile(
+    r"^(?:yes|y|true|available|offered|provided|possible|eligible|supported|"
+    r"full|partial|sponsored|will\s+sponsor|ja|jawohl|oui|s[i\u00ed\u00ec]|sim)\b", re.I)
+_LABEL_NO_RE = re.compile(
+    r"^(?:no|n|none|false|not\s+available|not\s+offered|not\s+provided|"
+    r"not\s+eligible|not\s+applicable|no\s+relocation|no\s+sponsorship|"
+    r"no\s+visa|unavailable|nein|nee|niet|non|ingen)\b", re.I)
+#: Only whitespace and list bullets may precede the value. Anything else
+#: (notably a stray "<" left by a mangled scrape) means the field is EMPTY and
+#: the text that follows belongs to the NEXT field -- see MSD's
+#: "VISA Sponsorship:< No relocation< Relocation:<", where reading "No" would
+#: attribute the relocation answer to the visa field.
+_LABEL_LEAD_RE = re.compile(r"^[\s\u2022\u00b7*|\-\u2013\u2014]{0,4}")
+
+
+#: Only whitespace, list bullets and the sentence breaks that
+#: ``normalize_jd_text`` inserts for <br>/<li> may stand between a label's
+#: colon and its answer. jobs.msd.com really does serve
+#: "Relocation:<br>No relocation<br>VISA Sponsorship:<br>No", so the dot the
+#: normaliser leaves behind must not be mistaken for an empty field.
+_LEAD_JUNK_RE = re.compile(r"^[\s\u2022\u00b7*|\-\u2013\u2014.,;:]{0,8}")
+#: The NEXT field starting immediately => this field was printed blank.
+_IMMEDIATE_LABEL_RE = re.compile(
+    r"^[A-Za-z\u00c0-\u024f][\w\u00c0-\u024f &/'-]{0,32}:")
+#: Scrape junk where the answer should be. jobs.msd.com also emits
+#: "VISA Sponsorship:< No relocation< Relocation:<", in which the "No"
+#: belongs to the RELOCATION field: an unreadable field is blank and must
+#: never be allowed to borrow its neighbour's answer.
+_JUNK_VALUE_START = ("<", ">", "\\", "/")
+
+#: Outcomes of reading one "Label: Value" occurrence.
+_FIELD_BLANK, _FIELD_UNPARSED = "blank", "unparsed"
+
+
+def _read_label_field(text, match):
+    """Read the value that follows one label match.
+
+    Returns ``(VERDICT_YES|VERDICT_NO, evidence)``, ``(_FIELD_BLANK, None)``
+    when the employer printed the field and left it empty, or
+    ``(_FIELD_UNPARSED, None)`` when free prose follows (in which case the
+    normal sentence classifier must decide).
+    """
+    chunk = text[match.end():match.end() + 90].split("\n")[0]
+    lead = _LEAD_JUNK_RE.match(chunk)
+    value = chunk[lead.end():] if lead else chunk
+    if not value.strip() or value[:1] in _JUNK_VALUE_START:
+        return _FIELD_BLANK, None
+    # Order matters: the answer is tested BEFORE the "next label" test,
+    # because "No relocation. VISA Sponsorship:" also looks like a label.
+    if _LABEL_NO_RE.match(value):
+        verdict = VERDICT_NO
+    elif _LABEL_YES_RE.match(value):
+        verdict = VERDICT_YES
+    else:
+        if _IMMEDIATE_LABEL_RE.match(value):
+            return _FIELD_BLANK, None
+        return _FIELD_UNPARSED, None
+    tail = _strip_next_label(value).split(". ")[0]
+    return verdict, (match.group(1) + ": " + (tail or value).strip())[:140]
+
+
+def label_field_verdict(text, kind):
+    """Read an employer "Label: Value" support field.
+
+    Returns ``(verdict, evidence)`` or ``None`` when the document carries no
+    such field, or carries contradictory ones.
+    """
+    rx = _LABEL_FIELD_RES.get(kind)
+    if not rx or not text:
+        return None
+    found = []
+    for m in rx.finditer(text):
+        verdict, evidence = _read_label_field(text, m)
+        if verdict in (_FIELD_BLANK, _FIELD_UNPARSED):
+            continue
+        found.append((verdict, evidence))
+    if not found:
+        return None
+    if len({v for v, _ in found}) > 1:
+        # The employer contradicts itself across two blocks; do not guess.
+        return None
+    return found[0]
+
+
+def label_field_blank(text, kind):
+    """True when `kind`'s field is printed but carries no readable answer."""
+    rx = _LABEL_FIELD_RES.get(kind)
+    if not rx or not text:
+        return False
+    seen_blank = False
+    for m in rx.finditer(text):
+        verdict, _ = _read_label_field(text, m)
+        if verdict == _FIELD_BLANK:
+            seen_blank = True
+        elif verdict != _FIELD_UNPARSED:
+            return False          # an answered field wins over a blank one
+    return seen_blank
 
 
 class JDSupportDetector:
@@ -51,6 +262,18 @@ class JDSupportDetector:
         r"|visa\w*|permis de travail|carte bleue|parrainage|immigration|sponsorisons?|"
         r"sponsorisent|parrainons|parraine"  # FR
         r"|visad\w*|permiso de trabajo|tarjeta azul|patrocin\w*|inmigración"  # ES
+        # FIX P0-59: "sponsorship" (the noun) was a concept but "sponsor"
+        # applied to a PERSON was not, so "We are willing to sponsor the
+        # right candidate" -- an unambiguous offer -- produced no evidence at
+        # all and came back Unknown with confidence 0.0. Mirrors the keyword
+        # the scanners' guard (1) accepts (career/ats P0-53), so the detector
+        # and the guard cannot disagree about what counts as a visa mention.
+        # Still cannot fire on "sponsoring projects" or "sponsoring events":
+        # the object has to be a person.
+        r"|sponsor\w*\s+(?:the\s+)?(?:right\s+|suitable\s+|successful\s+"
+        r"|eligible\s+|qualified\s+|international\s+|overseas\s+|foreign\s+)?"
+        r"(?:candidate|applicant|employee|hire|new\s+joiner|individual|person"
+        r"|professional|talent|worker|you)s?"
         r")\b",
         re.I,
     )
@@ -59,7 +282,18 @@ class JDSupportDetector:
         r"package|allowance|support|benefit|reimbursement|stipend|costs|expenses|bonus|"
         r"budget|help|aid)\b|\bassist\w*\b.{0,25}\b(relocat|move)\b"
         r"|\bumzug\w*|\bumzuziehen\b|\bumsiedl\w*|relokation"   # DE
-        r"|\bricolloc\w*|\btrasfer\w*|\btrasloc\w*|relocazione|assistenza al trasferimento"  # IT
+        # FIX P25: "\btrasfer\w*" also matched "trasferta"/"trasferte" -- Italian
+        # for a BUSINESS TRIP, not a move. In run 20261004T202946 the line
+        # "disponibilita a trasferte presso gli stabilimenti del Gruppo"
+        # (= willing to travel between plants) was scored
+        # relocation = No 0.80 "requirement-not-support" at Chef Express HQ,
+        # Oniverse and Piazza Italia. Only the genuine move words are kept:
+        # trasferimento / trasferirsi / trasferito, never trasfert[ae].
+        r"|\bricolloc\w*|\btrasferiment\w*|\btrasferir\w*|\btrasferisc\w*"
+        r"|\btrasferit\w*|\btrasferiamo\b|\btrasloc\w*|relocazione"
+        r"|assistenza al trasferimento|\bvitto e alloggio\b"
+        r"|\balloggio\b.{0,30}\b(?:azienda|aziendale|convenzionat\w*|gratuito|\u00a0?offerto)\b"
+        r"|\b(?:contributo|indennit\u00e0|rimborso)\s+(?:per\s+l\W?)?alloggio\b"  # IT
         r"|\bverhuis\w*|\bverhuiz\w*|relocatie"  # NL (verhuis- compounds + verhuizen verb)
         r"|\brelocalis\w*|\bdéménag\w*|\bréinstall\w*|frais de déménagement"  # FR
         r"|\breubic\w*|\btraslad\w*|\bmudanz\w*|ayuda de reubicación|gastos de reubicación"  # ES
@@ -76,9 +310,20 @@ class JDSupportDetector:
         r"received|get|gets|enjoy|enjoys)\b",
         re.I,
     )
+    # FIX W-1 (2026-10-04): the cue list carried the long forms of *be* and
+    # *have* ("are not", "is not") and the apostrophe forms of the modals
+    # ("can't", "don't") but NOT the apostrophe forms of be/have, so
+    #     "We aren't able to sponsor visas for this role"
+    # scored Yes 0.9 while the identical "We are not able to ..." scored No.
+    # A false Yes is the worst failure direction this tool has. Typographic
+    # apostrophes are folded to ASCII before matching (_norm_apostrophes),
+    # so the far more common "aren\u2019t" spelling is covered too.
     NEGATION = re.compile(
         r"\b(not|no|never|without|cannot|can't|can not|does not|doesn't|do not|don't|"
         r"will not|won't|would not|wouldn't|unable|unfortunately|regret|except|excluding|"
+        r"isn't|aren't|wasn't|weren't|hasn't|haven't|hadn't|couldn't|shouldn't|"
+        r"mustn't|didn't|ain't|isnt|arent|wasnt|werent|hasnt|havent|hadnt|dont|"
+        r"doesnt|cant|wont|couldnt|wouldnt|shouldnt|"
         r"no longer|not offered|not provided|not available|not supported|not included|"
         r"no sponsorship|no support|cannot be|is not|are not|not able|fail|fails|decline|"
         r"declines)\b",
@@ -125,6 +370,25 @@ class JDSupportDetector:
         re.I,
     )
 
+    #: FIX P26: "<article> <benefit> <noun> [available]" and nothing else.
+    #: Anchored at both ends so it can only fire on a list item that IS the
+    #: benefit, never on a sentence that merely contains the words.
+    BENEFIT_NOUN_PHRASE = re.compile(
+        r"^[\s\u2022\u00b7*\-\u2013\u2014|]{0,4}"
+        r"(?:a|an|the|our|your|plus|incl\.?|including|with)?\s*"
+        r"(?:full|fully\s+paid|generous|competitive|attractive|complete|"
+        r"international|domestic|global|partial)?\s*"
+        r"(?:relocation|re-location|moving|umzugs?|verhuis|verhuiz\w*|"
+        r"d\u00e9m\u00e9nagement|reubicaci\u00f3n|traslado|trasferimento)"
+        r"[\s\-]*"
+        r"(?:package|packages|assistance|allowance|support|bonus|budget|"
+        r"stipend|reimbursement|help|benefits?|costs?|expenses|"
+        r"hilfe|pauschale|unterst\u00fctzung|kostenvergoeding|vergoeding|"
+        r"pakket|aide|ayuda|gastos|supporto|contributo)?"
+        r"\s*(?:is\s+|are\s+|fully\s+)?"
+        r"(?:available|offered|provided|included|possible|paid)?"
+        r"[\s.;:,!)\u2013\u2014-]*$", re.I)
+
     # ── Multi-language qualifier patterns (DE / IT / NL / FR / ES) ──
     EXTRA_LANGS = {
         "de": {
@@ -144,15 +408,25 @@ class JDSupportDetector:
                                r"individuell)\b", re.I),
         },
         "it": {
-            "pos": re.compile(r"\b(offriamo|offre|forniamo|fornisce|supportiamo|supportare|"
-                              r"supporta|aiutiamo|copriamo|paghiamo|rimborsiamo|include|incluso|"
-                              r"disponibile|ricevere|ricevono)\b", re.I),
+            # FIX P25: "garantiamo"/"mettiamo a disposizione" is how an Italian
+            # ad offers a benefit. Nova Coop's
+            # "Per gli inserimenti che richiedono il trasferimento, garantiamo
+            #  3 mesi di alloggio in struttura convenzionata."
+            # -- an unambiguous relocation offer -- scored Unknown 0.20.
+            "pos": re.compile(r"\b(offriamo|offre|offrono|forniamo|fornisce|supportiamo|"
+                              r"supportare|supporta|aiutiamo|copriamo|copre|paghiamo|"
+                              r"rimborsiamo|rimborsa|garantiamo|garantisce|garantito|"
+                              r"mettiamo a disposizione|previsto|previsti|prevede|"
+                              r"include|incluso|inclusa|disponibile|ricevere|ricevono)\b", re.I),
             "neg": re.compile(r"\b(non|nessun|nessuna|senza|purtroppo|non possiamo|non è possibile|"
                               r"non disponibile|non offre|non forniamo)\b", re.I),
+            # FIX P25: see RELOCATION_CONCEPTS -- "trasfert[ae]" is a business
+            # trip and must not raise the candidate-must-move requirement.
             "req": re.compile(r"\b(disposto|disposta|pronto|pronta|disponibile|disponibilità|"
-                              r"disponibilita)\b.{0,30}\b(trasfer\w*|spost\w*|ricolloc\w*)\b"
-                              r"|\b(trasfer\w*|spost\w*)\b.{0,30}\b(richiesto|obbligatorio|"
-                              r"necessario|richiede)\b", re.I),
+                              r"disponibilita)\b.{0,30}\b(trasferiment\w*|trasferir\w*|"
+                              r"spost\w*|ricolloc\w*)\b"
+                              r"|\b(trasferiment\w*|trasferir\w*|spost\w*)\b.{0,30}"
+                              r"\b(richiesto|obbligatorio|necessario|richiede)\b", re.I),
             "reqverb": re.compile(r"\b(richiede|richiedono|necessario|obbligatorio)\b", re.I),
             "cond": re.compile(r"\b(caso per caso|soggetto a|può essere|dipende da|negoziabile|"
                                r"su richiesta|se applicabile|non garantito)\b", re.I),
@@ -226,10 +500,33 @@ class JDSupportDetector:
         )
         return [p.strip() for p in parts if p.strip()]
 
+    #: FIX P26b: an interrogative never states policy. "Do you need a
+    #: relocation package?" was scoring relocation = No 0.80 via the
+    #: candidate-must-move branch, and application forms ("Is this role
+    #: eligible for Immigration Sponsorship?", "Do you require sponsorship
+    #: now or in the future?") are extremely common at the foot of a JD.
+    INTERROGATIVE = re.compile(
+        r"^[\s\u2022\u00b7*|\-\u2013\u2014]{0,4}"
+        r"(?:do|does|did|are|is|was|were|will|would|can|could|should|have|has|"
+        r"what|which|who|whom|how|why|when|where|"
+        r"sind|ist|haben|hat|werden|k\u00f6nnen|ben\u00f6tigen|brauchen|"
+        r"avete|siete|hai|serve|necessiti|"
+        r"heeft|hebt|bent|kunt|moet|"
+        r"est-ce|avez|\u00eates|pouvez|"
+        r"necesita|necesitas|requiere|tiene|puede)\b",
+        re.I)
+
     def sentence_verdict(self, sentence, concept_re):
+        # FIX W-1: fold typographic apostrophes to ASCII before ANY cue
+        # matching. Only the matching copy is folded; the evidence string the
+        # caller stores still comes from the untouched sentence.
+        sentence = _norm_apostrophes(sentence)
         concept_match = concept_re.search(sentence)
         if not concept_match:
             return None
+        # FIX P26b: questions ask, they do not promise or refuse.
+        if sentence.rstrip().endswith("?") and self.INTERROGATIVE.match(sentence):
+            return VERDICT_UNKNOWN, 0.2, ["interrogative"]
         # Relocation can describe equipment, vehicles, offices or a job function.
         # Those are not candidate benefits.
         if concept_re is self.RELOCATION_CONCEPTS and re.search(
@@ -298,7 +595,9 @@ class JDSupportDetector:
         has_requires_verb = bool(self.REQUIRES_VERB.search(window)) or any(
             pats["reqverb"].search(window) for pats in self.EXTRA_LANGS.values())
         if has_negation and re.search(
-            r"(?:do not|don't|cannot|can't|will not|won't)\s+(?:accept|consider|hire|employ|sponsor)|"
+            r"(?:do not|don't|dont|cannot|can't|cant|will not|won't|wont|are not|"
+            r"aren't|arent|is not|isn't|isnt|unable to|not able to)"
+            r"\s+(?:accept|consider|hire|employ|sponsor)|"
             r"applicants?\s+who\s+need\s+(?:visa\s+)?sponsorship",
             sentence, re.I,
         ):
@@ -317,6 +616,22 @@ class JDSupportDetector:
             return VERDICT_YES, 0.9, flags
         if has_conditional:
             return VERDICT_UNKNOWN, 0.4, flags + ["bare-conditional"]
+        # FIX P26: a benefits list prints the benefit as a NOUN PHRASE, with
+        # no verb for POSITIVE_VERBS to find:
+        #     - A relocation package
+        #     - Relocation assistance
+        # Amazon Italia produced "A relocation package" -> Unknown 0.20 while
+        # the identical "We offer a relocation package." -> Yes 0.90. The
+        # phrase only counts when the whole fragment IS the benefit (short,
+        # unnegated, not a requirement, not a question), so "relocation
+        # assistance is not provided" and "Do you need a relocation package?"
+        # are untouched.
+        if (concept_re is self.RELOCATION_CONCEPTS
+                and not has_negation and not has_requirement
+                and not sentence.rstrip().endswith("?")
+                and len(sentence) <= 80
+                and self.BENEFIT_NOUN_PHRASE.match(sentence)):
+            return VERDICT_YES, 0.8, flags + ["benefit-noun-phrase"]
         return VERDICT_UNKNOWN, 0.2, flags + ["bare-mention"]
 
     def _aggregate(self, text, concept_re):
@@ -352,15 +667,76 @@ class JDSupportDetector:
         }
 
     def detect(self, text):
-        """Returns {visa, relocation} each with verdict/confidence/required/evidence."""
-        text = text or ""
-        return {
+        """Returns {visa, relocation} each with verdict/confidence/required/evidence.
+
+        FIX P22/P23: the input is normalised (entities decoded, markup
+        stripped) before anything is matched, so an adapter that hands over
+        raw HTML is classified as the prose it contains and the stored
+        evidence is readable.
+
+        FIX P21: an employer "VISA Sponsorship: Yes/No" style field, when
+        present and self-consistent, OVERRIDES the prose aggregate. It is a
+        structured answer from the employer, not an inference.
+        """
+        text = normalize_jd_text(text)
+        out = {
             "visa": self._aggregate(text, self.VISA_CONCEPTS),
             "relocation": self._aggregate(text, self.RELOCATION_CONCEPTS),
         }
+        for kind in ("visa", "relocation"):
+            lab = label_field_verdict(text, kind)
+            if not lab:
+                if label_field_blank(text, kind):
+                    out[kind] = {
+                        "verdict": VERDICT_UNKNOWN,
+                        "confidence": 0.3,
+                        "required": False,
+                        "evidence": [(VERDICT_UNKNOWN, 0.3,
+                                      ["employer-declared-field-blank"],
+                                      kind + " field present but empty")],
+                    }
+                continue
+            verdict, evidence = lab
+            prior = out[kind].get("evidence") or []
+            out[kind] = {
+                "verdict": verdict,
+                "confidence": 0.95,
+                "required": out[kind].get("required", False),
+                "evidence": ([(verdict, 0.95, ["employer-declared-field"],
+                               evidence)] + list(prior))[:4],
+            }
+        return out
 
     def best_evidence(self, result, limit=2):
         return "; ".join(e[3] for e in result["evidence"][:limit])
+
+
+# FIX P0-57: Blue Card keywords, including German declension ("Blauen Karte"),
+# the hyphenated "EU-Blue Card" and the trailing-EU ordering ("Blue Card EU").
+_BLUE_CARD_RE = re.compile(
+    r"\b(?:eu[-\s]*)?blue[-\s]?card(?:\s*eu)?\b"
+    r"|\bblaue[nrms]?\s+karte(?:\s*eu)?\b"
+    r"|\bcarta\s+blu(?:\s*ue)?\b"
+    r"|\bblauwe\s+kaart\b"
+    r"|\bcarte\s+bleue(?:\s+europ\w*)?\b"
+    r"|\btarjeta\s+azul(?:\s+ue)?\b",
+    re.I)
+
+# FIX P0-57: non-English affirmative verbs. detector.POSITIVE_VERBS is
+# English-only; without this a German, Italian, Spanish, French or Dutch ad
+# offering a Blue Card could satisfy the keyword test and still never reach a
+# "Yes". Includes the noun forms these languages actually use in benefit
+# lists ("Unterstuetzung bei...", "supporto per...").
+_BLUE_CARD_POSITIVE_RE = re.compile(
+    r"\b(?:unterst[uü]tz\w*|hilfe|helfen|hilft|bieten|bietet|angeboten|"
+    r"[uü]bernehmen|[uü]bernimmt|erm[oö]glich\w*|beantrag\w*|"
+    r"beantragung|visum\w*|"
+    r"support\w*|sosten\w*|aiut\w*|offriamo|offre|forniamo|fornisce|"
+    r"assistenza|agevol\w*|"
+    r"ofrecemos|ofrece|apoyo|ayuda|facilitamos|"
+    r"proposons|propose|offrons|aide|accompagn\w*|prise\s+en\s+charge|"
+    r"bieden|biedt|ondersteun\w*|helpen|verzorgen|regelen)\b",
+    re.I)
 
 
 def detect_blue_card(detector, text):
@@ -375,18 +751,31 @@ def detect_blue_card(detector, text):
 
     This function is the shared, authoritative classifier (the v5 approach):
     explicit EU Blue Card keywords in a sentence, with negation guarding the
-    verdict.  Returns "Y" / "N" / "Unknown".
+    verdict.  Returns ``VERDICT_YES`` / ``VERDICT_NO`` / ``VERDICT_UNKNOWN``,
+    i.e. the strings "Yes" / "No" / "Unknown".
+
+    FIX P0-57: the docstring used to claim it returned "Y"/"N"/"Unknown",
+    which is NOT what the code does and is exactly the confusion that left
+    persistence.py comparing against "y" (see FIX P0-54 there).
+
+    FIX P0-57 also closes two detection holes that mattered on a
+    Germany-heavy seed set:
+
+    * ``POSITIVE_VERBS`` is English-only, so a German ad -- the single most
+      likely place on earth to mention a Blue Card -- could never satisfy the
+      verb gate. "Wir unterstuetzen Sie bei der Beantragung der Blauen Karte
+      EU" matched the keyword, found no English verb, and returned Unknown.
+    * The keyword list did not match German declension ("Blauen Karte"),
+      the hyphenated "EU-Blue Card", or the common "Blue Card EU" ordering.
     """
     if not text:
         return VERDICT_UNKNOWN
     for sent in detector.split_sentences(text):
-        if re.search(
-            r"\b(?:eu\s+)?blue[- ]?card|blaue karte|carta blu|blauwe kaart|carte bleue|tarjeta azul\b",
-            sent, re.I,
-        ):
+        if _BLUE_CARD_RE.search(sent):
             if detector.NEGATION.search(sent):
                 return VERDICT_NO
-            if detector.POSITIVE_VERBS.search(sent):
+            if (detector.POSITIVE_VERBS.search(sent)
+                    or _BLUE_CARD_POSITIVE_RE.search(sent)):
                 return VERDICT_YES
     return VERDICT_UNKNOWN
 

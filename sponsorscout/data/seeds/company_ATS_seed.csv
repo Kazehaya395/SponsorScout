@@ -17,7 +17,6 @@ Delivery Hero,https://careers.smartrecruiters.com/DeliveryHero,smartrecruiters,D
 Ecosia,https://jobs.ashbyhq.com/ecosia.org,ashby,ecosia.org,direct_employer,Global,global,Search,75,90,65,"verified 2026-09-15: API reachable, 0 open postings"
 EMBL,https://embl.wd103.myworkdayjobs.com/EMBL,workday,embl/EMBL,direct_employer,Europe,job_location,Research/Science,85,95,30,"Workday - no API adapter, DOM path; FIX P0-20: workday API adapter"
 Figma,https://www.figma.com/careers/#job-openings,greenhouse,figma,direct_employer,Global,global,Design,85,95,75,
-GMV,https://gmv.csod.com/ux/ats/careersite/4/home?c=gmv&lang=en-US,auto,,direct_employer,Global,global,Aerospace/Defense,40,70,35,"Cornerstone (csod) - no API adapter, DOM path"
 Improbable,https://jobs.ashbyhq.com/Improbable,ashby,Improbable,direct_employer,Global,global,Gaming/AI,80,90,65,
 Incident.io,https://jobs.ashbyhq.com/incident,ashby,incident,direct_employer,Global,global,SaaS,80,95,85,
 InnoGames,https://jobs.eu.lever.co/innogames,lever,innogames,direct_employer,Global,global,Gaming,80,85,60,EU-resident board (api.eu.lever.co)
@@ -46,7 +45,7 @@ Raisin,https://boards.greenhouse.io/raisin,greenhouse,raisin,direct_employer,Glo
 Scalable Capital,https://careers.smartrecruiters.com/ScalableGmbH,smartrecruiters,ScalableGmbH,direct_employer,Global,global,Fintech,80,85,55,"SmartRecruiters - no API adapter, DOM path; FIX P0-20: smartrecruiters API adapter"
 Sentry,https://jobs.ashbyhq.com/sentry,ashby,sentry,direct_employer,Global,global,Developer Tools,80,95,85,
 simcorp,https://simcorp.wd3.myworkdayjobs.com/SimCorp_Jobs,workday,simcorp/SimCorp_Jobs,direct_employer,Global,global,Fintech/Software,75,80,55,FIX P0-20: workday API adapter
-SmartRecruiters,https://www.smartrecruiterscareers.com/jobs,auto,,direct_employer,Global,global,HR Tech,75,90,65,
+SmartRecruiters,https://www.smartrecruiterscareers.com/jobs,auto,SmartRecruiters,direct_employer,Global,global,HR Tech,75,90,65,board_slug filled 2026-10-03 (adapter already special-cased this host)
 Sonio,https://sonio-ag.jobs.personio.com/,personio,sonio-ag,direct_employer,Global,global,HealthTech,70,85,55,verified: 10 jobs
 SOTI,https://soti.wd3.myworkdayjobs.com/Careers/jobs,workday,soti/Careers,direct_employer,Global,global,Enterprise Software,70,85,50,"Workday - no API adapter, DOM path; FIX P0-20: workday API adapter"
 Starship,https://starship.teamtailor.com/jobs,teamtailor,starship,direct_employer,Global,global,Robotics,75,90,45,verified: 4 jobs
@@ -61,4 +60,7 @@ Celus,https://celus.jobs.personio.de/?language=en,personio,celus,direct_employer
 GreenFlux,https://greenflux.recruitee.com/,recruitee,greenflux,direct_employer,Netherlands,job_location,Unknown,,,,added 2026-09 batch; scores unset
 HousingAnywhere,https://job-boards.greenhouse.io/housinganywhere,greenhouse,housinganywhere,direct_employer,Netherlands,job_location,Unknown,,,,added 2026-09 batch; scores unset
 Virtuagym,https://jobs.virtuagym.com/jobs,recruitee,virtuagym,direct_employer,Netherlands,job_location,Unknown,,,,added 2026-09 batch; scores unset
-Wolters Kluwer,https://wk.wd3.myworkdayjobs.com/External,workday,Wolters Kluwer,direct_employer,Netherlands,seed_url,Unknown,,,,added 2026-09 batch; scores unset
+Wolters Kluwer,https://wk.wd3.myworkdayjobs.com/External,workday,wk/External,direct_employer,Netherlands,job_location,Unknown,,,,added 2026-09 batch; scores unset; fixed 2026-10-03: board_slug must be <tenant>/<site>
+Catawiki,https://job-boards.greenhouse.io/catawiki,greenhouse,catawiki,direct_employer,Global,global,E-Commerce,75,85,60,moved 2026-10-03 from career seed to ATS seed: this is a real greenhouse API board
+Spendesk,https://spendesk.jobs.personio.com,personio,spendesk,direct_employer,Global,global,Fintech,75,85,65,moved 2026-10-03 from career seed to ATS seed: this is a real personio API board
+Smartly.io,https://job-boards.greenhouse.io/smartlyio,greenhouse,smartlyio,direct_employer,Finland,seed_url,Unknown,,,,added 2026-09 batch; scores unset; moved 2026-10-03 from career seed to ATS seed: this is a real greenhouse API board

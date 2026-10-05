@@ -152,17 +152,84 @@ _EMEA_COUNTRIES = _EU_COUNTRIES | frozenset({
 })
 
 
-def _remote_type(row: dict) -> str:
-    """F8 fix: hybrid + EU/EMEA-aware remote mapping.
+# Work Mode tokens the scanners emit -> stored remote_type.
+# "Remote/Hybrid" means the posting advertises both; it is NOT fully remote,
+# so it is stored as hybrid (and the dashboard counts it there).
+_WORK_MODE_TOKENS = {
+    "remote": "remote", "fully remote": "remote", "100% remote": "remote",
+    "remote-first": "remote", "remote first": "remote",
+    "hybrid": "hybrid", "remote/hybrid": "hybrid", "hybrid/remote": "hybrid",
+    "onsite": "onsite", "on-site": "onsite", "on site": "onsite",
+    "in-office": "onsite", "in office": "onsite",
+    "unknown": "", "not specified": "", "": "",
+}
 
-    Previously this could only ever return "remote"/"onsite", which left the
-    DB/UI remote_eu / remote_emea / hybrid filters permanently empty.
+
+def _sniff_work_mode(row: dict) -> str:
+    """Last resort for rows with no Work Mode column (older CSVs).
+
+    Only ever returns a verdict it can point at a word for. "No remote word
+    anywhere" is NOT evidence of an office job, so it returns "unknown" --
+    the previous code returned "onsite" there and silently labelled 8,004
+    rows of run 20261003T233023 as on-site without a shred of evidence.
     """
-    hay = f"{row.get('Job Type', '')} {row.get('Job Location', '')} {row.get('Raw Location', '')}".lower()
+    hay = (f"{row.get('Job Type', '')} {row.get('Job Location', '')} "
+           f"{row.get('Raw Location', '')}").lower()
     if "hybrid" in hay:
         return "hybrid"
-    if "remote" not in hay:
+    if "remote" in hay:
+        return "remote"
+    if re.search(r"\bon[- ]?site|in[- ]?office\b", hay):
         return "onsite"
+    return "unknown"
+
+
+def _remote_type(row: dict) -> str:
+    """Map one scanner row to the stored ``jobs.remote_type``.
+
+    FIX UI-2 / P9 ROOT CAUSE. The dashboard's Remote card read 589 on a run
+    whose scanners had found 111 remote and 131 hybrid jobs. The card's SQL
+    was part of it, but the number itself was manufactured HERE: this
+    function never looked at the scanner's "Work Mode" column at all. It
+    grepped ``Job Type`` + ``Job Location`` + ``Raw Location`` for the
+    substring "remote", and ``Job Type`` is the career scanner's
+    ``f"{workload} / {work_mode}"`` string built from loose card-text
+    matching -- so "Internship / Remote" on a Paris internship, or a listing
+    page whose chrome contains the word "remote", became a remote job.
+    Replaying the run through the old code reproduces the exact screenshot:
+    remote_eu 356 + remote 214 + remote_emea 19 = 589, of which 433 are rows
+    whose own Work Mode column says Unknown.
+
+    The order of evidence is now:
+      1. "Work Mode" -- the scanner's dedicated, JD-derived verdict (P0-12).
+         If it says Unknown, the answer is "unknown". The scanner looked and
+         could not tell; inventing a verdict from page furniture is worse
+         than admitting that.
+      2. Only when the column is absent entirely (a CSV written before it
+         existed) fall back to the text sniff, which no longer guesses
+         "onsite" from the absence of a word.
+    Region refinement (remote_eu / remote_emea) is unchanged.
+    """
+    declared = str(row.get("Work Mode") or "").strip().casefold()
+    verdict = _WORK_MODE_TOKENS.get(declared)
+    if verdict is None:
+        # An unrecognised token is still evidence -- read its shape rather
+        # than dropping it on the floor the way the IN-list did.
+        if "hybrid" in declared:
+            verdict = "hybrid"
+        elif "remote" in declared:
+            verdict = "remote"
+        elif "site" in declared or "office" in declared:
+            verdict = "onsite"
+        else:
+            verdict = ""
+    if not verdict:
+        verdict = ("unknown" if "Work Mode" in row else _sniff_work_mode(row))
+    if verdict != "remote":
+        return verdict
+    # Remote: say WHERE it is remote from, as before.
+    hay = (f"{row.get('Job Type', '')} {row.get('Job Location', '')} "
+           f"{row.get('Raw Location', '')}").lower()
     country = _job_country(row)
     if country in _EU_COUNTRIES:
         return "remote_eu"

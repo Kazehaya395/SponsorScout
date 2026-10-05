@@ -6,6 +6,17 @@ from sponsorscout.core.url_normalizer import normalize_url
 _INDUSTRY_CACHE: dict[str, str] = {}
 
 
+def _verdict_is_yes(value) -> bool:
+    """True for an affirmative three-state verdict, in EITHER vocabulary.
+
+    FIX P0-54: the scanners emit "Yes"/"No"/"Unknown" (jd_support.VERDICT_*)
+    while the UI and the legacy boolean columns were written against
+    "Y"/"N"/"Unknown". Both forms are accepted here so the two vocabularies
+    can never silently disagree again.
+    """
+    return str(value or "").strip().lower() in {"y", "yes", "true", "1"}
+
+
 def save_company(conn, company):
     """
     Insert or update a company.
@@ -70,12 +81,24 @@ def upsert_job(conn, job, commit: bool = True):
     # columns are present, the legacy derived booleans are always recomputed
     # from them ('Y' -> 1, everything else -> 0) regardless of what the
     # caller passed, so Unknown can never leak into the UI as a hard "No".
-    verdict = str(job.get("eu_blue_card_verdict") or "").strip().lower()
-    if verdict:
-        job = {**job, "eu_blue_card": 1 if verdict == "y" else 0}
-    verdict = str(job.get("relocation_support") or "").strip().lower()
-    if verdict:
-        job = {**job, "has_relocation": 1 if verdict == "y" else 0}
+    # FIX P0-54: this tested ``verdict == "y"``, but BOTH scanners store the
+    # three-state verdicts as "Yes" / "No" / "Unknown" -- jd_support.py sets
+    # VERDICT_YES = "Yes", and career_scanner / ats_scanner write that value
+    # straight into eu_blue_card_verdict and relocation_support. "yes" != "y",
+    # so the comparison was NEVER true and both derived booleans were pinned
+    # to 0 for every job ever ingested.
+    #
+    # That single mismatch is why the Dashboard reported **EU Blue Card = 0
+    # across 2,497 jobs**: not a detection failure, an equality test against
+    # the wrong literal. has_relocation was dead in exactly the same way.
+    #
+    # Accepts both vocabularies now, so it cannot break again if a caller
+    # emits the short form.
+    job = {**job,
+           **({"eu_blue_card": 1 if _verdict_is_yes(job.get("eu_blue_card_verdict")) else 0}
+              if str(job.get("eu_blue_card_verdict") or "").strip() else {}),
+           **({"has_relocation": 1 if _verdict_is_yes(job.get("relocation_support")) else 0}
+              if str(job.get("relocation_support") or "").strip() else {})}
     normalized_url = normalize_url(job.get("url", ""))
     company_name = (job.get("company", "") or "").strip()
     if not normalized_url:
@@ -112,12 +135,42 @@ def upsert_job(conn, job, commit: bool = True):
             else:
                 _INDUSTRY_CACHE.pop(company_name, None)
 
-    # Country chain (Q8 decision): explicit job country wins; otherwise
-    # derive a best-effort country from the job location text.
-    job_country = str(job.get("country", "") or "").strip()
-    if not job_country:
-        from sponsorscout.core.location_country import country_from_location
-        job_country = country_from_location(str(job.get("location", "") or ""))
+    # Country chain. FIX P0-55: this preferred whatever `country` the caller
+    # happened to pass and only fell back to the job's own location text.
+    # That is backwards for this product: the country shown in the Dashboard
+    # and the Search tab must describe where the JOB is, never where the
+    # company is headquartered. A caller-supplied country has no provenance
+    # here -- it may be a real ATS country field, or it may be a seed's
+    # target_country / an HQ guess -- so it can no longer outrank the one
+    # value that is provably about the job.
+    #
+    # Order is now: the job's own location text, then an explicitly supplied
+    # country, then nothing. `country_source` records which, so a wrong
+    # country is traceable instead of anonymous. A user's manual correction
+    # is untouched -- that is protected by the `country_source='manual'`
+    # CASE in the UPSERT below, not here.
+    from sponsorscout.core.location_country import country_from_location
+    _loc_text = str(job.get("location", "") or "").strip()
+    _loc_country = ""
+    if _loc_text and _loc_text.lower() not in ("unknown", "not specified"):
+        try:
+            _loc_country = (country_from_location(_loc_text) or "").strip()
+        except Exception:
+            _loc_country = ""
+    _explicit = str(job.get("country", "") or "").strip()
+    _passed_source = str(job.get("country_source", "") or "").strip().lower()
+    if _passed_source == "manual" and _explicit:
+        job_country = _explicit
+        _country_source = "manual"
+    elif _loc_country:
+        job_country = _loc_country
+        _country_source = "job_location"
+    elif _explicit:
+        job_country = _explicit
+        _country_source = _passed_source or "provided"
+    else:
+        job_country = ""
+        _country_source = "none"
 
     conn.execute(
         """INSERT INTO jobs
@@ -223,7 +276,7 @@ def upsert_job(conn, job, commit: bool = True):
             job.get("canonical_job_id", ""),
             job.get("run_id", ""),
             job.get("raw_location", ""),
-            job.get("country_source", "auto"),
+            _country_source,   # FIX P0-55: provenance, not a hardcoded "auto"
         ),
     )
     if commit:

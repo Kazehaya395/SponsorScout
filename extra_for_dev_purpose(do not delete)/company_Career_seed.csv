@@ -1,0 +1,374 @@
+name,careers_url,provider,board_slug,source_type,target_country,scope_policy,industry,sponsorship_history,english_friendly,remote_score,notes
+# ===== company_Career_seed.csv - grouped by target_country - regrouped 2026-10-03 =====,,,,,,,,,,,
+# ===== lines starting with # are group banners; the scanners and the seed manager skip them =====,,,,,,,,,,,
+# ----- AUSTRIA (23) -----,,,,,,,,,,,
+3 Banken IT,https://www.3bankenit.at/jobs/offene-jobangebote/,auto,,direct_employer,Austria,job_location,Banking IT,50,60,30,German-language site
+Absolventen,https://www.absolventen.at,auto,,recruiter,Austria,seed_url,Unknown,,,,added 2026-09 batch; scores unset
+AMS (Arbeitsmarktservice),https://www.ams.at,auto,,recruiter,Austria,seed_url,Unknown,,,,added 2026-09 batch; scores unset
+Der Standard,https://derstandard.at,auto,,recruiter,Austria,seed_url,Unknown,,,,added 2026-09 batch; scores unset
+English Jobs Austria (Analyst),https://englishjobsearch.at/jobs/Analyst,auto,,recruiter,Austria,seed_url,Job Aggregator,70,95,35,analyst-filtered board; same host as the visa row
+English Jobs Austria (Visa),https://englishjobsearch.at/jobs/visa-sponsorship,auto,,recruiter,Austria,seed_url,Job Aggregator/Visa,95,95,35,visa-sponsorship filtered board
+Glassdoor,https://www.glassdoor.at,auto,,recruiter,Austria,job_location,Unknown,,,,added 2026-09 batch; scores unset
+Graduateland,https://graduateland.com,auto,,recruiter,Austria,job_location,Unknown,,,,added 2026-09 batch; scores unset
+Indeed Austria,https://at.indeed.com/,auto,,recruiter,Austria,job_location,Unknown,,,,added 2026-09 batch; scores unset
+Jobs at,https://www.jobs.at,auto,,recruiter,Austria,seed_url,Unknown,,,,added 2026-09 batch; scores unset
+Jobs in Vienna,https://www.jobsinvienna.com,auto,,recruiter,Austria,seed_url,Unknown,,,,added 2026-09 batch; scores unset
+Jobswype,https://www.jobswype.at,auto,,recruiter,Austria,seed_url,Unknown,,,,added 2026-09 batch; scores unset
+Journi,https://www.journiapp.com/sk/careers,auto,,direct_employer,Austria,seed_url,Unknown,,,,added 2026-09 batch; scores unset
+Karriere,https://www.karriere.at,auto,,recruiter,Austria,seed_url,Unknown,,,,added 2026-09 batch; scores unset
+LOOP,https://www.agentur-loop.com/careers,auto,,direct_employer,Austria,seed_url,Unknown,,,,added 2026-09 batch; scores unset
+Meinjob,https://www.meinjob.at,auto,,recruiter,Austria,seed_url,Unknown,,,,added 2026-09 batch; scores unset
+METROPOLE,https://metropole.at,auto,,recruiter,Austria,seed_url,Unknown,,,,added 2026-09 batch; scores unset
+Stepstone,https://www.stepstone.at,auto,,recruiter,Austria,job_location,Unknown,,,,added 2026-09 batch; scores unset
+Studentjob,https://www.studentjob.at,auto,,recruiter,Austria,job_location,Unknown,,,,added 2026-09 batch; scores unset
+The Local,https://www.thelocal.at,auto,,recruiter,Austria,job_location,Unknown,,,,added 2026-09 batch; scores unset
+Virtual Vienna,https://www.virtualvienna.net,auto,,recruiter,Austria,seed_url,Unknown,,,,added 2026-09 batch; scores unset
+Willhaben,https://www.willhaben.at,auto,,recruiter,Austria,seed_url,Unknown,,,,added 2026-09 batch; scores unset
+Work in Austria,https://www.workinaustria.com/en/search?tx_solr%5B7209%5D%5Bfilter%5D%5B%5D=group%3AJobs,auto,,recruiter,Austria,job_location,Government/Relocation,80,85,30,national relocation portal
+# ----- BELGIUM (18) -----,,,,,,,,,,,
+Adecco,https://www.adecco.be/nl-be/vacatures,auto,,recruiter,Belgium,job_location,Unknown,,,,added 2026-09 batch; scores unset
+Cegedim,https://careers.cegedim.com/en,auto,,direct_employer,Belgium,job_location,Unknown,,,,added 2026-09 batch; scores unset
+Clearmatics,https://www.clearmatics.com/careers/,auto,,direct_employer,Belgium,job_location,Unknown,,,,added 2026-09 batch; scores unset
+Codit,https://www.codit.eu/en/jobs/,auto,,direct_employer,Belgium,seed_url,Unknown,,,,added 2026-09 batch; scores unset
+Creganna,https://careers.te.com/,auto,,direct_employer,Belgium,job_location,Unknown,,,,added 2026-09 batch; scores unset
+Deloitte Digital,https://www.deloitte.com/be/en/careers/job-search.html,auto,,direct_employer,Belgium,job_location,Unknown,,,,added 2026-09 batch; scores unset
+Keylane,https://careers.keylane.com/jobs/,auto,,direct_employer,Belgium,job_location,Unknown,,,,added 2026-09 batch; scores unset
+LCL,https://career.lcl.be/en,auto,,direct_employer,Belgium,seed_url,Unknown,,,,added 2026-09 batch; scores unset
+Proximus,https://www.proximus.com/jobs.html,auto,,direct_employer,Belgium,job_location,Unknown,,,,added 2026-09 batch; scores unset
+Randstad,https://www.randstad.be/nl/jobs/,auto,,recruiter,Belgium,job_location,Unknown,,,,added 2026-09 batch; scores unset
+SD Worx,https://careers.sdworx.com/jobs,auto,,direct_employer,Belgium,job_location,Unknown,,,,added 2026-09 batch; scores unset
+SecureLink,https://orangecyberdefense.com/be/careers/,auto,,direct_employer,Belgium,job_location,Unknown,,,,added 2026-09 batch; scores unset
+Sopra Steria,https://www.soprasteria.be/careers,auto,,direct_employer,Belgium,job_location,Unknown,,,,added 2026-09 batch; scores unset
+T-Systems,https://www.t-systems.com/de/en/careers,auto,,direct_employer,Belgium,job_location,Unknown,,,,added 2026-09 batch; scores unset
+Teamleader,https://careers.teamleader.eu/,auto,,direct_employer,Belgium,job_location,Unknown,,,,added 2026-09 batch; scores unset
+Telenet,https://www2.telenet.be/corporate/nl/careers.html,auto,,direct_employer,Belgium,seed_url,Unknown,,,,added 2026-09 batch; scores unset
+Unifiedpost,https://www.unifiedpostgroup.com/careers,auto,,direct_employer,Belgium,seed_url,Unknown,,,,added 2026-09 batch; scores unset
+Valtech Belgium,https://www.valtech.com/career/jobs/,auto,,direct_employer,Belgium,job_location,Unknown,,,,added 2026-09 batch; scores unset
+# ----- DENMARK (1) -----,,,,,,,,,,,
+Work in Denmark,https://workindenmark.jobnet.dk/find-job,auto,,recruiter,Denmark,seed_url,Government/Relocation,85,90,30,official government job portal
+# ----- ESTONIA (1) -----,,,,,,,,,,,
+Work in Estonia,https://workinestonia.com/job/,auto,,recruiter,Estonia,seed_url,Government/Relocation,85,90,35,national relocation portal
+# ----- FINLAND (2) -----,,,,,,,,,,,
+Smartly.io,https://job-boards.greenhouse.io/smartlyio,auto,,direct_employer,Finland,seed_url,Unknown,,,,added 2026-09 batch; scores unset
+Work in Finland,https://www.workinfinland.com/en/open-jobs/,auto,,recruiter,Finland,job_location,Government/Relocation,85,90,30,national relocation portal
+# ----- FRANCE (1) -----,,,,,,,,,,,
+BlaBlaCar,https://jobs.blablacar.com/vacancies#jobs,auto,,direct_employer,France,seed_url,Unknown,,,,added 2026-09 batch; scores unset
+# ----- GERMANY (14) -----,,,,,,,,,,,
+Alteos,https://www.alteos.com/unternehmen/karriere#Stellenangebote,auto,,direct_employer,Germany,job_location,InsurTech,70,85,55,
+Applike Group,https://applike-group.com/jobs/,auto,,direct_employer,Germany,job_location,AdTech,75,90,55,Hamburg
+Arbeitnow,https://www.arbeitnow.com/visa-sponsorship-jobs,auto,,recruiter,Germany,job_location,Job Aggregator/Visa,95,90,45,aggregator: visa-sponsorship filter
+Corbado,https://www.corbado.com/about#job-section,auto,,direct_employer,Germany,job_location,Cybersecurity,70,90,60,
+Harnham Germany,https://www.harnham.com/job-search/,auto,,recruiter,Germany,job_location,Recruitment,70,80,40,
+Hays Germany,https://www.hays.de/jobsuche/stellenangebote-jobs/p/1?q=&e=false&pt=false&ij=false,auto,,recruiter,Germany,job_location,Recruitment,70,75,35,
+HomeToGo,https://www.hometogo.com/careers,auto,,direct_employer,Germany,job_location,Unknown,,,,added 2026-09 batch; scores unset
+Kelly Services Germany,https://careers.kellyocg.com/search,auto,,recruiter,Germany,job_location,Recruitment,70,75,30,
+Michael Page Germany,https://www.michaelpage.de/jobs/compliance-analyst,auto,,recruiter,Germany,seed_url,Recruitment,70,80,35,
+Nexthink (Germany),https://nexthink.com/company/careers/jobs,auto,,direct_employer,Germany,job_location,Digital Workplace,75,85,60,
+Pflegehilfe,https://www.pflegehilfe.org/karriere,auto,,direct_employer,Germany,job_location,Healthcare,30,40,30,German-language site; care sector
+stellenonline,https://www.stellenonline.de/,auto,,recruiter,Germany,job_location,Unknown,,,,added 2026-09 batch; scores unset
+Talentor Germany,https://talentor.com/jobs,auto,,recruiter,Germany,job_location,Recruitment,70,80,35,
+Transparent Hiring,https://www.transparent-hiring.com/jobs/,auto,,recruiter,Germany,job_location,Recruitment/Relocation,80,90,50,verified: Germany relocation specialist (recruiters + immigration + relocation)
+# ----- IRELAND (27) -----,,,,,,,,,,,
+Adobe,https://careers.adobe.com/us/en/search-results,auto,,direct_employer,Ireland,job_location,Unknown,,,,added 2026-09 batch; scores unset
+Amazon,https://www.amazon.jobs/,auto,,direct_employer,Ireland,job_location,Unknown,,,,added 2026-09 batch; scores unset
+Apple,https://www.apple.com/jobs/,auto,,direct_employer,Ireland,job_location,Unknown,,,,added 2026-09 batch; scores unset
+Atos,https://atos.net/en/careers,auto,,direct_employer,Ireland,job_location,Unknown,,,,added 2026-09 batch; scores unset
+Cisco,https://jobs.cisco.com/,auto,,direct_employer,Ireland,job_location,Unknown,,,,added 2026-09 batch; scores unset
+Dell,https://jobs.dell.com/,auto,,direct_employer,Ireland,job_location,Unknown,,,,added 2026-09 batch; scores unset
+DocuSign,https://www.docusign.com/company/careers,auto,,direct_employer,Ireland,job_location,Unknown,,,,added 2026-09 batch; scores unset
+Dropbox,https://jobs.dropbox.com/all-jobs,auto,,direct_employer,Ireland,job_location,Unknown,,,,added 2026-09 batch; scores unset
+Facebook,https://www.facebookcareers.com/,auto,,direct_employer,Ireland,job_location,Unknown,,,,added 2026-09 batch; scores unset
+Fujitsu,https://www.fujitsu.com/global/about/careers/,auto,,direct_employer,Ireland,job_location,Unknown,,,,added 2026-09 batch; scores unset
+Google,https://careers.google.com/,auto,,direct_employer,Ireland,job_location,Unknown,,,,added 2026-09 batch; scores unset
+HP,https://jobs.hp.com/,auto,,direct_employer,Ireland,job_location,Unknown,,,,added 2026-09 batch; scores unset
+Intel,https://jobs.intel.com/,auto,,direct_employer,Ireland,job_location,Unknown,,,,added 2026-09 batch; scores unset
+LinkedIn,https://careers.linkedin.com/,auto,,direct_employer,Ireland,job_location,Unknown,,,,added 2026-09 batch; scores unset
+Mastercard,https://www.mastercard.us/en-us/vision/who-we-are/careers.html,auto,,direct_employer,Ireland,job_location,Unknown,,,,added 2026-09 batch; scores unset
+Microsoft,https://careers.microsoft.com/,auto,,direct_employer,Ireland,job_location,Unknown,,,,added 2026-09 batch; scores unset
+NTT Data,https://ie.nttdata.com/careers,auto,,direct_employer,Ireland,job_location,Unknown,,,,added 2026-09 batch; scores unset
+Oracle,https://www.oracle.com/corporate/careers/,auto,,direct_employer,Ireland,job_location,Unknown,,,,added 2026-09 batch; scores unset
+PayPal,https://www.paypal.com/us/webapps/mpp/jobs,auto,,direct_employer,Ireland,job_location,Unknown,,,,added 2026-09 batch; scores unset
+Robert Walters Ireland,https://www.robertwalters.ie/jobs.html,auto,,recruiter,Ireland,seed_url,Recruitment,70,80,35,
+Salesforce,https://www.salesforce.com/company/careers/,auto,,direct_employer,Ireland,job_location,Unknown,,,,added 2026-09 batch; scores unset
+ServiceNow,https://www.servicenow.com/careers.html,auto,,direct_employer,Ireland,job_location,Unknown,,,,added 2026-09 batch; scores unset
+Slack,https://slack.com/careers,auto,,direct_employer,Ireland,job_location,Unknown,,,,added 2026-09 batch; scores unset
+Square,https://squareup.com/careers,auto,,direct_employer,Ireland,job_location,Unknown,,,,added 2026-09 batch; scores unset
+Twitter,https://careers.twitter.com/,auto,,direct_employer,Ireland,job_location,Unknown,,,,added 2026-09 batch; scores unset
+VMware,https://careers.vmware.com/,auto,,direct_employer,Ireland,job_location,Unknown,,,,added 2026-09 batch; scores unset
+Workday,https://www.workday.com/en-us/company/careers.html,auto,,direct_employer,Ireland,job_location,Unknown,,,,added 2026-09 batch; scores unset
+# ----- ITALY (38) -----,,,,,,,,,,,
+Action Italia Post,https://it.action.jobs/offerte-di-lavoro/negozio,auto,,direct_employer,Italy,seed_url,Retail/Discount,10,45,10,user-added sub-URL (344 jobs live); extractor fix H1 in this patch
+Amazon Italia,https://www.amazon.jobs/content/en/locations/italy,auto,,direct_employer,Italy,seed_url,Logistics/E-commerce,30,75,75,
+Artsana Group,https://www.artsana.com/hr-careers/,auto,,direct_employer,Italy,seed_url,Retail/Baby,5,35,10,Italy batch 2026-09-13 (Chicco/Prenatal)
+Autogrill,https://autogrill.intervieweb.it/it/career,auto,,direct_employer,Italy,seed_url,Hospitality/Travel catering,10,45,10,"Italy batch 2026-09-13 (150+ posizioni); seed v2 2026-09-13: PV board (landing was empty); seed v3 2026-09-14: public IntervieWEB board, 11 pages baristi/addetti (PV page is cross-origin iframe)"
+Bending Spoons,https://jobs.bendingspoons.com/,auto,,direct_employer,Italy,job_location,Mobile Apps,75,90,25,Milan HQ; strong relocation package
+Camst Group,https://career012.successfactors.eu/career?company=CAMST&career%5fns=job%5flisting%5fsummary&navBarLevel=JOB%5fSEARCH&_s.crb=SdEmRcXbyXo%2f2%2f1o5AFD%2bvvFdznL0lMLSyZlr82aWSc%3d,auto,,direct_employer,Italy,seed_url,Catering/Collective,5,30,10,Italy batch 2026-09-13 (28 posizioni: mense/cuochi); seed v2 2026-09-13: kept user URL edit
+Carrefour Italia Negozi,https://lavoraconnoi.carrefour.it/offertedilavoro,auto,,direct_employer,Italy,seed_url,Retail/Supermarket,5,35,10,Italy batch 2026-09-13 (JS portal); seed v2 2026-09-13: kept user URL edit
+Chef Express,https://www.chefexpress.it/punto-vendita/CENTRO/LAZIO/,auto,,direct_employer,Italy,seed_url,Hospitality/Catering,5,35,10,Italy batch 2026-09-13; seed v2 2026-09-13: kept user URL edit
+Chef Express HQ,https://careerstaffservicesrlgruppocremonini.sites.altamiraweb.com/,auto,,direct_employer,Italy,seed_url,Hospitality/Catering,10,45,10,user-added Altamira board (17 rows run5)
+Cigierre Group,https://lavoraconnoi.cigierre.com/jobs,auto,,direct_employer,Italy,seed_url,Hospitality/Restaurants,5,35,10,"Italy batch 2026-09-13 (Old Wild West etc, ~280 posizioni); seed v2 2026-09-13: kept user URL edit"
+CIR Food,https://www.cirfood.com/it/lavora-con-noi,auto,,direct_employer,Italy,seed_url,Catering/Collective,5,30,10,Italy batch 2026-09-13 (browser-only: curl 403; listings confirmed)
+Cisalfa Sport,https://recruiting.cisalfagroup.com/jobs.php,auto,,direct_employer,Italy,seed_url,Retail/Sports,5,35,10,Italy batch 2026-09-13 (155 stores; ATS direct)
+Coop Italia,https://lavoro.coopalleanza3-0.it/jobs.php,auto,,direct_employer,Italy,seed_url,Retail/Supermarket,20,60,70,
+Decathlon Italia Retail,https://lavoraconnoi.decathlon-careers.it/it/annonces,digitalrecruiters,lavoraconnoi.decathlon-careers.it,direct_employer,Italy,seed_url,Retail/Sports,25,70,65,Batch N: DR POST API adapter (159 jobs live 2026-09-12)
+Eataly Italia,https://eataly.intervieweb.it/it/career,auto,,direct_employer,Italy,job_location,Retail/Hospitality,10,60,10,seed v3 2026-09-14: Italy IntervieWEB board (was US-platform URL); job_location filters Paris/London rows
+Elior Italia,https://elior-italia.profils.org/job/list-of-jobs.aspx,auto,,direct_employer,Italy,seed_url,Catering/Collective,5,35,10,Italy batch 2026-09-13; seed v2 2026-09-13: kept user URL edit
+Enel,https://jobs.enel.com/en_US/careers/JobOpeningsItaly,auto,,direct_employer,Italy,seed_url,Energy/Utilities,45,75,65,
+Gruppo UNA,https://hdix.fa.em3.oraclecloud.com/hcmUI/CandidateExperience/it/sites/CX_1/jobs?mode=location,auto,,direct_employer,Italy,seed_url,Hospitality,5,50,5,
+Leroy Merlin Italia,https://lavoro.leroymerlin.it/jobs,auto,,direct_employer,Italy,seed_url,Retail/DIY,10,40,10,Italy batch 2026-09-13 (185+ offerte)
+McDonald's Italia,https://www.mcdonalds.it/lavora-con-noi/posizioni-aperte,auto,,direct_employer,Italy,seed_url,Hospitality/Fast Food,20,60,60,
+MD,https://md.intervieweb.it/it/career,auto,,direct_employer,Italy,job_location,Retail/Supermarket,5,35,10,Italy batch 2026-09-13; seed v2 2026-09-13: kept user URL edit
+NH Hotel Group Italy,https://euamcareers.minorhotels.com/search/?createNewAlert=false&q=&optionsFacetsDD_country=&optionsFacetsDD_dept=&optionsFacetsDD_customfield3=&optionsFacetsDD_location=&optionsFacetsDD_customfield2=&optionsFacetsDD_customfield4=&optionsFacetsDD_city=&optionsFacetsDD_customfield1=,auto,,direct_employer,Italy,job_location,Hospitality,10,70,10,URL is generic minorhotels.com/search; job_location scope ensures only Italy-scoped jobs pass
+Nova Coop,https://novacoop.intervieweb.it/it/career,auto,,direct_employer,Italy,seed_url,Retail/Supermarket,5,30,10,Italy batch 2026-09-13; seed v2 2026-09-13: kept user URL edit
+Oniverse,https://careers.oniverse.it/en-US/home,auto,,direct_employer,Italy,job_location,Retail,10,50,20,
+OVS,https://careers-ovsgroup.ovs.it/jobs.php?source=direct,auto,,direct_employer,Italy,seed_url,Retail,5,40,15,
+Pam Panorama,https://lavoraconnoi.gruppopam.it/negozi/regioni/lazio,pam,region:Lazio,direct_employer,Italy,seed_url,Retail/Supermarket,20,60,60,Batch N: pam API adapter (25 Lazio jobs live 2026-09-12)
+Pam Panorama,https://lavoraconnoi.gruppopam.it/sede,pam,sede,direct_employer,Italy,seed_url,Retail/Supermarket,20,60,60,Batch N: pam API adapter (2 HQ jobs live 2026-09-12)
+Penny Italia,https://pennyitalia.intervieweb.it/it/career,auto,,direct_employer,Italy,seed_url,Retail/Supermarket,5,35,10,Italy batch 2026-09-13; seed v2 2026-09-13: IntervieWEB board (landing was empty)
+Piazza Italia,https://www.piazzaitalia.it/it-it/work-with-us,auto,,direct_employer,Italy,seed_url,Retail/Fashion,5,35,10,Italy batch 2026-09-13
+Primark Italia,"https://careers.primark.com/en/search-jobs?acm=81158,8817920,36805,81645,8337600,53117,79935,37065,81644,37012,81636,82479,36845,80191,79747,8856320,79655&alrpm=ALL&ascf=[%7B%22key%22:%22ALL%22,%22value%22:%22%22%7D]",auto,,direct_employer,Italy,job_location,Retail/Fashion,10,45,10,Italy batch 2026-09-13; seed v2 2026-09-13: kept user URL edit
+Rossopomodoro,https://www.rossopomodoro.it/it/Lavora-con-noi/job,auto,,direct_employer,Italy,job_location,Hospitality/Restaurants,5,35,10,Italy batch 2026-09-13 (browser-only: curl 403)
+Starhotels,https://www.starhotels.com/en/careers.html,auto,,direct_employer,Italy,seed_url,Hospitality,10,65,5,
+Teddy Group,https://www.teddycareers.it/#/public-area/careers/ads-list/0,auto,,direct_employer,Italy,seed_url,Retail/Fashion,5,40,10,Italy batch 2026-09-13 (Terranova etc; JS app); seed v2 2026-09-13: official PEOPLENET board (replaces Indeed)
+Tigotà,https://lavoro.gottardospa.it/jobs.php,auto,,direct_employer,Italy,seed_url,Retail/Drugstore,5,35,10,Italy batch 2026-09-13 (200+ store jobs); seed v2 2026-09-13: kept user URL edit
+Unicoop Firenze,https://www.coopfirenze.it/lavora-con-noi/consulta-le-posizioni-aperte,auto,,direct_employer,Italy,seed_url,Retail/Supermarket,5,30,10,Italy batch 2026-09-13
+Unieuro Negozi,https://unieurospa.com/people/lavora-con-noi/opportunita-in-negozio/,auto,,direct_employer,Italy,seed_url,Retail/Electronics,5,35,10,Italy batch 2026-09-13 (85 assunzioni)
+Unieuro Sede,https://unieurospa.com/people/lavora-con-noi/opportunita-in-sede/,auto,,direct_employer,Italy,seed_url,Retail/HQ,10,50,30,Italy batch 2026-09-13
+Yamamay,https://corporate.yamamay.com/it/carriere/lavora-con-noi,auto,,direct_employer,Italy,seed_url,Retail/Fashion,5,40,10,Italy batch 2026-09-13
+# ----- LITHUANIA (1) -----,,,,,,,,,,,
+Work in Lithuania,https://jobs.workinlithuania.com/?sort=-created_at,auto,,recruiter,Lithuania,seed_url,Government/Relocation,85,90,35,national relocation portal
+# ----- NETHERLANDS (20) -----,,,,,,,,,,,
+A2G Technologies,https://a2gtechnologies.com/jobs,auto,,recruiter,Netherlands,job_location,Consulting/IT,75,85,40,verified: A2G Consulting
+Coolblue,https://www.coolblue.nl/en/vacancies/search,auto,,direct_employer,Netherlands,job_location,E-Commerce,55,70,35,
+DAZN,https://careers.dazn.com/,auto,,direct_employer,Netherlands,job_location,Unknown,,,,added 2026-09 batch; scores unset
+Dyson,https://careers.dyson.com/,auto,,direct_employer,Netherlands,job_location,Unknown,,,,added 2026-09 batch; scores unset
+Elastic,https://www.elastic.co/about/careers,auto,,direct_employer,Netherlands,seed_url,Unknown,,,,added 2026-09 batch; scores unset
+Flow Traders,https://www.flowtraders.com/careers/job-search,auto,,direct_employer,Netherlands,seed_url,Unknown,,,,added 2026-09 batch; scores unset
+Huxley Netherlands,https://www.huxley.com/en-nl/job-search/?country=Netherlands&searchRadius=50km,auto,,recruiter,Netherlands,seed_url,Recruitment,70,85,35,
+Magnet.me,https://magnet.me/en/opportunities?industries=it,auto,,recruiter,Netherlands,job_location,Job Aggregator,60,85,40,IT filter applied in URL
+Michael Page Netherlands,https://www.michaelpage.nl/jobs/analyst,auto,,recruiter,Netherlands,seed_url,Recruitment,70,85,35,
+MSD Netherlands,https://jobs.msd.com/gb/en/netherlands-job-search,auto,,direct_employer,Netherlands,seed_url,Pharma,80,90,45,seed v4 2026-09-18: user-supplied NL-specific search (was global search-results + job_location filter)
+Orange Quarter,https://orange-quarter.com/jobs/,auto,,recruiter,Netherlands,job_location,Recruitment/Tech,75,90,45,
+Picnic Technologies,https://jobs.picnic.app/en/vacancies,auto,,direct_employer,Netherlands,job_location,Unknown,,,,added 2026-09 batch; scores unset
+Robert Walters Netherlands,https://www.robertwalters.nl/vacatures.html?q=,auto,,recruiter,Netherlands,seed_url,Recruitment,70,85,35,
+Stafide,https://jobs.stafide.nl/jobs/Careers,auto,,recruiter,Netherlands,job_location,Recruitment/IT,75,90,45,
+Stream,https://getstream.io/team/#jobs,auto,,direct_employer,Netherlands,job_location,Unknown,,,,added 2026-09 batch; scores unset
+Swisscom DevOps Center,https://sdcrotterdam.swisscom.ch/openpositions,auto,,direct_employer,Netherlands,job_location,Telecom/IT,70,90,50,Rotterdam development centre
+Uber,https://www.uber.com/global/en/careers/,auto,,direct_employer,Netherlands,job_location,Unknown,,,,added 2026-09 batch; scores unset
+Virtusa,https://www.virtusa.com/careers,auto,,direct_employer,Netherlands,job_location,Unknown,,,,added 2026-09 batch; scores unset
+Welcome to NL,https://www.welcome-to-nl.nl/jobs/,auto,,recruiter,Netherlands,seed_url,Government/Relocation,85,90,30,national relocation portal
+Wolters Kluwer,https://careers.wolterskluwer.com/,auto,,direct_employer,Netherlands,job_location,Unknown,,,,added 2026-09 batch; scores unset
+# ----- POLAND (1) -----,,,,,,,,,,,
+Dotlinkers,https://dotlinkers-itrecruitment.com/category/job-offers-en/,auto,,recruiter,Poland,job_location,Recruitment/IT,70,85,40,
+# ----- PORTUGAL (1) -----,,,,,,,,,,,
+Volkswagen Digital Solutions,https://www.vwds.pt/careers/,auto,,direct_employer,Portugal,seed_url,Unknown,,,,added 2026-09 batch; scores unset
+# ----- SPAIN (2) -----,,,,,,,,,,,
+Manychat,https://careers.manychat.com/,auto,,direct_employer,Spain,job_location,Unknown,,,,added 2026-09 batch; scores unset
+Multiverse Computing,https://multiversecomputing.com/join-us,auto,,direct_employer,Spain,job_location,Unknown,,,,added 2026-09 batch; scores unset
+# ----- SWEDEN (2) -----,,,,,,,,,,,
+Incluso,https://openings.incluso.se/#jobs,auto,,direct_employer,Sweden,job_location,Consulting/IT,70,90,40,
+Rebtel,https://www.rebtel.com/en/jobs/,auto,,direct_employer,Sweden,job_location,Telecom,70,90,50,
+# ----- SWITZERLAND (1) -----,,,,,,,,,,,
+Smallpdf,https://smallpdf.com/jobs,auto,,direct_employer,Switzerland,seed_url,Unknown,,,,added 2026-09 batch; scores unset
+# ----- UNITED KINGDOM (26) -----,,,,,,,,,,,
+AstraZeneca,https://careers.astrazeneca.com/,auto,,direct_employer,United Kingdom,seed_url,Unknown,,,,added 2026-09 batch; scores unset
+Aviva,https://www.aviva.co.uk/careers/,auto,,direct_employer,United Kingdom,seed_url,Unknown,,,,added 2026-09 batch; scores unset
+BAE Systems,https://www.baesystems.com/en/careers,auto,,direct_employer,United Kingdom,seed_url,Unknown,,,,added 2026-09 batch; scores unset
+Barclays,https://search.jobs.barclays/,auto,,direct_employer,United Kingdom,job_location,Unknown,,,,added 2026-09 batch; scores unset
+BBC,https://www.bbc.co.uk/careers,auto,,direct_employer,United Kingdom,seed_url,Unknown,,,,added 2026-09 batch; scores unset
+British Airways,https://careers.ba.com/,auto,,direct_employer,United Kingdom,seed_url,Unknown,,,,added 2026-09 batch; scores unset
+Capita,https://www.capita.com/careers,auto,,direct_employer,United Kingdom,seed_url,Unknown,,,,added 2026-09 batch; scores unset
+Clifford Chance,https://jobs.cliffordchance.com/,auto,,direct_employer,United Kingdom,job_location,Unknown,,,,added 2026-09 batch; scores unset
+Free-Work,https://www.free-work.com/en-gb/tech-it/jobs,auto,,recruiter,United Kingdom,job_location,Job Aggregator/IT,50,95,60,
+gamesjobsdirect,https://www.gamesjobsdirect.com/results,auto,,recruiter,United Kingdom,job_location,Unknown,,,,added 2026-09 batch; scores unset
+HSBC,https://www.hsbc.com/careers/,auto,,direct_employer,United Kingdom,seed_url,Unknown,,,,added 2026-09 batch; scores unset
+Inetsofwaresolutions,https://www.inetsoftwaresolutions.co.uk/,auto,,direct_employer,United Kingdom,seed_url,Unknown,,,,added 2026-09 batch; scores unset
+Lloyds Banking Group,https://www.lloydsbankinggroup.com/careers/,auto,,direct_employer,United Kingdom,seed_url,Unknown,,,,added 2026-09 batch; scores unset
+Michael Page UK,https://www.michaelpage.co.uk/jobs/analyst,auto,,recruiter,United Kingdom,seed_url,Recruitment,70,85,35,
+Network Rail,https://www.networkrail.co.uk/careers/,auto,,direct_employer,United Kingdom,seed_url,Unknown,,,,added 2026-09 batch; scores unset
+NHG,https://group.nhg.org.uk/careers/,auto,,direct_employer,United Kingdom,seed_url,Unknown,,,,added 2026-09 batch; scores unset
+OnlineFilings,https://www.onlinefilings.co.uk/careers/,auto,,direct_employer,United Kingdom,seed_url,Unknown,,,,added 2026-09 batch; scores unset
+Oxbotica,https://oxa.tech/careers/#joblist,auto,,direct_employer,United Kingdom,seed_url,Unknown,,,,added 2026-09 batch; scores unset
+Reckitt Benckiser,https://careers.rb.com/,auto,,direct_employer,United Kingdom,seed_url,Unknown,,,,added 2026-09 batch; scores unset
+Rolls-Royce,https://careers.rolls-royce.com/,auto,,direct_employer,United Kingdom,job_location,Unknown,,,,added 2026-09 batch; scores unset
+Shell,https://www.shell.com/careers.html,auto,,direct_employer,United Kingdom,seed_url,Unknown,,,,added 2026-09 batch; scores unset
+Sky,https://careers.sky.com/,auto,,direct_employer,United Kingdom,seed_url,Unknown,,,,added 2026-09 batch; scores unset
+Tesco,https://www.tesco-careers.com/,auto,,direct_employer,United Kingdom,seed_url,Unknown,,,,added 2026-09 batch; scores unset
+Unilever,https://www.unilever.co.uk/careers/,auto,,direct_employer,United Kingdom,job_location,Unknown,,,,added 2026-09 batch; scores unset
+Vodafone,https://careers.vodafone.com/,auto,,direct_employer,United Kingdom,seed_url,Unknown,,,,added 2026-09 batch; scores unset
+womenintech,https://jobs.womenintech.co.uk/,auto,,recruiter,United Kingdom,seed_url,Unknown,,,,added 2026-09 batch; scores unset
+# ----- EUROPE / regional (1) -----,,,,,,,,,,,
+Ikea Italia,https://jobs.ikea.com/en/search-jobs?k=&l=&orgIds=22908,auto,,direct_employer,Europe,job_location,Retail/Furniture,25,70,60,
+# ===== GLOBAL (148) - no single target country; split by HQ country =====,,,,,,,,,,,
+# --- GLOBAL / AUSTRALIA (1) ---,,,,,,,,,,,
+Visa Sponsor Jobs,https://visasponsor.jobs/jobs,auto,,recruiter,Global,global,Job Aggregator/Visa,95,95,40,aggregator: visa-sponsorship listings
+# --- GLOBAL / AUSTRIA (1) ---,,,,,,,,,,,
+Jaabz,https://jaabz.com/jobs?search_submitted=1,auto,,recruiter,Global,global,Job Aggregator/Visa,70,85,40,"verified: tech jobs with visa sponsorship/relocation - aggregator, not an agency"
+# --- GLOBAL / CANADA (2) ---,,,,,,,,,,,
+Lightspeed,https://www.lightspeedhq.com/careers/openings/,ashby,Lightspeed,direct_employer,Global,global,SaaS,80,85,65,
+VanHack,https://app.vanhack.com/jobs,auto,,recruiter,Global,global,Job Aggregator/Relocation,95,95,35,aggregator; may require login for full list
+# --- GLOBAL / CHINA (1) ---,,,,,,,,,,,
+Tencent,https://careers.tencent.com/en-us/search.html,auto,,direct_employer,Global,global,Gaming/Tech,40,80,35,China HQ - outside EU scope
+# --- GLOBAL / CYPRUS (4) ---,,,,,,,,,,,
+Exness,https://www.exness-careers.com/jobs/,auto,,direct_employer,Global,global,Fintech,75,85,65,
+FxPro,https://www.fxpro.com/careers,auto,,direct_employer,Global,global,Fintech/Trading,60,90,35,403 to plain HTTP clients; Playwright required
+MetaQuotes,https://www.metaquotes.net/en/company/vacancies,auto,,direct_employer,Global,global,Fintech,75,85,60,
+Scorewarrior,https://scorewarrior.com/careers,ashby,scorewarrior,direct_employer,Global,global,Gaming,75,85,70,
+# --- GLOBAL / ESTONIA (4) ---,,,,,,,,,,,
+Bolt,https://bolt.eu/en/careers/positions/,auto,,direct_employer,Global,global,Mobility,75,85,60,
+Pipedrive,https://www.pipedrive.com/en/jobs/open-positions,auto,,direct_employer,Global,global,SaaS,80,90,70,
+RelocateMe,https://relocate.me/international-jobs,auto,,recruiter,Global,global,Job Aggregator/Relocation,95,95,30,aggregator: relocation-only roles
+Veriff,https://www.veriff.com/careers/open-positions,auto,,direct_employer,Global,global,SaaS,75,90,65,
+# --- GLOBAL / FRANCE (3) ---,,,,,,,,,,,
+Doctolib,https://careers.doctolib.com/jobs/,auto,,direct_employer,Global,global,HealthTech,80,85,55,
+Spendesk,https://spendesk.jobs.personio.com,personio,spendesk,direct_employer,Global,global,Fintech,75,85,65,
+Ubisoft,https://www.ubisoft.com/en-us/company/careers/search?query=,auto,,direct_employer,Global,global,Gaming,65,85,40,
+# --- GLOBAL / GERMANY (27) ---,,,,,,,,,,,
+About You,https://corporate.aboutyou.de/en/career/jobs,auto,,direct_employer,Global,global,Fashion,75,85,55,
+adjoe,https://adjoe.io/careers/open-positions/,auto,,direct_employer,Global,global,AdTech,75,85,60,
+Babbel,https://jobs.babbel.com/en?size=n_100_n,ashby,Babbel,direct_employer,Global,global,EdTech,80,85,60,seed v2 2026-09-13: kept user URL edit
+BASF,https://basf.jobs/home,auto,,direct_employer,Global,global,Chemicals,60,75,40,
+Buena,https://buena.com/careers,ashby,Buena,direct_employer,Global,global,PropTech,70,80,55,
+Caeli Wind,https://www.caeli-wind.de/karriere#stellenangebote,auto,,direct_employer,Global,global,CleanTech,70,75,50,
+Celonis,https://careers.celonis.com/join-us/open-positions,auto,,direct_employer,Global,global,Enterprise,80,85,60,
+Choco,https://choco.com/us/careers/open-roles,ashby,Choco,direct_employer,Global,global,Food Tech,80,85,60,
+Distribusion,https://careers.distribusion.com/,auto,,direct_employer,Global,global,Travel Tech,75,90,65,
+Flix,https://flix.careers/jobs/,auto,,direct_employer,Global,global,Mobility,80,85,60,
+Forto,https://careers.forto.com/forto-jobs/,ashby,Forto,direct_employer,Global,global,Logistics,75,80,55,
+Freeletics,https://www.freeletics.com/en/corporate/,auto,,direct_employer,Global,global,Health Tech,80,85,60,
+HelloFresh,https://careers.hellofresh.com/global/en/search-results,greenhouse,hellofresh,direct_employer,Global,global,Food Tech,80,85,45,
+Highsnobiety,https://company.highsnobiety.com/jobs,auto,,direct_employer,Global,global,Fashion Media,70,85,60,
+Kaufland e-com,https://kaufland-ecommerce.com/karriere/jobs/,auto,,direct_employer,Global,global,E-Commerce,75,80,45,
+KONUX,https://konux.com/vacancies/,greenhouse,KONUX,direct_employer,Global,global,Industrial IoT,75,85,45,
+limehome,https://career.limehome.de/careerslimehome-tz49z,auto,,direct_employer,Global,global,Hospitality,70,80,45,
+N26,https://n26.com/en-eu/careers,auto,,direct_employer,Global,global,Fintech,85,90,60,
+NavVis,https://www.navvis.com/company/careers#positions,auto,,direct_employer,Global,global,3D Mapping,75,85,45,
+Personio,https://www.personio.com/about-personio/careers/,auto,,direct_employer,Global,global,HR Tech,80,90,65,
+Pitch,https://pitch.com/jobs#positions,workable,pitch-software,direct_employer,Global,global,SaaS,80,90,85,
+Puma,https://about.puma.com/en/careers/job-openings?area=all&team=893,auto,,direct_employer,Global,global,Apparel/Retail,45,80,40,deep-link fragment stripped to the stable job-openings page
+reisetopia,https://reisetopia.de/jobs/,auto,,direct_employer,Global,global,Travel,70,85,75,
+Robert Walters Germany,https://www.robertwalters.de/en/jobs.html,auto,,recruiter,Global,seed_url,Recruitment,70,80,35,
+SAP,https://jobs.sap.com/search/,auto,,direct_employer,Global,global,Enterprise,80,80,55,
+Siemens,https://jobs.siemens.com/en_US/externaljobs/SearchJobs,auto,,direct_employer,Global,global,Engineering,80,75,50,
+Trivago,https://careers.trivago.com/jobs/?job_families=0&experience_levels=0,auto,,direct_employer,Global,global,Travel/Data,80,95,60,
+# --- GLOBAL / IRELAND (2) ---,,,,,,,,,,,
+Morgan McKinley,https://www.morganmckinley.com/ie/jobseekers,auto,,recruiter,Global,global,Recruitment,70,80,35,
+Sigmar Recruitment,https://www.sigmarrecruitment.com/job-search/,auto,,recruiter,Global,global,Recruitment,70,80,35,
+# --- GLOBAL / ITALY (18) ---,,,,,,,,,,,
+Angelini Pharma,https://careers.angelinipharma.com/search/?createNewAlert=false&q=&optionsFacetsDD_customfield2=,auto,,direct_employer,Global,global,Pharma/Healthcare,30,70,50,
+Barilla Group,https://jobs.barillagroup.com/search,auto,,direct_employer,Global,global,Food/Manufacturing,35,75,55,
+Bulgari Hotels & Resorts,https://bulgari.recruitmentplatform.com/FO/PCAFK026203F3VBQB798N7V11/index.html?languageSelect=EN,auto,,direct_employer,Global,global,Hospitality,20,80,10,
+Conad,https://chisiamo.conad.it/lavora-con-noi/posizioni-aperte,auto,,direct_employer,Global,global,Retail/Supermarket,20,60,65,
+Eni,https://www.eni.com/en-IT/careers.html,auto,,direct_employer,Global,global,Energy,35,70,60,
+Esselunga,https://esselungajob.it/go/Risultati_Ricerca/4414201/,auto,,direct_employer,Global,global,Retail/Supermarket,20,60,65,
+Eurospin,https://www.eurospin.it/posizioni-aperte-in-sede/,auto,,direct_employer,Global,global,Retail/Supermarket,15,55,60,
+Ferrero,https://www.ferrerocareers.com/int/en/jobs,auto,,direct_employer,Global,global,Food/Manufacturing,30,70,50,
+FS Italiane / Trenitalia,https://fscareers.gruppofs.it/jobs.php,auto,,direct_employer,Global,global,Transport/Logistics,25,60,55,
+Generali,https://gogenerali.com/home/jobs,auto,,direct_employer,Global,global,Insurance,25,70,60,
+Intesa Sanpaolo,https://jobs.intesasanpaolo.com/search/?createNewAlert=false&q=&locationsearch=&optionsFacetsDD_facility=&optionsFacetsDD_country=&optionsFacetsDD_department=&optionsFacetsDD_customfield1=,auto,,direct_employer,Global,global,Banking/Finance,25,65,60,
+Lavazza,https://jobs.lavazza.com/search/?createNewAlert=false&q=&locationsearch=&optionsFacetsDD_country=&optionsFacetsDD_department=&optionsFacetsDD_title=,auto,,direct_employer,Global,global,Food/Manufacturing,30,70,55,
+Lidl Italia,https://lavoro.lidl.it/annunci-di-lavoro,auto,,direct_employer,Global,global,Retail/Supermarket,20,60,65,
+Luxottica,https://careers.essilorluxottica.com/search/?createNewAlert=false&q=&optionsFacetsDD_country=&optionsFacetsDD_customfield1=&optionsFacetsDD_customfield2=&optionsFacetsDD_customfield3=&optionsFacetsDD_customfield4=,auto,,direct_employer,Global,global,Fashion/Retail,40,75,55,
+Poste Italiane,https://carriere.posteitaliane.it/en/sites/CX_3001/jobs?mode=location,oracle,,direct_employer,Global,global,Logistics/Services,25,60,70,
+Prada Group,https://jobs.pradagroup.com/search/?createNewAlert=false,auto,,direct_employer,Global,global,Fashion/Luxury,35,80,50,
+TIM,https://timretailrecruiting.gruppotim.it/,auto,,direct_employer,Global,global,Telecom,30,70,65,
+UniCredit,https://careers.unicredit.eu/,auto,,direct_employer,Global,global,Banking/Finance,30,70,60,
+# --- GLOBAL / MALAYSIA (1) ---,,,,,,,,,,,
+Skill Quotient Group,https://skillquotientgroup.com/career/,auto,,recruiter,Global,global,IT Services/Consulting,65,85,40,"verified: AI, data eng, cloud, cybersecurity, e-invoicing"
+# --- GLOBAL / NETHERLANDS (17) ---,,,,,,,,,,,
+ABN AMRO,https://www.werkenbijabnamro.nl/en/vacancies,auto,,direct_employer,Global,global,Banking,75,75,45,
+ASML,https://www.asml.com/en/careers/find-your-job,auto,,direct_employer,Global,global,Engineering,85,85,60,
+Block-Tech,https://www.block-tech.io/open-roles,auto,,direct_employer,Global,global,Crypto/Algorithmic Trading,70,90,60,"verified: algorithmic trading of digital-asset derivatives - EMPLOYER, not a recruiter"
+Booking.com,https://jobs.booking.com/booking/jobs,auto,,direct_employer,Global,global,Travel,85,90,45,
+Bunq,https://careers.bunq.com/positions,auto,,direct_employer,Global,global,Fintech,80,85,60,
+Bynder,https://careers.bynder.com/openings/,ashby,Bynder,direct_employer,Global,global,SaaS,75,90,70,
+Catawiki,https://job-boards.greenhouse.io/catawiki,greenhouse,catawiki,direct_employer,Global,global,E-Commerce,75,85,60,
+Exact,https://www.exact.com/nl/werken-bij/vacatures,auto,,direct_employer,Global,global,ERP,75,80,40,
+ING,https://careers.ing.com/en/search-jobs,auto,,direct_employer,Global,global,Banking,80,80,50,
+KPN,https://jobs.kpn.com/en/vacancies,auto,,direct_employer,Global,global,Telecom,75,80,55,
+Miro,https://miro.com/careers/open-positions/,auto,,direct_employer,Global,global,SaaS,85,95,80,
+Mollie,https://jobs.mollie.com/locations/amsterdam,auto,,direct_employer,Global,global,Fintech,80,90,65,
+Optiver,https://www.optiver.com/join-us/jobs/,auto,,direct_employer,Global,global,Fintech/Trading,80,85,55,
+Picnic,https://jobs.picnic.app/en/jobs,auto,,direct_employer,Global,global,Food Tech,75,80,50,
+Stellantis,https://careers.stellantis.com/job-search-results/,auto,,direct_employer,Global,global,Automotive/Manufacturing,45,70,55,
+TomTom,https://www.tomtom.com/careers/joboverview/,auto,,direct_employer,Global,global,Tech/Data,80,95,65,
+Undutchables,https://undutchables.nl/vacancies,auto,,recruiter,Global,global,Recruitment,70,85,45,
+# --- GLOBAL / NORWAY (1) ---,,,,,,,,,,,
+IT Jobs Worldwide,https://www.itjobsworldwide.com/jobs,auto,,recruiter,Global,global,Recruitment/IT,85,90,40,
+# --- GLOBAL / POLAND (1) ---,,,,,,,,,,,
+DevsData,https://devsdata.com/careers/,auto,,recruiter,Global,global,Recruitment,70,80,35,
+# --- GLOBAL / PORTUGAL (1) ---,,,,,,,,,,,
+Rows,https://www.rowspace.ai/careers,ashby,Rowspace,direct_employer,Global,global,SaaS,75,90,80,
+# --- GLOBAL / SINGAPORE (2) ---,,,,,,,,,,,
+Anymind Group,https://anymindgroup.com/career/#positions,auto,,direct_employer,Global,global,AdTech,70,80,55,
+NCS,https://www.ncs.co/careers/,auto,,direct_employer,Global,global,IT Services,35,85,35,Singapore-based; 403 to plain HTTP clients
+# --- GLOBAL / SPAIN (4) ---,,,,,,,,,,,
+Appodeal,https://appodeal.com/career/,greenhouse,appodeal,direct_employer,Global,global,AdTech,70,80,55,
+eDreams ODIGEO,https://www.edreamsodigeocareers.com/jobs/,auto,,direct_employer,Global,global,Travel,70,90,55,
+Factorial,https://careers.factorialhr.com/,auto,,direct_employer,Global,global,HR Tech,75,85,65,
+Glovo,https://careers.glovoapp.com/jobs-at-glovo/,auto,,direct_employer,Global,global,Delivery,75,80,45,
+# --- GLOBAL / SWEDEN (8) ---,,,,,,,,,,,
+Detectify,https://careers.detectify.com/#jobs,auto,,direct_employer,Global,global,Cybersecurity,75,90,70,
+Klarna,https://jobs.deel.com/job-boards/klarna,auto,,direct_employer,Global,global,Fintech,85,90,65,
+Planhat,https://www.planhat.com/careers#open-roles,ashby,Planhat,direct_employer,Global,global,SaaS,70,90,70,
+Quinyx,https://careers.quinyx.com/jobs,auto,,direct_employer,Global,global,Workforce Tech,70,85,60,
+Spotify,https://www.lifeatspotify.com/jobs,auto,,direct_employer,Global,global,Media,90,95,75,
+Teamtailor,https://career.teamtailor.com/jobs,teamtailor,,direct_employer,Global,global,HR Tech,75,90,65,
+Vattenfall,https://careers.vattenfall.com/global/jobs,auto,,direct_employer,Global,global,Energy/Utilities,70,85,45,
+Voi Technology,https://careers.voi.com/jobs,auto,,direct_employer,Global,global,Mobility,75,85,50,
+# --- GLOBAL / SWITZERLAND (1) ---,,,,,,,,,,,
+Nestle,https://www.nestle.com/jobs/search-jobs,auto,,direct_employer,Global,global,Food/Manufacturing,40,80,45,403 to plain HTTP clients; Playwright required
+# --- GLOBAL / UNITED ARAB EMIRATES (2) ---,,,,,,,,,,,
+Talent Arabia,https://talent-arabia.com/job-listings,auto,,recruiter,Global,global,Recruitment,40,80,25,Middle East focus - outside EU scope
+XAD Technologies,https://www.careers-page.com/xad-technologies#openings,auto,,recruiter,Global,global,Telecom/Field Services,50,80,20,careers-page.com hosted board
+# --- GLOBAL / UNITED KINGDOM (20) ---,,,,,,,,,,,
+Belmond,https://careers.belmond.com/jobs?country=United+Kingdom,auto,,direct_employer,Global,global,Hospitality,20,85,10,
+Deliveroo,https://careers.deliveroo.co.uk/join-the-team/,auto,,direct_employer,Global,global,Food Tech,80,90,55,
+Empiric,https://empiric.com/jobs,auto,,recruiter,Global,global,Recruitment,70,85,35,
+Energize Recruitment,https://www.energizerecruitment.com/jobs,auto,,recruiter,Global,global,Recruitment/CleanTech,70,85,45,
+Hamilton Barnes,https://www.hamilton-barnes.com/candidates/job-search/,auto,,recruiter,Global,global,Recruitment/Networking,70,85,40,
+IC Resources,https://ic-resources.com/en/job-search/?jt=PERMANENT,auto,,recruiter,Global,global,Recruitment/Semiconductors,70,85,35,permanent-roles filter in URL
+King,https://careers.king.com/us/en/search-results,auto,,direct_employer,Global,global,Gaming,80,90,60,
+La Fosse,https://www.lafosse.com/jobs/,auto,,recruiter,Global,global,Recruitment,70,85,40,Batch M: seed pointed at homepage (0 jobs); jobs board verified live 2026-09-12
+Nigel Frank,https://www.nigelfrank.com/microsoft-jobs,auto,,recruiter,Global,global,Recruitment,70,85,35,
+Ocado Technology,https://careers.ocadogroup.com/jobs,auto,,direct_employer,Global,global,Retail Tech,80,85,60,
+Optimus Search,https://www.optimussearch.com/find-job?keywords=+data+analyst,auto,,recruiter,Global,global,Recruitment/Life Sciences,70,85,40,keyword filter 'data analyst' in URL
+Reperio Human Capital,https://www.reperiohumancapital.com/,auto,,recruiter,Global,global,Recruitment,70,80,35,
+Revolut,https://www.revolut.com/careers/,auto,,direct_employer,Global,global,Fintech,85,90,65,
+Rocco Forte Hotels,https://careers.roccofortehotels.com/jobs,auto,,direct_employer,Global,global,Hospitality,15,75,10,
+Skyscanner,https://www.skyscanner.co.in/jobs/current-jobs,greenhouse,skyscanner,direct_employer,Global,global,Travel,80,85,60,
+SumUp,https://www.sumup.com/careers/positions/,auto,,direct_employer,Global,global,Fintech,85,90,60,
+Tenth Revolution Group,https://www.tenthrevolution.com/jobs/?show_results=1&query=&location=&salary_from=&salary_to=&currency_code=,auto,,recruiter,Global,global,Recruitment,70,85,35,formerly Nigel Frank; existing 'Nigel Frank' row uses nigelfrank.com
+UMATR,https://www.umatr.io/jobs/,auto,,recruiter,Global,global,Recruitment/Software-Data-AI,70,85,40,verified: London+Dubai tech recruitment; UAE/GCC + US focus
+Understanding Recruitment,https://www.understandingrecruitment.com/job-search/,auto,,recruiter,Global,global,Recruitment,70,85,35,Batch M: seed pointed at homepage (0 jobs); jobs board verified live 2026-09-12
+Wise,https://wise.jobs/jobs,auto,,direct_employer,Global,global,Fintech,85,95,85,
+# --- GLOBAL / UNITED STATES (20) ---,,,,,,,,,,,
+American Express,https://careers.americanexpress.com/en/sites/CX_1/jobs?mode=location,oracle,,direct_employer,Global,global,Finance,70,80,55,
+Audible,https://www.audiblecareers.com/search-jobs,auto,,direct_employer,Global,global,Media,80,85,60,
+Databricks,https://www.databricks.com/company/careers/open-positions,auto,,direct_employer,Global,global,Data/AI,85,95,75,
+Dbt Labs,https://www.getdbt.com/about-us/careers#roles,auto,,direct_employer,Global,global,SasS,80,95,85,
+Dremio,https://www.dremio.com/careers/job-postings/,auto,,direct_employer,Global,global,Data/Analytics,75,95,85,
+Elastic Finance,"https://jobs.elastic.co/jobs/department/finance,-it-&-operations?size=n_20_n",auto,,direct_employer,Global,global,Search/Cloud,85,95,85,
+Elastic Marketing,https://jobs.elastic.co/jobs/department/marketing?size=n_20_n,auto,,direct_employer,Global,global,Search/Cloud,85,95,85,
+Elastic Sales,https://jobs.elastic.co/jobs/department/field-operations?size=n_20_n,auto,,direct_employer,Global,global,Search/Cloud,85,95,85,
+Epam,https://www.epam.com/careers/job-listings,auto,,direct_employer,Global,global,Unknown,,,,added 2026-09 batch; scores unset
+Etsy,https://careers.etsy.com/jobs/search?page=1&query=,auto,,direct_employer,Global,global,E-Commerce,70,95,70,
+Experis,https://www.experis.com/en/search,auto,,recruiter,Global,global,Recruitment/IT,70,85,40,
+GDIT,https://www.gdit.com/careers/search/,auto,,direct_employer,Global,global,Defense/IT,10,85,30,"US defense - clearance required, low sponsorship odds"
+HubSpot,https://www.hubspot.com/careers/jobs/all?page=1,auto,,direct_employer,Global,global,SaaS,85,95,75,
+Notion,https://www.notion.com/careers,ashby,notion,direct_employer,Global,global,Productivity,80,95,85,
+Organon,https://jobs.organon.com/us/en/search-results,auto,,direct_employer,Global,global,Pharma,75,80,50,
+Percona,https://www.percona.com/about/careers,auto,,direct_employer,Global,global,Open Source/Databases,75,95,95,remote-first
+Retool,https://retool.com/careers#open-positions,auto,,direct_employer,Global,global,Developer Tools,80,95,80,"Custom board, no public API (verified 2026-09-11)"
+Scopely,https://careers.scopely.com/us/en/search-results,auto,,direct_employer,Global,global,Gaming,70,90,60,
+Stripe,https://stripe.com/jobs/search,auto,,direct_employer,Global,global,Fintech,90,95,75,
+TechnologyAdvice,https://technologyadvice.com/careers/opportunities/,auto,,direct_employer,Global,global,B2B Media,50,95,80,403 to plain HTTP clients; Playwright required
+# --- GLOBAL / HQ UNVERIFIED (2) ---,,,,,,,,,,,
+hiphoptune,https://hiphoptune.org/category/jobs/,auto,,recruiter,Global,global,Unknown,,,,added 2026-09 batch; scores unset
+IEDI,https://iedi.com/careers#openpositions,auto,,direct_employer,Global,global,EDI/Integration Software,50,85,40,verified: 'The complete EDI solution for enterprises' (not consulting)
+# --- GLOBAL / REMOTE-FIRST (5) ---,,,,,,,,,,,
+Airbyte,https://airbyte.com/company/careers#open-roles,ashby,airbyte,direct_employer,Global,global,Data,80,95,80,
+Cal.com,https://cal.com/jobs,auto,,direct_employer,Global,global,SaaS,75,95,100,
+ClearVue,https://clearvue.business/careers/,auto,,direct_employer,Global,global,BI Software,70,80,55,
+Doist,https://www.todoist.com/careers#open-roles,auto,,direct_employer,Global,global,Productivity,70,95,100,Rebranded Doist -> Todoist; no public ATS API (verified 2026-09-11)
+Shopify,https://www.shopify.com/careers,auto,,direct_employer,Global,global,E-Commerce,85,95,95,

@@ -720,6 +720,82 @@ def test_seed_scope_does_not_overwrite_a_parsed_country():
         "the Michigan-code disambiguation should still be present"
 
 
+def test_verdict_tooltip_quotes_the_sentence_behind_the_cell():
+    """A Y/N/? must be auditable without opening the posting.
+
+    The Amazon case that prompted this: Sponsor "N" beside Reloc "Y" looked
+    like a bug, because the evidence was stored but nothing in the UI ever
+    displayed it.
+    """
+    from sponsorscout.ui.tabs.search import _verdict_tooltip
+    row = {"visa_sponsorship": "N", "relocation_support": "Y",
+           "eu_blue_card_verdict": "Unknown", "support_confidence": 0.9,
+           "support_evidence": "You must have the right to work in the "
+                               "country of employment.",
+           "blue_card_evidence": ""}
+    tip = _verdict_tooltip(row, 5)
+    assert "Sponsor" in tip and "right to work" in tip
+    assert "90%" in tip
+    assert "relocation_support" not in tip
+
+
+def test_verdict_tooltip_never_attributes_the_wrong_evidence():
+    """The Blue Card must not be credited with a visa/relocation sentence.
+
+    ``support_evidence`` is a shared column (best visa AND best relocation
+    sentence). Quoting it under "Blue Card" would claim a relocation sentence
+    decided the Blue Card verdict.
+    """
+    from sponsorscout.ui.tabs.search import _verdict_tooltip
+    row = {"visa_sponsorship": "N", "relocation_support": "Y",
+           "eu_blue_card_verdict": "Unknown", "support_confidence": 0.9,
+           "support_evidence": "Relocation support will be provided.",
+           "blue_card_evidence": ""}
+    tip = _verdict_tooltip(row, 6)
+    assert "Relocation support will be provided." not in tip
+    assert "not a \"no\"" in tip, "Unknown must be explained, not just shown"
+    # With its own evidence present, the Blue Card DOES quote it.
+    row["blue_card_evidence"] = "We offer a Blue Card."
+    assert "We offer a Blue Card." in _verdict_tooltip(row, 6)
+
+
+def test_verdict_tooltip_handles_a_row_with_no_evidence_at_all():
+    from sponsorscout.ui.tabs.search import _verdict_tooltip
+    bare = {"visa_sponsorship": "Unknown", "eu_blue_card_verdict": "Unknown",
+            "relocation_support": "Unknown", "support_evidence": "",
+            "blue_card_evidence": "", "support_confidence": 0}
+    for col in (5, 6, 7):
+        tip = _verdict_tooltip(bare, col)
+        assert "?" in tip and "not a \"no\"" in tip
+
+
+def test_search_jobs_exposes_the_evidence_columns(db_path):
+    """The tooltip is only possible if search_jobs actually selects them."""
+    conn = db.get_connection(db_path)
+    persistence.upsert_job(conn, {
+        "title": "Engineer", "company": "Acme",
+        "url": "https://jobs.example/ev", "visa_sponsorship": "N",
+        "support_evidence": "You must have the right to work.",
+        "support_confidence": 0.8, "blue_card_evidence": "Blue card offered."})
+    conn.close()
+    row = db.search_jobs(db_path)[0]
+    assert row["support_evidence"] == "You must have the right to work."
+    assert row["blue_card_evidence"] == "Blue card offered."
+    assert row["support_confidence"] == 0.8
+    assert row["relocation_required"] == ""
+
+
+def test_search_jobs_bounds_the_evidence_columns(db_path):
+    """substr() guards the same memory concern that excludes `description`."""
+    conn = db.get_connection(db_path)
+    persistence.upsert_job(conn, {
+        "title": "Engineer", "company": "Acme",
+        "url": "https://jobs.example/long",
+        "support_evidence": "x" * 5000})
+    conn.close()
+    assert len(db.search_jobs(db_path)[0]["support_evidence"]) == 800
+
+
 def test_row_to_job_and_company_record_have_separate_bodies():
     """Structural guard: the two mappers must not share a body.
 

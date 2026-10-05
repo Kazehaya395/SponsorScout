@@ -21,7 +21,15 @@ from PySide6.QtWidgets import (
 from sponsorscout.application import seed_manager as sm
 from sponsorscout.i18n import _
 
-COLUMNS = sm.BASE_COLUMNS + sm.EXTRA_COLUMNS
+# FIX UI-5: the grid was hard-coded to the v6 column list (base + extra, 15
+# names). The seeds have 12 columns and none of them is "ats_type", so the
+# tab rendered three permanently empty columns (ats_type, seed_name,
+# canonical_name) while the value people were looking for -- provider:
+# greenhouse / workday / bamboohr -- sat off the right edge. Worse, Save
+# wrote those 15 hard-coded names back, silently reordering the file and
+# injecting the three empties. The grid now follows the FILE's own header
+# and writes it back unchanged.
+FALLBACK_COLUMNS = sm.SEED_COLUMNS
 
 
 class SeedRowDialog(QDialog):
@@ -36,8 +44,11 @@ class SeedRowDialog(QDialog):
         self.name_edit = QLineEdit((row.get("name") or "").strip())
         self.ats_combo = QComboBox()
         self.ats_combo.addItems(sm.SUPPORTED_ATS_TYPES)
+        # FIX UI-5: this read and wrote the dead "ats_type" key, so a company
+        # added here reached the scanner with an EMPTY provider and had to be
+        # sniffed over the network -- when the dialog already knew the answer.
         self.ats_combo.setCurrentText(
-            (row.get("ats_type") or "official_careers").strip())
+            (row.get("provider") or "official_careers").strip())
         self.url_edit = QLineEdit((row.get("careers_url") or "").strip())
         self.url_edit.setPlaceholderText("https://…")
         # Best-effort ATS detection while the user types a URL.
@@ -45,7 +56,7 @@ class SeedRowDialog(QDialog):
         self.industry_edit = QLineEdit((row.get("industry") or "").strip())
         self.score_edits = {}
         form.addRow(_("Company name"), self.name_edit)
-        form.addRow(_("ATS / source type"), self.ats_combo)
+        form.addRow(_("Provider"), self.ats_combo)
         form.addRow(_("Careers URL"), self.url_edit)
         form.addRow(_("Industry"), self.industry_edit)
         for col in ("sponsorship_history", "english_friendly", "remote_score"):
@@ -58,8 +69,11 @@ class SeedRowDialog(QDialog):
         adv_form = QFormLayout(advanced)
         self.adv_edits = {}
         self.adv_combos = {}
-        for col in ("seed_name", "canonical_name", "target_country",
-                    "provider", "board_slug", "notes"):
+        # provider has its own combo above; seed_name / canonical_name are
+        # optional overrides both scanners honour -- offered here, never
+        # forced into a file that does not use them.
+        for col in (*sm.OPTIONAL_COLUMNS, "target_country",
+                    "board_slug", "notes"):
             edit = QLineEdit(str(row.get(col) or "").strip())
             self.adv_edits[col] = edit
             adv_form.addRow(_(col.replace("_", " ").title()), edit)
@@ -85,14 +99,14 @@ class SeedRowDialog(QDialog):
         """Pre-fill the ATS type from the URL when the user hasn't chosen."""
         url = text.strip()
         if url.startswith(("http://", "https://")):
-            detected = sm.auto_detect_ats_type(url)
+            detected = sm.auto_detect_provider(url)
             if detected:
                 self.ats_combo.setCurrentText(detected)
 
     def row(self) -> dict:
         data = {
             "name": self.name_edit.text().strip(),
-            "ats_type": self.ats_combo.currentText().strip(),
+            "provider": self.ats_combo.currentText().strip(),
             "careers_url": self.url_edit.text().strip(),
             "industry": self.industry_edit.text().strip(),
         }
@@ -129,8 +143,9 @@ class SeedEditor(QWidget):
         info.addWidget(self.count_label)
         lay.addLayout(info)
 
-        self.table = QTableWidget(0, len(COLUMNS))
-        self.table.setHorizontalHeaderLabels(COLUMNS)
+        self.columns = list(FALLBACK_COLUMNS)
+        self.table = QTableWidget(0, len(self.columns))
+        self.table.setHorizontalHeaderLabels(self.columns)
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SingleSelection)
@@ -189,25 +204,58 @@ class SeedEditor(QWidget):
     def load(self):
         data = sm.read_seed_rows(self.path)
         self.rows = data["rows"]
+        self.columns = list(data.get("columns") or FALLBACK_COLUMNS)
+        self.table.setColumnCount(len(self.columns))
+        self.table.setHorizontalHeaderLabels(self.columns)
         self.file_label.setText(str(self.path))
+        # An old personal seed still carrying the removed v6 column is
+        # migrated on read; say so rather than let it look like data loss.
+        migrated = data.get("migrated") or []
+        if migrated:
+            QMessageBox.information(
+                self, _("Seed file updated"),
+                _("This file uses a removed column ({}). It has been read "
+                  "correctly and will be written in the current format the "
+                  "next time you save.").format(", ".join(migrated)))
         self._populate()
 
     def _populate(self):
         self.table.setRowCount(len(self.rows))
-        bold_cols = {"name", "ats_type", "careers_url"}
+        bold_cols = {"name", "provider", "careers_url"}
+        companies = 0
         for r, row in enumerate(self.rows):
-            for c, col in enumerate(COLUMNS):
+            # FIX UI-5: "# ----- AUSTRIA (23) -----" is a group banner, not a
+            # company. It was rendered as an ordinary row and counted as one,
+            # which is why this tab claimed 373 companies on a seed holding
+            # 328. It now spans the width as a non-selectable header.
+            if sm.is_comment_row(row):
+                label = (row.get("name") or "").lstrip("# ").strip().strip("-").strip()
+                item = QTableWidgetItem(label or "\u2014")
+                font = item.font()
+                font.setBold(True)
+                item.setFont(font)
+                item.setFlags(Qt.NoItemFlags)
+                self.table.setItem(r, 0, item)
+                self.table.setSpan(r, 0, 1, max(len(self.columns), 1))
+                continue
+            self.table.setSpan(r, 0, 1, 1)
+            companies += 1
+            for c, col in enumerate(self.columns):
                 item = QTableWidgetItem(str(row.get(col, "") or ""))
                 if col in bold_cols:
                     font = item.font()
                     font.setBold(True)
                     item.setFont(font)
                 self.table.setItem(r, c, item)
-        self.count_label.setText(_("{} companies").format(len(self.rows)))
+        self.count_label.setText(_("{} companies").format(companies))
 
     def _current_index(self):
         idx = self.table.currentRow()
-        return idx if 0 <= idx < len(self.rows) else None
+        if not (0 <= idx < len(self.rows)):
+            return None
+        # A banner is not editable or deletable; selecting one and pressing
+        # Delete used to drop a country header out of the seed.
+        return None if sm.is_comment_row(self.rows[idx]) else idx
 
     def _add_row(self):
         dlg = SeedRowDialog({}, _("Add source"), self)
@@ -283,7 +331,8 @@ class SeedEditor(QWidget):
                     self, _("Cannot save"),
                     _("Row {} has problems:").format(idx) + "\n" + "\n".join(errors))
                 return
-        n = sm.write_seed_rows(self.path, COLUMNS, self.rows)
+        n = sm.write_seed_rows(self.path, self.columns, self.rows)
+        n -= sum(1 for r in self.rows if sm.is_comment_row(r))
         QMessageBox.information(
             self, _("Saved"),
             _("{} companies written to\n{}").format(n, self.path))

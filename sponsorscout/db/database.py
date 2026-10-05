@@ -295,7 +295,19 @@ def search_jobs(db_path, title="", company="", location="", country="All", sourc
                    COALESCE(ai_score, 0) as ai_score,
                    COALESCE(visa_sponsorship, '') as visa_sponsorship,
                    COALESCE(relocation_support, '') as relocation_support,
-                   COALESCE(eu_blue_card_verdict, '') as eu_blue_card_verdict
+                   COALESCE(eu_blue_card_verdict, '') as eu_blue_card_verdict,
+                   -- Evidence for the three verdict cells. substr() keeps the
+                   -- same memory discipline as the `description` exclusion
+                   -- above: a verdict tooltip never needs more than the first
+                   -- sentences, and run_search() materialises every matching
+                   -- row, so an unbounded column would scale with the result
+                   -- set. "" is the honest "no evidence" and is what the
+                   -- tooltip renders as an explicit Unknown.
+                   substr(COALESCE(support_evidence, ''), 1, 800) as support_evidence,
+                   substr(COALESCE(blue_card_evidence, ''), 1, 400) as blue_card_evidence,
+                   COALESCE(support_confidence, 0) as support_confidence,
+                   COALESCE(support_evidence_type, '') as support_evidence_type,
+                   COALESCE(relocation_required, '') as relocation_required
                    FROM jobs WHERE 1=1"""
         params = []
 
@@ -477,13 +489,135 @@ def get_dashboard_stats(db_path, _conn=None):
             "applications": conn.execute("SELECT COUNT(*) FROM applications").fetchone()[0],
             "countries": conn.execute("SELECT COUNT(DISTINCT country) FROM jobs WHERE country <> ''").fetchone()[0],
             "recent_jobs": conn.execute("SELECT COUNT(*) FROM jobs WHERE first_seen_at >= datetime('now', '-7 days')").fetchone()[0],
-            "remote_jobs": conn.execute("SELECT COUNT(*) FROM jobs WHERE remote_type IN ('remote_eu','remote_emea','remote_global','remote') AND verified_active=1 AND is_expired=0").fetchone()[0],
+            # FIX UI-2 (P9): the Remote card read 589 on a dataset with 112
+            # genuinely remote jobs. Two causes, both here:
+            #   a) the IN-list is a closed vocabulary. Anything the ingest
+            #      writes that is not one of those four literals
+            #      ("remote_hybrid", "hybrid-remote", "Remote") was either
+            #      missed or, where the value starts with "remote", counted
+            #      as fully remote.
+            #   b) hybrid roles are not remote roles. They were folded into
+            #      the same number, so the card over-reported by the whole
+            #      hybrid population and the user could not see either
+            #      figure.
+            # Matching is now value-shape based (case-insensitive substring)
+            # and hybrid is counted SEPARATELY; the card shows "112 + 183
+            # hybrid". Anything with no work mode at all is reported too, so
+            # a low remote count is visibly a coverage problem rather than a
+            # claim that the jobs are on-site.
+            "remote_jobs": conn.execute(
+                "SELECT COUNT(*) FROM jobs "
+                "WHERE LOWER(COALESCE(remote_type,'')) LIKE '%remote%' "
+                "  AND LOWER(COALESCE(remote_type,'')) NOT LIKE '%hybrid%' "
+                "  AND verified_active=1 AND is_expired=0").fetchone()[0],
+            "hybrid_jobs": conn.execute(
+                "SELECT COUNT(*) FROM jobs "
+                "WHERE LOWER(COALESCE(remote_type,'')) LIKE '%hybrid%' "
+                "  AND verified_active=1 AND is_expired=0").fetchone()[0],
+            "work_mode_unknown": conn.execute(
+                "SELECT COUNT(*) FROM jobs "
+                "WHERE LOWER(COALESCE(remote_type,'')) IN ('','unknown','not specified') "
+                "  AND verified_active=1 AND is_expired=0").fetchone()[0],
             "eu_blue_card_jobs": conn.execute("SELECT COUNT(*) FROM jobs WHERE eu_blue_card=1 AND verified_active=1 AND is_expired=0").fetchone()[0],
         }
+        # FIX UI-3 (P9): a company that returned NOTHING was invisible on the
+        # dashboard -- 97 of 208 in run 20261003T233023, 58 minutes of scan
+        # time with no row to show for it. The scan log knows exactly who
+        # they were, so the dashboard can say so.
+        stats.update(_last_run_coverage(conn))
         return stats
     finally:
         if owned and conn:
             conn.close()
+
+
+
+
+def _latest_run_id(conn) -> str:
+    row = conn.execute(
+        "SELECT run_id FROM scan_log GROUP BY run_id "
+        "ORDER BY MAX(COALESCE(id,0)) DESC LIMIT 1").fetchone()
+    return (row[0] if row else "") or ""
+
+
+def _last_run_coverage(conn) -> dict:
+    """Per-company outcome counters for the most recent scan run."""
+    out = {"last_run_id": "", "scanned_companies": 0, "empty_companies": 0,
+           "error_companies": 0}
+    try:
+        run_id = _latest_run_id(conn)
+        if not run_id:
+            return out
+        # jobs_found = 0 is the question the user actually has ("who did I
+        # scan for nothing?"), so a company that errored counts too -- it is
+        # also reported separately, and the no-jobs table below lists both on
+        # exactly the same predicate.
+        row = conn.execute(
+            """SELECT COUNT(*),
+                      SUM(CASE WHEN COALESCE(jobs_found,0) = 0
+                               THEN 1 ELSE 0 END),
+                      SUM(CASE WHEN LOWER(COALESCE(status,'')) = 'error'
+                                AND COALESCE(jobs_found,0) = 0
+                               THEN 1 ELSE 0 END)
+                 FROM scan_log WHERE run_id = ?""", (run_id,)).fetchone()
+        out.update({"last_run_id": run_id,
+                    "scanned_companies": int(row[0] or 0),
+                    "empty_companies": int(row[1] or 0),
+                    "error_companies": int(row[2] or 0)})
+    except Exception:
+        logger.exception("last-run coverage query failed")
+    return out
+
+
+def get_dashboard_empty_companies(db_path, limit=50, _conn=None):
+    """Companies the most recent run returned no jobs for (P9).
+
+    Rows: (company, provider, status, why). ``why`` is the error if there was
+    one, otherwise the tail of the diagnostics -- which after Wave 1 names the
+    actual cause ("dead end: no job cards after 45s", "successfactors board,
+    no API adapter", "list budget exhausted").
+    """
+    conn = _conn
+    owned = conn is None
+    try:
+        if owned:
+            conn = get_connection(db_path)
+        run_id = _latest_run_id(conn)
+        if not run_id:
+            return []
+        return conn.execute(
+            """SELECT company,
+                      COALESCE(provider,''),
+                      COALESCE(status,''),
+                      CASE WHEN COALESCE(error,'') <> '' THEN error
+                           ELSE COALESCE(diagnostics,'') END
+                 FROM scan_log
+                WHERE run_id = ?
+                  AND COALESCE(jobs_found,0) = 0
+                ORDER BY COALESCE(duration_sec,0) DESC, company ASC
+                LIMIT ?""", (run_id, limit)).fetchall()
+    finally:
+        if owned and conn:
+            conn.close()
+
+
+def _recruiter_companies(conn) -> set:
+    """Seed names the scanners logged as recruiters/aggregators.
+
+    scan_log.source_type is written straight from the seed
+    ("direct_employer" / "recruiter"), so this is the authoritative list --
+    no name heuristics.
+    """
+    try:
+        rows = conn.execute(
+            "SELECT DISTINCT company FROM scan_log "
+            "WHERE LOWER(COALESCE(source_type,'')) IN "
+            "      ('recruiter','aggregator','agency')").fetchall()
+        return {(r[0] or "").strip().casefold() for r in rows if (r[0] or "").strip()}
+    except Exception:
+        logger.exception("recruiter lookup failed")
+        return set()
+
 
 
 def get_dashboard_top_companies(db_path, limit=8, _conn=None):
@@ -492,6 +626,15 @@ def get_dashboard_top_companies(db_path, limit=8, _conn=None):
     try:
         if owned:
             conn = get_connection(db_path)
+        # FIX UI-4 (P9): "Top Companies by Sponsorship" ranked aggregators as
+        # if they were employers. Magnet.me, Work in Estonia, StudentJob and
+        # friends post other companies' jobs, so they trivially win on volume
+        # and on MAX(sponsorship_score) -- in run 20261003T233023 the
+        # recruiter bucket was 6,522 of 9,280 rows. A list of job boards is
+        # not an answer to "who sponsors visas". The seed already declares
+        # which is which and the scanners log it, so recruiters are excluded
+        # here. They remain fully searchable in the Search tab.
+        skip = _recruiter_companies(conn)
         rows = conn.execute("""
             SELECT company,
                    (SELECT country FROM jobs j2
@@ -510,8 +653,10 @@ def get_dashboard_top_companies(db_path, limit=8, _conn=None):
             GROUP BY j1.company
             ORDER BY max_sponsor DESC, max_match DESC, job_count DESC
             LIMIT ?
-        """, (limit,)).fetchall()
-        return rows
+        """, (max(int(limit or 8) * 4, 40),)).fetchall()
+        kept = [r for r in rows
+                if (r[0] or "").strip().casefold() not in skip][:limit]
+        return kept
     finally:
         if owned and conn:
             conn.close()

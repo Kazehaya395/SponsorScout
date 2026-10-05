@@ -7,15 +7,16 @@ per-user data directory (``~/.sponsorscout/seeds``) and ALL edits (in-app Data
 Management tab, or manual CSV editing by the end-user) happen on those mutable
 copies.  This keeps a packaged build read-only and lets users add companies.
 
-Both scanners read the v6-style simple schema:
-    name, ats_type, careers_url, industry, sponsorship_history,
-    english_friendly, remote_score
-and both additionally understand the v7 optional columns
-    seed_name, canonical_name, source_type, target_country, scope_policy,
-    provider, board_slug, notes
-which are preserved when present.  Under v7 a row may omit ``ats_type`` and
-carry ``provider`` instead (``auto`` = resolve from the URL); the ATS scanner
-applies the same resolution before dispatching to its adapters.
+Both scanners read the v7 schema:
+    name, careers_url, provider, board_slug, source_type, target_country,
+    scope_policy, industry, sponsorship_history, english_friendly,
+    remote_score, notes
+plus the two optional columns ``seed_name`` / ``canonical_name``, preserved
+when present.  ``provider=auto`` means "resolve it from the careers URL".
+
+The v6 column ``ats_type`` has been REMOVED.  It is folded into ``provider``
+when an old personal seed is read, reported through ``read_seed_rows()["migrated"]``
+so the UI can say so, and never written back.
 """
 from __future__ import annotations
 
@@ -26,19 +27,40 @@ from typing import List, Tuple
 
 from sponsorscout.paths import SEEDS_DIR, ensure_user_data_dir
 
-BASE_COLUMNS = [
-    "name", "ats_type", "careers_url", "industry",
-    "sponsorship_history", "english_friendly", "remote_score",
+# The schema the shipped seeds actually use, in file order. ``ats_type`` is
+# GONE: it was the v6 name for what is now ``provider``, no seed has carried
+# it since the v7 flip, and leaving it in this list meant the Data Management
+# grid rendered a permanently empty "ats_type" column on all 373 career rows
+# and all 65 ATS rows -- while the real value (greenhouse / workday /
+# bamboohr …) sat in ``provider``, off the right edge of the window.
+SEED_COLUMNS = [
+    "name", "careers_url", "provider", "board_slug", "source_type",
+    "target_country", "scope_policy", "industry", "sponsorship_history",
+    "english_friendly", "remote_score", "notes",
 ]
 
-EXTRA_COLUMNS = [
-    "seed_name", "canonical_name", "source_type", "target_country",
-    "scope_policy", "provider", "board_slug", "notes",
-]
+# Honoured by both scanners when present, absent from the shipped seeds:
+# a display name that differs from the scan label, and a canonical company
+# name (career_scanner L3463-3464). Offered in the editor dialog, never
+# forced into a file that does not use them.
+OPTIONAL_COLUMNS = ["seed_name", "canonical_name"]
 
+# Removed columns, still tolerated on read so an old personal seed under
+# %APPDATA% is migrated rather than silently mis-read. Never written back.
+LEGACY_COLUMNS = {"ats_type": "provider"}
+
+# Every value here must have a real adapter behind it in at least one
+# scanner, and every adapter must appear here -- checked 2026-10-03 against
+# career_scanner._fetch_provider_jobs and ats_scanner.scan_target.
+# Previously missing: oracle, digitalrecruiters, pam, teamtailor (all four
+# dispatched by the career scanner) and bamboohr (adapter added 2026-10-03).
+# That gap made the Data tab mark 6 perfectly good seed rows invalid --
+# American Express, Decathlon Italia Retail, Pam Panorama x2, Poste Italiane
+# and Teamtailor.
 SUPPORTED_ATS_TYPES = (
     "official_careers", "auto", "ashby", "greenhouse", "lever",
     "smartrecruiters", "personio", "recruitee", "workable", "workday",
+    "bamboohr", "oracle", "teamtailor", "pam", "digitalrecruiters",
 )
 
 SCOPE_POLICIES = ("global", "seed_url", "job_location")
@@ -124,8 +146,13 @@ def merge_bundled_seeds(log_fn=print) -> dict:
         seeds[label] = (bundled_data, user_data, user)
     for label, (bundled_data, user_data, user) in seeds.items():
         existing = {_row_key(r) for r in user_data["rows"]}
+        # Comment / group-header lines are not companies: without this a
+        # bundled "# ----- NETHERLANDS (16) -----" header counted as a new
+        # company and was appended to the user's seed (and reported in the
+        # "added N new career companies" line).
         new_rows = [
-            r for r in bundled_data["rows"] if _row_key(r) not in existing
+            r for r in bundled_data["rows"]
+            if not is_comment_row(r) and _row_key(r) not in existing
         ]
         if not new_rows:
             continue
@@ -161,22 +188,47 @@ def merge_bundled_seeds(log_fn=print) -> dict:
 # still protected, because the user edits ``target_country``, which is exactly
 # what the match tests.
 _SEED_REPAIRS = {
+    # FIX P0-58: this table used to walk A2G Technologies
+    # Netherlands -> India -> Global on EVERY startup, and both transitions
+    # fired in the same pass, so the seed value could not be set at all:
+    #
+    #     Seed repair: A2G Technologies (career) retargeted Netherlands -> India
+    #     Seed repair: A2G Technologies (career) retargeted India -> Global
+    #
+    # The scan log showed both lines back to back, then the scanner's own
+    # P0-44 advisory two lines later correctly reporting the consequence:
+    # "A2G Technologies  scope_policy=job_location is never applied".
+    # target_country=Global short-circuits _scope_allows() before it reads
+    # the policy, so the country scope was dead, all 12 rows were accepted
+    # instead of the 2 Dutch ones, and the Dashboard filed the company under
+    # India.
+    #
+    # The old step (2) reasoned that "Global" is the only scope describing a
+    # board that posts in both NL and IN. That is true of the BOARD and wrong
+    # for this product: the seed's target_country is what the scope filter
+    # uses to decide which postings to keep, and the standing requirement is
+    # that results are filtered to the office country. Global does not
+    # express "keep the Dutch postings", it expresses "keep everything".
+    #
+    # The transitions now walk BOTH stale values FORWARD to the intended one
+    # instead of away from it, so copies already corrupted in
+    # %APPDATA%\SponsorScout\seeds\ are repaired on the next launch rather
+    # than needing a manual delete. scope_policy is set alongside, because a
+    # country scope with the wrong policy is just as dead as no country.
+    # A row the user has deliberately pointed somewhere else matches neither
+    # transition and is left alone, which is the protection this table has
+    # always relied on.
     ("career", "A2G Technologies", "https://a2gtechnologies.com/jobs"): [
-        # (1) Historical: this row shipped scoped to the Netherlands.
-        ({"target_country": "Netherlands"},
-         {"target_country": "India",
-          "notes": "verified 2026-09-28: India/Pune recruiter "
-                   "(was wrongly scoped Netherlands)"}),
-        # (2) Current: the live detail pages show this employer posts in BOTH
-        # regions -- Sr. Scrum Master (Netherlands/Eindhoven), Security Project
-        # Manager (Netherlands/Best) and Testing Engineer (India/Pune). Any
-        # single-country scope therefore quarantines half the board, and the
-        # survivors all inherit the HQ guess. "Global" is the only scope that
-        # describes the actual board.
         ({"target_country": "India"},
-         {"target_country": "Global",
-          "notes": "verified 2026-10-02: posts in NL (Eindhoven/Best) and "
-                   "IN (Pune) - Global so both sides are kept"}),
+         {"target_country": "Netherlands",
+          "scope_policy": "job_location",
+          "notes": "verified 2026-10-03: recruiting office Eindhoven NL; "
+                   "scope to the office country, not the whole board"}),
+        ({"target_country": "Global"},
+         {"target_country": "Netherlands",
+          "scope_policy": "job_location",
+          "notes": "verified 2026-10-03: recruiting office Eindhoven NL; "
+                   "Global made scope_policy dead (see scanner P0-44)"}),
     ],
 }
 
@@ -197,9 +249,16 @@ def _apply_repairs_to_rows(label: str, rows: list, log_fn=print) -> int:
                     row.update(new)
                     n += 1
                     try:
+                        # FIX P0-58: report scope_policy too. The old line
+                        # showed only the country, so a repair that also
+                        # rewrote the policy looked like it had done less
+                        # than it had.
+                        _extra = ""
+                        if new.get("scope_policy"):
+                            _extra = f", scope_policy={new['scope_policy']}"
                         log_fn(f"Seed repair: {name} ({label}) retargeted "
                                f"{old.get('target_country')} -> "
-                               f"{new.get('target_country')}")
+                               f"{new.get('target_country')}{_extra}")
                     except Exception:
                         pass
     return n
@@ -209,21 +268,62 @@ def read_seed_rows(path: Path) -> dict:
     """Read a seed CSV into ``{"columns": [...], "rows": [dict, ...]}``.
 
     Row dicts contain only the columns actually present in the file (plus
-    empty-string padding for missing BASE_COLUMNS).  No validation is
+    empty-string padding for missing SEED_COLUMNS).  No validation is
     performed here - callers use :func:`validate_row`.
+
+    A legacy ``ats_type`` column is folded into ``provider`` on the way in
+    and reported through ``migrated`` so the UI can say so out loud.
     """
     if not path.exists():
-        return {"columns": list(BASE_COLUMNS), "rows": []}
+        return {"columns": list(SEED_COLUMNS), "rows": [], "migrated": []}
+    # Comment lines are kept VERBATIM (including the trailing comma padding
+    # the CSV writer gave them) so that read -> write reproduces the file
+    # byte for byte. The seed is a file the user keeps format-stable.
+    raw_comments = [
+        ln.rstrip("\r\n")
+        for ln in path.open(encoding="utf-8-sig", newline="").read().splitlines()
+        if ln.lstrip().startswith("#")
+    ]
     with path.open(encoding="utf-8-sig", newline="") as fh:
         reader = csv.DictReader(fh)
         headers = [(h or "").strip() for h in (reader.fieldnames or [])]
-        rows = []
+        rows, migrated = [], []
         for raw in reader:
             row = {h: (raw.get(h) or "").strip() for h in headers}
-            for col in BASE_COLUMNS:
+            for old, new in LEGACY_COLUMNS.items():
+                if row.get(old) and not row.get(new):
+                    row[new] = row.pop(old)
+                    migrated.append(f"{old} -> {new}")
+                else:
+                    row.pop(old, None)
+            for col in SEED_COLUMNS:
                 row.setdefault(col, "")
+            if is_comment_row(row) and raw_comments:
+                row["__raw__"] = raw_comments.pop(0)
             rows.append(row)
-        return {"columns": headers, "rows": rows}
+        headers = [h for h in headers if h not in LEGACY_COLUMNS]
+        for old, new in LEGACY_COLUMNS.items():
+            if new not in headers and any(r.get(new) for r in rows):
+                headers.append(new)
+        return {"columns": headers, "rows": rows,
+                "migrated": sorted(set(migrated))}
+
+
+def is_comment_row(row) -> bool:
+    """True for a seed comment / group-header line such as
+
+        # ----- NETHERLANDS (16) -----
+
+    Both scanners skip these (career_scanner.py L3230, ats_scanner.py L1467);
+    this module did not, so on the HQ-grouped seed every one of the 21 headers
+    was reported as a company missing a provider and a URL -- 42 phantom
+    errors, and validate_file() called the user's own seed invalid.
+
+    The rows are still RETURNED by read_seed_rows so that a UI round-trip
+    cannot silently delete the grouping; they are only skipped where a row is
+    treated as a company.
+    """
+    return (row.get("name") or "").strip().startswith("#")
 
 
 def validate_row(row: dict) -> List[str]:
@@ -233,10 +333,13 @@ def validate_row(row: dict) -> List[str]:
     bad row before the scanners do.
     """
     errors: List[str] = []
+    if is_comment_row(row):
+        return errors          # a comment line is not a company
     name = (row.get("name") or "").strip()
-    # v7 rows may carry ``provider`` instead of ``ats_type`` ("auto" = the
-    # scanner resolves the provider from the careers URL).
-    ats_type = (row.get("ats_type") or row.get("provider") or "").strip().lower()
+    # ``provider`` is the field. "auto" = let the scanner resolve it from the
+    # careers URL. A legacy ``ats_type`` has already been folded in by
+    # read_seed_rows; accepting it here too keeps a hand-edited file working.
+    ats_type = (row.get("provider") or row.get("ats_type") or "").strip().lower()
     url = (row.get("careers_url") or "").strip()
     scope = (row.get("scope_policy") or "").strip().lower()
     source_type = (row.get("source_type") or "").strip().lower()
@@ -244,9 +347,9 @@ def validate_row(row: dict) -> List[str]:
     if not name:
         errors.append("name is required")
     if not ats_type:
-        errors.append("ats_type (or provider) is required")
+        errors.append("provider is required (use \"auto\" to detect it)")
     elif ats_type not in SUPPORTED_ATS_TYPES:
-        errors.append(f"ats_type must be one of: {', '.join(SUPPORTED_ATS_TYPES)}")
+        errors.append(f"provider must be one of: {', '.join(SUPPORTED_ATS_TYPES)}")
     if not url:
         errors.append("careers_url is required")
     elif url and not url.startswith(("http://", "https://")):
@@ -287,10 +390,11 @@ def validate_file(path: Path) -> Tuple[bool, List[str]]:
 
 def write_seed_rows(path: Path, columns: List[str], rows: List[dict]) -> int:
     """Write seed CSV.  Returns number of rows written."""
-    cols = list(columns) if columns else list(BASE_COLUMNS)
-    # Ensure all required columns exist in the header even if the input file
-    # lacked them (scanners expect name/ats_type/careers_url).
-    for col in BASE_COLUMNS:
+    cols = [c for c in (columns or SEED_COLUMNS) if c not in LEGACY_COLUMNS]
+    # Only name/careers_url/provider are structurally required; everything
+    # else is appended only if the caller already had it. A save must not
+    # invent columns -- the seed is a file the user keeps byte-stable.
+    for col in ("name", "careers_url", "provider"):
         if col not in cols:
             cols.append(col)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -298,12 +402,20 @@ def write_seed_rows(path: Path, columns: List[str], rows: List[dict]) -> int:
         writer = csv.DictWriter(fh, fieldnames=cols, extrasaction="ignore")
         writer.writeheader()
         for row in rows:
+            # A comment / group header is written back as the single line it
+            # was, not as a CSV record: the DictWriter would turn
+            # "# ----- NETHERLANDS (16) -----" into
+            # "# ----- NETHERLANDS (16) -----,,,,,,,,,,," on every save.
+            if is_comment_row(row):
+                fh.write((row.get("__raw__")
+                          or (row.get("name") or "").rstrip()) + "\r\n")
+                continue
             writer.writerow({k: row.get(k, "") for k in cols})
     return len(rows)
 
 
-def auto_detect_ats_type(url: str) -> str:
-    """Best-effort ATS type detection from a careers URL.
+def auto_detect_provider(url: str) -> str:
+    """Best-effort provider detection from a careers URL.
 
     Uses the ATS hostname/path fingerprinting rules from
     ``core/ats_detection``.  Falls back to ``official_careers`` when no known

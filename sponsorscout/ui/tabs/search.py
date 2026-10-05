@@ -187,6 +187,68 @@ def _experience_tooltip(row) -> str:
     return _("No experience requirement found in the job description")
 
 
+#: Search-tab column index -> the row key holding that cell's verdict.
+_VERDICT_COLUMNS = {
+    5: ("visa_sponsorship", "Sponsor"),
+    6: ("eu_blue_card_verdict", "Blue Card"),
+    7: ("relocation_support", "Reloc"),
+}
+
+
+def _verdict_tooltip(row, column: int) -> str:
+    """Hover detail for the Sponsor / Blue Card / Reloc cells.
+
+    WHY: the three verdict columns are the ones users act on, and a bare "N"
+    next to a bare "Y" reads like a bug when the ad in fact says both
+    "you must already have the right to work" AND "relocation support". Both
+    facts were already stored (``support_evidence`` and friends) but nothing
+    in the UI ever displayed them, so a correct verdict was indistinguishable
+    from a wrong one. Quoting the sentence that produced it removes the guess.
+
+    Note the two verdicts answer different questions and can legitimately
+    disagree: sponsorship is about immigration status, relocation support is
+    about moving costs.
+    """
+    key, label = _VERDICT_COLUMNS[column]
+    shown = _verdict_cell(str(row.get(key) or "").strip())
+
+    # Which evidence belongs to this cell.
+    #
+    # `support_evidence` is a SINGLE shared column holding the best visa AND
+    # the best relocation sentence joined together, so it must not be shown as
+    # the cause of one specific cell: quoting it under "Blue Card" would
+    # attribute a relocation sentence to a Blue Card verdict. The Blue Card
+    # therefore uses only its own `blue_card_evidence` column, and a Blue Card
+    # with no such evidence falls through to the honest "no statement" wording.
+    if key == "eu_blue_card_verdict":
+        evidence = str(row.get("blue_card_evidence") or "").strip()
+    else:
+        evidence = str(row.get("support_evidence") or "").strip()
+
+    head = "%s: %s" % (_(label), shown)
+    if evidence:
+        try:
+            conf = float(row.get("support_confidence") or 0)
+        except (TypeError, ValueError):
+            conf = 0.0
+        # Framed as "found in the description", not "this caused the verdict":
+        # for Visa / Reloc the quotes are the description's support statements
+        # as a set, and one cell may rest on a different one of them.
+        parts = [head, _("Found in the job description:"), evidence]
+        if conf:
+            parts.append(_("Confidence: {c:.0%}").format(c=conf))
+        return "\n\n".join(parts)
+
+    # No quote stored. Say WHY that matters, because "the ad did not say" and
+    # "we decided no" are different claims and only one of them is honest.
+    if shown == "?":
+        return _("{col}: {v}\n\nThe job description makes no explicit "
+                 "statement about this. Unknown means the ad did not say — "
+                 "it is not a \"no\".").format(col=_(label), v=shown)
+    return _("{col}: {v}\n\nNo supporting sentence was recorded for this "
+             "verdict.").format(col=_(label), v=shown)
+
+
 
 # Canonical level -> rank, so level-only rows still sort by seniority.
 _EXP_LEVEL_RANK = {"intern": 0, "internship": 0, "entry": 1, "junior": 1,
@@ -248,11 +310,27 @@ class _CellItem(QTableWidgetItem):
         return self.text() < other.text()
 
 
+#: Accepted spellings of an affirmative / negative three-state verdict.
+#
+# FIX P0-56: this function only understood the single letters "y" and "n",
+# but the Sponsor and Blue Card columns read `visa_sponsorship` and
+# `eu_blue_card_verdict`, which BOTH scanners write as "Yes" / "No" /
+# "Unknown" (jd_support.VERDICT_YES == "Yes"). "yes" is neither "y" nor "n",
+# so every one of those cells fell through to "?" -- for every row, forever,
+# no matter what the detector actually found. That is why Appodeal displayed
+# "Sponsor = ?" while still matching the Sponsor filter: the SQL filter
+# compared the real stored value, the cell did not.
+# The same mismatch disabled the derived booleans in persistence.py
+# (see FIX P0-54), which is what pinned the Dashboard's EU Blue Card to 0.
+_VERDICT_YES_FORMS = {"y", "yes", "true", "1"}
+_VERDICT_NO_FORMS = {"n", "no", "false", "0"}
+
+
 def _verdict_cell(value: str) -> str:
     v = (value or "").strip().lower()
-    if v == "y":
+    if v in _VERDICT_YES_FORMS:
         return "Y"
-    if v == "n":
+    if v in _VERDICT_NO_FORMS:
         return "N"
     return "?"
 
@@ -579,6 +657,19 @@ class SearchTab(QWidget):
         exp_selected = self.experience_combo.currentText()
         if exp_selected and exp_selected != FILTER_ALL:
             rows = [r for r in rows if r["_exp_display"] == exp_selected]
+        # FIX P0-56: enforce the three verdict checkboxes in Python, against
+        # the SAME value the cell displays. The SQL side filters on its own
+        # idea of "has support", which is how a row could be returned under
+        # "Sponsor" while its Sponsor cell read "?" -- the checkbox and the
+        # column were answering different questions. Applied here, next to
+        # the Experience filter, for the same reason that one is: display and
+        # filter must come from one value, so they cannot drift.
+        for _checked, _key in ((self.sponsor_check.isChecked(), "visa_sponsorship"),
+                               (self.bluecard_check.isChecked(), "eu_blue_card_verdict"),
+                               (self.reloc_check.isChecked(), "relocation_support")):
+            if _checked:
+                rows = [r for r in rows
+                        if _verdict_cell(str(r.get(_key) or "")) == "Y"]
         # Cache the full filtered list and render only the CURRENT page of it:
         # the table never holds more than one page of QTableWidgetItem objects
         # (~5k cells) — that bounded widget count is what keeps Search instant
@@ -770,6 +861,13 @@ class SearchTab(QWidget):
                         row["experience_level"],
                         row["experience_min_years"])
                     tooltip = _experience_tooltip(row)
+                    if item.toolTip() != tooltip:
+                        item.setToolTip(tooltip)
+                elif col in _VERDICT_COLUMNS:
+                    # Hover detail for Sponsor / Blue Card / Reloc: the sentence
+                    # that produced the verdict. Same change-detection as the
+                    # Experience cell, for the same reason.
+                    tooltip = _verdict_tooltip(row, col)
                     if item.toolTip() != tooltip:
                         item.setToolTip(tooltip)
 

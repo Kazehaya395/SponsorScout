@@ -24,46 +24,53 @@ import json
 import logging
 import os
 import re
+import urllib.request          # fetch_static_jobs uses urllib.request.* by name
+import collections
 import socket
 import time
 import unicodedata
+from collections import Counter
 from html import unescape
-from urllib.parse import urlparse, urljoin
+from urllib.parse import urlparse, urljoin, unquote
 from urllib.request import Request, urlopen
-import urllib.request
 
 try:
     from playwright.sync_api import sync_playwright
     PLAYWRIGHT_IMPORT_ERROR = None
-except ModuleNotFoundError as _pw_exc:  # Provider-API-only runs can still work.
+except ModuleNotFoundError as _pw_exc:
     sync_playwright = None
-    # Keep the reason so a frozen build that lost Playwright reports WHICH
-    # module is missing instead of failing every DOM target silently.
+    # Keep the reason: a bare None hid WHICH module was missing from the
+    # frozen bundle (playwright itself, greenlet or pyee).
     PLAYWRIGHT_IMPORT_ERROR = f"{type(_pw_exc).__name__}: {_pw_exc}"
 
+# Desktop UI Stop/Pause. Imported, not reimplemented, so both scanners obey
+# the same control protocol.
+from sponsorscout.scanning.common import check_control
+
+# Real-time logging: flush prints during long runs.
+import builtins as _builtins
+
+# Installed by the desktop app (set_progress_callback) so scanner output is
+# routed to the UI log instead of a console nobody sees. None = plain stdout.
+progress_cb = None
+
+
+def set_progress_callback(callback):
+    """Route this module's print()/_notify output to the desktop log."""
+    global progress_cb
+    progress_cb = callback
+def print(*args, **kwargs):
+    _notify(" ".join(str(a) for a in args))
 
 def _playwright_unavailable_reason():
     """Why sync_playwright is unusable — surfaced in error logs."""
     return PLAYWRIGHT_IMPORT_ERROR or "playwright.sync_api could not be imported"
-
-# Real-time logging.  When a progress callback is installed (desktop app) all
-# output lines are routed to it (and therefore into the Tools tab scan log);
-# otherwise they print to stdout as before.
-import builtins as _builtins
-
-progress_cb = None
-
 
 def _notify(msg):
     if progress_cb:
         progress_cb(msg)
     else:
         _builtins.print(msg, flush=True)
-
-
-def print(*args, **kwargs):
-    _notify(" ".join(str(a) for a in args))
-
 
 def _log_file_path() -> str:
     """Where to write the scanner's diagnostic log.
@@ -82,8 +89,11 @@ def _log_file_path() -> str:
     except Exception:  # standalone single-file mode
         return "ats_scraper_errors.log"
 
-
 logging.basicConfig(
+    # BUGFIX 2026-10-05: was a hard-coded "ats_scraper_errors.log" (CWD) while
+    # _log_file_path() above documents + computes the per-user scan-output
+    # path. A packaged Windows build under Program Files is not writable, so
+    # the old path failed/scattered stray files. Use the helper's path.
     filename=_log_file_path(),
     level=logging.WARNING,
     format="%(asctime)s %(levelname)s %(message)s",
@@ -131,6 +141,134 @@ _STATIC_SPA_MARKERS = (
     "window.__remixContext", "data-reactroot", "ng-version=",
     "data-svelte-h", "__sveltekit", "data-vue-meta", "id=\"__nuxt\"",
 )
+
+
+# ── FIX P27 (2026-10-05): one workload classifier, shared by both scanners ──
+# Amazon Italia printed 121 of 183 rows as "Part-time", including
+# "Cloud Operations Architect" and "Senior Theatrical Marketing Manager".
+# Every amazon.jobs posting carries the pay footnote
+#     "The salary listed corresponds to working on a FULL-TIME basis.
+#      For PART-TIME hours, the salary will be pro-rated."
+# and the old classifiers tested `part[ -]?time` BEFORE full-time, against
+# the whole card/JD blob, so the footnote decided the schedule of every
+# corporate role on the board.
+#
+# The rules, strongest evidence first:
+#   1. the employer's own structured field (employment_type / contract type)
+#   2. the job TITLE
+#   3. prose, with pay/pro-rata/conditional sentences discarded, and an
+#      explicit full-time statement beating a surviving part-time mention
+#      (a posting that states both is full-time with a part-time footnote)
+# "Contract" is read from the employer field or the title ONLY: the word
+# appears in ordinary prose constantly ("contract negotiation", "contract
+# management") and used to make the ATS scanner call such roles Full-time
+# while the career scanner called them Contract (P27b).
+
+_WL_INTERN_RE = re.compile(
+    r"\bintern(?:ship|s)?\b|\bpraktikum\b|\bpraktikant\w*|\btirocinio\b"
+    r"|\bapprendistato\b|\btrainee\b|\bapprentic\w*|\bstagiaire\b"
+    r"|\bstage\b|\bausbildung\b|\bduales studium\b|\bworking student\b"
+    r"|\bwerkstudent\w*|\bbecari\w*|\bpr[áa]cticas\b", re.I)
+_WL_PART_RE = re.compile(
+    r"\bpart[ _-]?time\b|\bparttime\b|\bteilzeit\b|\bdeeltijd\b"
+    r"|\btempo parziale\b|\btemps partiel\b|\bmedia jornada\b", re.I)
+_WL_FULL_RE = re.compile(
+    r"\bfull[ _-]?time\b|\bfulltime\b|\bvollzeit\b|\bvoltijd\b"
+    r"|\btempo pieno\b|\btemps plein\b|\bjornada completa\b", re.I)
+_WL_CONTRACT_RE = re.compile(
+    r"\bcontract(?:or)?\b|\bfixed[ _-]?term\b|\btemporary\b|\btemp\b"
+    r"|\binterim\b|\bbefristet\b|\bzeitarbeit\b|\btempo determinato\b"
+    r"|\bcontratto a termine\b|\bcdd\b|\bint[ée]rim\b", re.I)
+_WL_PERMANENT_RE = re.compile(
+    r"\bpermanent\b|\bunbefristet\b|\bvast(?:e)? contract\b"
+    r"|\btempo indeterminato\b|\bcdi\b|\bindefinido\b", re.I)
+
+#: Sentences in which a part-time (or full-time) mention is NOT the schedule
+#: of this posting: pay pro-rating, hour-reduction notes, equal-opportunity
+#: boilerplate, and "if you work part-time" conditionals.
+_WL_BOILERPLATE_RE = re.compile(
+    r"\b(?:salary|salaries|compensation|pay|paid|wage|wages|rate|rates|"
+    r"stipend|pension|holiday|leave|benefit|benefits|entitlement|pro[ -]?rata|"
+    r"pro[ -]?rated|proportionally|accordingly|equivalent|basis|reduced|"
+    r"regardless|whether|either|or\s+part|and/or)\b"
+    r"|\bif\s+you\b|\bshould\s+you\b|\bwhere\s+applicable\b"
+    r"|\bfor\s+part[ _-]?time\s+(?:hours|employees|colleagues|staff|roles)\b"
+    r"|\bwe\s+(?:also\s+)?(?:offer|consider|welcome|support)\b", re.I)
+
+_WL_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?;])\s+|[\n\r]+|\|")
+
+
+def _wl_declared(text, pattern):
+    """True when `pattern` fires in a sentence that is not pay boilerplate."""
+    if not text:
+        return False
+    for sent in _WL_SENTENCE_SPLIT_RE.split(text):
+        if not sent or not pattern.search(sent):
+            continue
+        if _WL_BOILERPLATE_RE.search(sent):
+            continue
+        return True
+    return False
+
+
+def classify_workload(employer_field="", title="", text=""):
+    """Return Internship / Part-time / Full-time / Contract / "" (unknown).
+
+    `employer_field` is a structured value from the provider (Workday's
+    `timeType`, greenhouse's `employment_type`, the iCIMS `FULL_TIME` enum
+    after humanisation). It is believed outright when it says anything.
+    """
+    field = (employer_field or "").strip()
+    head = (title or "").strip()
+    body = text or ""
+    # 1. the employer said so.
+    for src in (field, head):
+        if not src:
+            continue
+        if _WL_INTERN_RE.search(src):
+            return "Internship"
+        if _WL_PART_RE.search(src):
+            return "Part-time"
+        if _WL_FULL_RE.search(src):
+            return "Full-time"
+        if _WL_CONTRACT_RE.search(src):
+            return "Contract"
+        if _WL_PERMANENT_RE.search(src):
+            return "Full-time"
+    # 2. prose, boilerplate sentences discarded.
+    if _WL_INTERN_RE.search(body):
+        return "Internship"
+    part = _wl_declared(body, _WL_PART_RE)
+    full = _wl_declared(body, _WL_FULL_RE)
+    if part and not full:
+        return "Part-time"
+    if full:
+        # Both stated in real sentences -> the posting is full-time and the
+        # part-time wording is a footnote. This is the Amazon shape.
+        return "Full-time"
+    return ""
+
+
+def classify_work_location_mode(text):
+    """Return Remote / Hybrid / On-site / "" from the same evidence rules."""
+    t = text or ""
+    remote = bool(re.search(
+        r"\bfully remote\b|\bremote[- ]first\b|\b100% remote\b|\bremote\b"
+        r"|\bwork from home\b|\bhome[ -]?office\b|\bda remoto\b|\bremoto\b"
+        r"|\bthuiswerk\w*|\bt[ée]l[ée]travail\b", t, re.I))
+    hybrid = bool(re.search(
+        r"\bhybrid\w*|\bibrido\b|\bsmart ?working\b|\bhybride\b", t, re.I))
+    if remote and hybrid:
+        return "Remote/Hybrid"
+    if remote:
+        return "Remote"
+    if hybrid:
+        return "Hybrid"
+    if re.search(r"\bon[- ]?site\b|\bonsite\b|\bin[- ]?office\b|\bin office\b"
+                 r"|\bvor ort\b|\bin sede\b|\bpresencial\b", t, re.I):
+        return "On-site"
+    return ""
+
 
 
 _STATIC_ANCHOR_RE = re.compile(
@@ -268,14 +406,14 @@ _EXP_WORD_ALT = "|".join(sorted((re.escape(w) for w in _EXP_WORD_NUM),
                                 key=len, reverse=True))
 
 _EXP_YEAR_UNIT = (r"(?:years?|yrs?\.?|jahre?n?|anni|anno|jaar|jaren|"
-                  r"ans|anos?|an|a[nñ]os|a[nñ]o)")
+                  r"ans|an|a[nñ]os|a[nñ]o)")
 _EXP_MONTH_UNIT = (r"(?:months?|mon\.?|monate?n?|mesi|mese|maanden|maand|"
                    r"mois|meses|mes)")
 
 # The number must sit in a clause genuinely about work experience.
 _EXP_ANCHOR = re.compile(
     r"experien|berufserfahrung|erfahrung|praxis|esperienz|ervaring|"
-    r"exp[ée]rien|experienc|experi[eê]nci|experi[eê]ncia|experiencia|"
+    r"exp[ée]rien|experienc|experienci|"
     r"similar role|comparable role|equivalent role|relevant|professional|"
     r"requirements?|qualif\w*|must[- ]haves?|anforderungen|"
     r"voraussetzungen|requisiti|requisitos|vereisten|wer du bist|"
@@ -286,16 +424,7 @@ _EXP_ANCHOR = re.compile(
     r"poste similaire|puesto similar|en el (?:sector|[áa]rea)",
     re.I)
 
-# "4+ years in Office Management" carries a real requirement but no experience
-# NOUN for _EXP_ANCHOR to catch. Same shape exists in every seed language:
-# "3 anni nel settore vendite", "4 Jahre im Vertrieb", "3 jaar in sales",
-# "3 ans dans le domaine", "3 años en el sector". Connectors are deliberately
-# narrow — bare "en" is excluded because it would also match "20 ans en France".
-_EXP_YEARS_IN = re.compile(
-    r"(?:\d{1,2}|" + _EXP_WORD_ALT + r")\s*(?:\+|\bplus\b)?\s*"
-    r"(?:" + _EXP_YEAR_UNIT + r"|" + _EXP_MONTH_UNIT + r")\s+"
-    r"(?:in|of|as|im|als|bei|nel|nella|nello|come|presso|"
-    r"dans le|dans la|au sein|en el|en la|como)\s+[A-Za-zÀ-ÿ]", re.I)
+_EXP_YEARS_IN = re.compile(r"(?:\d{1,2}|" + _EXP_WORD_ALT + r")\s*(?:\+|plus)?\s*(?:years?|yrs?|months?)\s+(?:in|of|as)\s+[A-Za-z]", re.I)
 
 # Disqualifiers, checked in a tight window around the number so a sentence
 # that merely also mentions a degree is not discarded wholesale.
@@ -303,7 +432,6 @@ _EXP_BLOCK_NEAR = re.compile(
     r"\b(?:old|of age|age of|ago|"
     r"last|past|next|recent|"
     r"founded|established|since|anniversar|"
-    r"seit|dal|desde|depuis|sinds|vanaf|"
     r"fixed[-\s]?term|befristet|tempo determinato|"
     r"contract|vertrag|contratto|duur|dur[ée]e|duration|"
     r"visa|permit|warrant|guarantee|garantie|"
@@ -314,7 +442,25 @@ _EXP_BLOCK_NEAR = re.compile(
     r"abbiamo|la nostra azienda|im unternehmen|in the company|"
     r"in azienda|chez nous|ons bedrijf|wij bestaan|"
     r"universit|school|apprenticeship duration|"
-    r"notice period|k[üu]ndigungsfrist|preavviso)\b", re.I)
+    r"notice period|k[üu]ndigungsfrist|preavviso|"
+    # FIX P16 (2026-10-04): PERKS AND TENURE ARE NOT EXPERIENCE.
+    # LOOP (run 20261003T233023) wrote "Experience Required = 1 years" on 13
+    # of its 17 rows. The JD says "EXPERIENCE  Experienced" -- no number
+    # anywhere. The phantom came from the benefits copy:
+    #   "4-day Workweek At LOOP you can choose between a 5-day or a 4-day
+    #    workweek AFTER ONE YEAR WITH US"
+    # a <=100-char fragment, so the weak tier scanned it, and nothing in the
+    # +/-45 window disqualified it. Perk, loyalty and probation wording now
+    # does. "with us" / "bei uns" / "da noi" is the giveaway: it describes
+    # time SPENT AT THE EMPLOYER, never experience brought to the job.
+    r"with us\b|bei uns|da noi|chez nous|bij ons|con nosotros|"
+    r"workweek|work week|working week|arbeitswoche|settimana lavorativa|"
+    r"holiday|vacation|urlaub|ferien|vakantie|vacanze|cong[ée]s|"
+    r"sabbatical|probation|probezeit|periodo di prova|proeftijd|"
+    r"bonus|pension|insurance|versicherung|assicurazione|"
+    r"anniversary|jubil[äa]um|loyalty|tenure|betriebszugeh[öo]rigkeit|"
+    r"once a year|per year|every year|annually|j[äa]hrlich|ogni anno|"
+    r"pay ri[sz]e|salary review|gehaltserh[öo]hung)\b", re.I)
 
 _EXP_NONE = re.compile(
     r"(no (?:prior |previous |work |professional )?experience (?:is )?"
@@ -555,15 +701,29 @@ def _exp_scan_numbers(text):
             continue
         num = rf"(?:\d{{1,2}}|{_EXP_WORD_ALT})"
         unit = rf"(?:{_EXP_YEAR_UNIT}|{_EXP_MONTH_UNIT})"
+        # FIX P0-46: "Four or more years" / "4 or more years" produced
+        # required="Mentioned", level=Unknown. "or" was only listed as a RANGE
+        # connector, so the parser demanded a second NUMBER after it and
+        # "more" is not one -- the whole match then failed. Every sibling
+        # phrasing already worked ("at least four years", "minimum four
+        # years", "Four+ years", "Four years"), which is why this stayed
+        # hidden. It is NOT a words-vs-digits problem: the digit form failed
+        # identically. Also accepts the restated-numeral form American
+        # Express uses, "Four (4) or more years".
         rx = re.compile(
             rf"(?<![\w.,/-])({num})\s*(?:\+|plus)?\s*"
+            rf"(?:\(\s*\d{{1,2}}\s*\)\s*)?"
+            rf"(?P<ormore>\b(?:or|and|o|oder|of|ou|y)\s+"
+            rf"(?:more|above|greater|over|higher|plus|pi[uù]|mehr|meer|"
+            rf"m[aá]s|superiore?)\b\s*)?"
             rf"(?:(?:-|–|—|\bto\b|\bbis\b|\ba\b|\btot\b|\b[àa]\b|\bund\b|"
             rf"\be\b|\by\b|\bet\b|\bor\b|\bof\b)\s*"
             rf"({num})\s*(?:\+|plus)?\s*)?"
             rf"({unit})\b", re.I)
         for m in rx.finditer(sent):
-            lo, hi = _exp_num(m.group(1)), _exp_num(m.group(2))
-            u = m.group(3).lower()
+            _g = m.groups()
+            lo, hi = _exp_num(m.group(1)), _exp_num(_g[2])
+            u = _g[3].lower()
             if lo is None:
                 continue
             # "a month-end close process" / "year-end reporting": the unit is
@@ -582,7 +742,7 @@ def _exp_scan_numbers(text):
             months = bool(re.fullmatch(_EXP_MONTH_UNIT, u, re.I))
             # Word boundaries are mandatory: an unanchored "[üu]ber" matched
             # inside "K-uber-netes" and turned "6 months" into "6+ months".
-            plus = bool(re.search(
+            plus = bool(m.group("ormore")) or bool(re.search(
                 r"\+|\b(?:plus|at least|minimum|min\.|mindestens|almeno|"
                 r"minimaal|au moins|al menos|over|more than|[üu]ber|oltre|"
                 r"upwards of|no less than|m[ií]nimo|minimo de|mindest|"
@@ -787,10 +947,15 @@ def _host_free_mb():
         except Exception:
             continue
     if avail is None:
+        # FIX P0-35: os.sysconf is POSIX-only. On Windows -- this app's primary
+        # platform -- it does not exist, so this fell through to None and
+        # recommended_workers() silently sized the pool from CPU count alone
+        # (6 HTTP workers instead of 3). career_scanner already defers to the
+        # cross-platform reader; the ATS copy had not been updated, so the two
+        # scanners ran at different concurrency on the same machine.
         try:
-            page = os.sysconf("SC_AVPHYS_PAGES")
-            size = os.sysconf("SC_PAGE_SIZE")
-            avail = (page * size) / (1024.0 * 1024.0)
+            from sponsorscout.scanning.common import host_workers_limits
+            avail = host_workers_limits()[2] / (1024.0 * 1024.0)
         except Exception:
             avail = None
     return avail
@@ -802,38 +967,35 @@ _BROWSER_RSS_MB = 600
 _RESERVE_MB = 1200
 
 
+# FIX P0-36: this module used to define its OWN ``recommended_workers`` here.
+# career_scanner already deleted its local copy and imports the shared one
+# from ``sponsorscout.scanning.common``; this file did not, so the SAME
+# machine was sized by two different formulas. Measured on a simulated
+# 2-core / 8 GB Windows box: career chose 4 HTTP workers, this scanner chose
+# 6 -- which is exactly the "results are inconsistent between the two
+# scanners" symptom. There is now one definition for both scanners and the
+# pipeline. The ``requested=`` cap the local copy offered is preserved in
+# ``common.recommended_workers``, so no caller lost functionality.
+from sponsorscout.scanning.common import recommended_workers as _common_recommended_workers
+
+
+# REBASE 2026-10-03 (R3): identical knob to career_scanner.py so the two
+# scanners still size themselves the same way. common.recommended_workers only
+# ever clamps downward; SPONSORSCOUT_MAX_WORKERS / SPONSORSCOUT_HTTP_WORKERS is
+# the one way to raise it, opt-in, hard-capped.
 def recommended_workers(kind="browser", requested=None):
-    """Size a worker pool for THIS machine.
-
-    kind="browser" -> each worker may hold a Chromium (~600 MB measured)
-    kind="http"    -> each worker is a socket + parser (cheap)
-
-    The previous code called this function without ever defining it. Beyond
-    fixing the NameError, the point is that a fixed pool of 3 is wrong on an
-    8 GB laptop: 3 x 600 MB of Chromium plus the OS is a swap storm.
-    """
-    cpus = _host_cpu_count()
-    free = _host_free_mb()
-
-    if kind == "http":
-        # Network-bound: oversubscribe CPUs, but stay modest on small boxes.
-        cap = 12 if cpus >= 4 else 6
-        n = min(cap, max(2, cpus * 3))
-        if free is not None and free < 1500:
-            n = min(n, 3)
-        return n if requested is None else max(1, min(requested, n))
-
-    # Browser work: RAM is the binding constraint, not CPU.
-    by_cpu = max(1, cpus - 1) if cpus > 1 else 1
-    if free is None:
-        by_ram = 2
-    else:
-        by_ram = int(max(0, free - _RESERVE_MB) // _BROWSER_RSS_MB)
-    n = max(1, min(by_cpu, by_ram if by_ram > 0 else 1))
-    n = min(n, 4)  # diminishing returns; also politeness to target sites
-    if requested is not None:
-        n = max(1, min(requested, n))
-    return n
+    n = _common_recommended_workers(kind, requested)
+    raw = os.environ.get("SPONSORSCOUT_MAX_WORKERS" if kind == "browser"
+                         else "SPONSORSCOUT_HTTP_WORKERS")
+    if not raw:
+        return n
+    try:
+        want = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return n
+    if want < 1:
+        return n
+    return min(want, 8 if kind == "browser" else 24)
 
 
 def describe_host_budget():
@@ -924,19 +1086,66 @@ LOW_RESOURCE_BROWSER_ARGS = [
     "--js-flags=--max-old-space-size=512",
 ]
 
-
 # ───────────────────────── CONFIG ─────────────────────────────────────────────
+
+# FIX UI-2 parity (P9): one work-mode classifier, used by BOTH scanners and
+# by the DB ingest. It was previously inline in the career writer only, so
+# the ATS scanner shipped no "Work Mode" column at all and every ATS row had
+# to be guessed at downstream from page furniture -- which is exactly how
+# the dashboard's Remote card reached 589 on 111 remote jobs.
+_WORK_MODE_STRONG_REMOTE = re.compile(
+    r"\b(fully remote|100% remote|remote[- ]first|work from anywhere|"
+    r"volledig op afstand|komplett remote)\b")
+_WORK_MODE_HYBRID = re.compile(
+    r"\b(hybrid|hybride|ibrido|smart working|smartworking)\b")
+_WORK_MODE_REMOTE = re.compile(
+    r"\b(remote|telelavoro|teletrabajo|t\u00e9l\u00e9travail|home office|"
+    r"homeoffice|thuiswerk|da remoto|remoto)\b")
+_WORK_MODE_ONSITE = re.compile(
+    r"\b(on[- ]?site|onsite|in[- ]office|in office|presenza|vor ort|"
+    r"op kantoor)\b")
+
+
+def classify_work_mode(blob: str) -> str:
+    """Remote / Hybrid / Remote-Hybrid / Onsite / Unknown from free text.
+
+    "Unknown" is a real answer: a posting that never mentions where the work
+    happens has not told us it is an office job, and downstream must not
+    pretend otherwise.
+    """
+    low = str(blob or "").lower()
+    strong = bool(_WORK_MODE_STRONG_REMOTE.search(low))
+    hybrid = bool(_WORK_MODE_HYBRID.search(low))
+    remote = strong or bool(_WORK_MODE_REMOTE.search(low))
+    if remote and hybrid:
+        return "Remote" if strong else "Remote/Hybrid"
+    if hybrid:
+        return "Hybrid"
+    if remote:
+        return "Remote"
+    if _WORK_MODE_ONSITE.search(low):
+        return "Onsite"
+    return "Unknown"
+
+
 OUTPUT_FIELDS = [
     "Company Name", "Seed Name", "Source Type", "Hiring Company",
     "Target Country", "Scope Policy", "Industry Type",
     "Sponsorship History Score", "English Friendly Score", "Remote Score",
     "Job Title", "Raw Job Title", "Job Location", "Raw Location", "Job Type",
+    "Work Mode",
     "Job URL", "Canonical Job ID", "Provider", "Extraction Method",
     "EU Blue Card", "Blue Card Evidence", "Relocation/Visa Support",
+    # FIX P19b (2026-10-04): schema parity. The career CSV carried 42
+    # columns and this one 41 -- "Scope Confidence" was the missing one, in
+    # the same slot the career writer uses (after Relocation/Visa Support).
+    # Surfaced the moment both scanners produced the same DocuSign rows.
+    "Scope Confidence",
     # FIX P0-30
     "Experience Required", "Experience Min Years", "Experience Level",
     "Experience Source",
-    "Location Source", "URL Type", "Visa Sponsorship", "Relocation Support",
+    "Location Source", "Location Confidence",
+    "URL Type", "Visa Sponsorship", "Relocation Support",
     "Relocation Required", "Support Confidence", "Support Evidence",
     "Support Evidence URL", "Support Evidence Type", "Record Status",
     "Quarantine Reason", "Run ID", "Scanned At",
@@ -1042,6 +1251,10 @@ def clean(value):
     return re.sub(r"\s+", " ", value).strip()
 
 
+def host_of(url):
+    return urlparse(url).netloc.lower().split(":")[0]
+
+
 # ───────────────────────── JD SUPPORT DETECTOR ────────────────────────────────
 # (imported verbatim from career_portal_scanner_v7.py — keep in sync)
 # ───────────────────── JD SUPPORT DETECTOR ─────────────────────
@@ -1051,43 +1264,315 @@ def clean(value):
 #   "We do NOT support relocation"              -> No      (negated)
 #   "We support if you are READY to relocate"   -> No      (candidate must move)
 #   "may be provided case-by-case"              -> Unknown (conditional)
-# Single source of truth: ``sponsorscout.scanning.jd_support`` (shared with the
-# career scanner).  The former in-file copy of this class was verified
-# byte-identical and removed so the two scanners can never drift apart —
-# changing visa/relocation detection is now a one-file edit.
-#
-# Dual-mode bootstrap: allow ``python ats_scanner.py`` to run as a loose script
-# from the repo, where the package root is not on sys.path yet.
-try:
-    from sponsorscout.scanning.jd_support import (
-        JDSupportDetector,
-        VERDICT_NO,
-        VERDICT_UNKNOWN,
-        VERDICT_YES,
-        detect_blue_card,
-    )
-except ModuleNotFoundError:  # standalone single-file mode
-    import os as _os
-    import sys as _sys
-
-    _here = _os.path.dirname(_os.path.abspath(__file__))
-    for _i in range(3):  # ats/ -> scanning/ -> sponsorscout/ -> repo root
-        _here = _os.path.dirname(_here)
-    if _here not in _sys.path:
-        _sys.path.insert(0, _here)
-    from sponsorscout.scanning.jd_support import (
-        JDSupportDetector,
-        VERDICT_NO,
-        VERDICT_UNKNOWN,
-        VERDICT_YES,
-        detect_blue_card,
-    )
+# MANDATORY (rebase 2026-10-03, user decision): single source of truth.
+# _org carried a 267-line inline copy of the classifier here, with its own
+# VERDICT_* constants and NO detect_blue_card at all -- so the moment
+# classify_support was brought up to the current version it raised
+# NameError: detect_blue_card on the first row of every ATS board.
+# Imported, not duplicated, exactly as in career_scanner.py.
+from sponsorscout.scanning.jd_support import (
+    JDSupportDetector,
+    VERDICT_NO,
+    VERDICT_UNKNOWN,
+    VERDICT_YES,
+    detect_blue_card,
+)
 
 
-# Mandatory -- was a hand copy here behind an ``except ModuleNotFoundError``.
-# Keep the single definition in common.check_control so the Pause/Stop gate
-# behaves identically in both scanners.
-from sponsorscout.scanning.common import check_control
+# FIX P0-34b (parity with career_scanner): ISO-3166-1 alpha-3 codes, used to
+# recognise an address tail such as "Jesi, AN, ITA" that is NOT a job title.
+_ISO3_COUNTRY_CODES = {
+    "abw", "afg", "ago", "alb", "and", "are", "arg", "arm", "aus", "aut",
+    "aze", "bel", "ben", "bfa", "bgd", "bgr", "bhr", "bih", "blr", "bol",
+    "bra", "brb", "brn", "bwa", "can", "che", "chl", "chn", "civ", "cmr",
+    "col", "cri", "cub", "cyp", "cze", "deu", "dnk", "dom", "dza", "ecu",
+    "egy", "esp", "est", "eth", "fin", "fra", "gbr", "geo", "gha", "grc",
+    "gtm", "hkg", "hnd", "hrv", "hun", "idn", "ind", "irl", "irn", "irq",
+    "isl", "isr", "ita", "jam", "jor", "jpn", "kaz", "ken", "khm", "kor",
+    "kwt", "lao", "lbn", "lka", "ltu", "lux", "lva", "mar", "mco", "mda",
+    "mex", "mkd", "mlt", "mmr", "mne", "mng", "moz", "mys", "nga", "nic",
+    "nld", "nor", "npl", "nzl", "omn", "pak", "pan", "per", "phl", "pol",
+    "prt", "pry", "qat", "rou", "rus", "rwa", "sau", "sgp", "slv", "srb",
+    "svk", "svn", "swe", "syr", "tha", "tun", "tur", "twn", "tza", "uga",
+    "ukr", "ury", "usa", "uzb", "ven", "vnm", "zaf", "zmb", "zwe",
+}
+
+
+# FIX P0-47 (S-07): ISO3 -> ISO2, so a three-letter country suffix can be
+# resolved to a country name.  _ISO3_COUNTRY_CODES already existed but was
+# used ONLY by the title validator, so "Vercelli, ITA" was recognised as a
+# pure-location title and then thrown away by the location parser, which knew
+# nothing about three-letter codes: _location_from_line("Milan, ITA") -> None
+# while _location_from_line("Milan, IT") -> "Milan, Italy".  Workday-backed
+# boards (American Express) emit the ISO3 form, so entire countries of rows
+# landed on "Unknown".
+_ISO3_TO_ISO2 = {
+    "abw": "aw", "afg": "af", "ago": "ao", "alb": "al", "and": "ad",
+    "are": "ae", "arg": "ar", "arm": "am", "aus": "au", "aut": "at",
+    "aze": "az", "bel": "be", "ben": "bj", "bfa": "bf", "bgd": "bd",
+    "bgr": "bg", "bhr": "bh", "bih": "ba", "blr": "by", "bol": "bo",
+    "bra": "br", "brb": "bb", "brn": "bn", "bwa": "bw", "can": "ca",
+    "che": "ch", "chl": "cl", "chn": "cn", "civ": "ci", "cmr": "cm",
+    "col": "co", "cri": "cr", "cub": "cu", "cyp": "cy", "cze": "cz",
+    "deu": "de", "dnk": "dk", "dom": "do", "dza": "dz", "ecu": "ec",
+    "egy": "eg", "esp": "es", "est": "ee", "eth": "et", "fin": "fi",
+    "fra": "fr", "gbr": "gb", "geo": "ge", "gha": "gh", "grc": "gr",
+    "gtm": "gt", "hkg": "hk", "hnd": "hn", "hrv": "hr", "hun": "hu",
+    "idn": "id", "ind": "in", "irl": "ie", "irn": "ir", "irq": "iq",
+    "isl": "is", "isr": "il", "ita": "it", "jam": "jm", "jor": "jo",
+    "jpn": "jp", "kaz": "kz", "ken": "ke", "khm": "kh", "kor": "kr",
+    "kwt": "kw", "lao": "la", "lbn": "lb", "lka": "lk", "ltu": "lt",
+    "lux": "lu", "lva": "lv", "mar": "ma", "mco": "mc", "mda": "md",
+    "mex": "mx", "mkd": "mk", "mlt": "mt", "mmr": "mm", "mne": "me",
+    "mng": "mn", "moz": "mz", "mys": "my", "nga": "ng", "nic": "ni",
+    "nld": "nl", "nor": "no", "npl": "np", "nzl": "nz", "omn": "om",
+    "pak": "pk", "pan": "pa", "per": "pe", "phl": "ph", "pol": "pl",
+    "prt": "pt", "pry": "py", "qat": "qa", "rou": "ro", "rus": "ru",
+    "rwa": "rw", "sau": "sa", "sgp": "sg", "slv": "sv", "srb": "rs",
+    "svk": "sk", "svn": "si", "swe": "se", "syr": "sy", "tha": "th",
+    "tun": "tn", "tur": "tr", "twn": "tw", "tza": "tz", "uga": "ug",
+    "ukr": "ua", "ury": "uy", "usa": "us", "uzb": "uz", "ven": "ve",
+    "vnm": "vn", "zaf": "za", "zmb": "zm", "zwe": "zw",
+}
+
+
+# ── FIX P0-50 (S-01/S-02): shared post-detect false-positive guards ─────────
+# The ATS scanner ran five guards after detector.detect(); the career scanner
+# ran NONE, so `grep -c VERDICT_UNKNOWN` was 8 in ats_scanner.py and 0 in
+# career_scanner.py and both career call sites took sup["visa"]["verdict"]
+# raw. amazon.jobs is crawled by the career engine, so an Amazon Italia JD
+# whose only occurrence of the word was "mentoring people, sponsoring
+# projects, and proposing technical solutions" was published as Sponsor = Y.
+# The guards now live in one function with IDENTICAL BYTES in both scanners
+# so the two engines cannot drift apart again.
+_SUPPORT_VISA_KEYWORD_RE = re.compile(
+    r"visa|work permit|work authori[sz]ation|immigration|h-?1b|"
+    r"blue card|carta blu|blaue karte|blauwe kaart|carte bleue|"
+    r"tarjeta azul|skilled (migrant|worker)|aufenthaltstitel|"
+    r"arbeitserlaubnis|permesso di soggiorno|permis de travail|"
+    r"werkvergunning|arbeidsvergunning|permiso de trabajo"
+    # FIX P0-53: "we are willing to sponsor the right candidate" carries no
+    # visa noun at all, so guard (1) threw away a plainly genuine offer. When
+    # the OBJECT of "sponsor" is a PERSON rather than a project, an event or
+    # a team, immigration sponsorship is the only thing it can mean in a job
+    # ad -- and it still cannot match the Amazon false positive this guard
+    # exists for ("sponsoring projects").
+    r"|sponsor\w*\s+(?:the\s+)?(?:right\s+|suitable\s+|successful\s+|"
+    r"eligible\s+|qualified\s+|international\s+|overseas\s+|foreign\s+)?"
+    r"(?:candidate|applicant|employee|hire|new\s+joiner|individual|person|"
+    r"professional|talent|worker|you)s?\b", re.I)
+
+_SUPPORT_EVENT_RE = re.compile(
+    r"sponsor\w*.{0,50}\b(event|conference|trade[- ]show|booth|"
+    r"session|co[- ]market|partner|speaker)\b", re.I)
+_SUPPORT_EVENT_RE2 = re.compile(
+    r"\b(event|conference|trade[- ]show|booth|session|co[- ]market|"
+    r"partner)\w*.{0,50}sponsor\w*", re.I)
+
+_SUPPORT_TRAVEL_RE = re.compile(
+    r"\b(visas?|work permits?)\s+for\s+(international\s+events?|"
+    r"speakers?|travel|attendees?)", re.I)
+
+# FIX P0-50 (S-02): the same thing written as a travel-coordination duty
+# list. Appodeal's "Executive & Personal Assistant to CEO" says
+# "International travel coordination - flights, hotels, visas, ground
+# transport."  Guard (3) only matched "visas FOR travel", so the comma-list
+# form was uncovered. Arranging someone's travel documents is not an offer to
+# sponsor the candidate.
+_SUPPORT_TRAVEL_LIST_RE = re.compile(
+    # FIX P24 (2026-10-04): bare "transfers?" made this guard fire on
+    # "Visa sponsorship TRANSFER support for eligible Highly Skilled Migrants
+    #  already based in the Netherlands" (Michael Page NL). The detector
+    # returned Yes 0.90 and this guard rewrote it to Unknown -- yet a visa
+    # TRANSFER is an immigration service offered to the candidate, the exact
+    # opposite of booking someone's airport transfer. The word now only
+    # counts in its travel sense.
+    r"\b(?:flights?|hotels?|accommodation|lodging|itinerar\w*|ground\s+"
+    r"transport\w*|car\s+rental|per\s+diem|expense\s+reports?|"
+    r"(?:airport|ground|hotel|airline|shuttle)\s+transfers?)"
+    r"\b[^.;!?]{0,60}\bvisas?\b"
+    r"|\bvisas?\b[^.;!?]{0,60}\b(?:flights?|hotels?|accommodation|lodging|"
+    r"itinerar\w*|ground\s+transport\w*|car\s+rental|per\s+diem|"
+    r"(?:airport|ground|hotel|airline|shuttle)\s+transfers?|"
+    r"expense\s+reports?)\b", re.I)
+
+_SUPPORT_FUNCTION_TITLE_RE = re.compile(
+    r"\b(?:global|international)\s+mobility\b|\bimmigration\b|\brelocation\b", re.I)
+_SUPPORT_FUNCTION_ROLE_RE = re.compile(
+    r"\b(manager|specialist|coordinator|officer|lead|director|program|"
+    r"administrator|consultant|partner|hr)\b", re.I)
+
+_SUPPORT_DUTY_RE = re.compile(
+    r"\b(track(?:ing)?|manag(?:e|ing)|oversee(?:ing)?|administer(?:ing)?|"
+    r"process(?:ing)?|handle(?:ing)?|coordinat(?:e|ing))\s+(?:of\s+)?"
+    r"(work\s+permits?|visas?|immigration\s+cases?)\b", re.I)
+
+# A candidate-FACING offer vetoes the duty/travel downgrades: "we will cover
+# your visa" is support even inside a paragraph about travel admin. A bare
+# "we offer" or "benefits include" elsewhere in the JD is NOT enough.
+# FIX P0-52: the first version of this veto only understood "your visa" and
+# "we sponsor ... visa". It did not match the single most common way a JD
+# actually offers sponsorship -- "we provide visa sponsorship", "we offer
+# visa sponsorship", "visa sponsorship is available" -- so guard (2) threw
+# those away. Deliberately uses "your" and not a bare "you": "You will
+# manage visa applications" is a DUTY, not an offer, and must stay catchable
+# by guard (5).
+_SUPPORT_CANDIDATE_OFFER_RE = re.compile(
+    # "... your visa / your work permit / your relocation"
+    r"\byour\b[^.;!?]{0,25}\b(?:visa|work\s+permit|work\s+authori[sz]ation|"
+    r"relocation|blue\s+card)\b"
+    r"|\b(?:visa|work\s+permit|work\s+authori[sz]ation|relocation)\b"
+    r"[^.;!?]{0,25}\bfor\s+you\b"
+    # "we provide / offer / grant / cover / arrange ... visa sponsorship"
+    r"|\bwe\b[^.;!?]{0,30}\b(?:provide|offer|grant|sponsor\w*|support|assist|"
+    r"help|cover|pay|reimburse|arrange|handle|facilitate|secure|obtain|"
+    r"bieten|uebernehmen|\u00fcbernehmen|offriamo|forniamo|ofrecemos|"
+    r"proposons|bieden)\b[^.;!?]{0,45}\b(?:visa|work\s+permit|"
+    r"work\s+authori[sz]ation|immigration|blue\s+card|sponsorship|"
+    r"sponsoring|arbeitserlaubnis|werkvergunning)\b"
+    # "visa sponsorship is available / provided / offered / possible"
+    r"|\b(?:visa|work\s+permit|work\s+authori[sz]ation|immigration|"
+    r"sponsorship)\b[^.;!?]{0,45}\b(?:is|are|can\s+be|will\s+be|may\s+be|"
+    r"would\s+be)\s+(?:fully\s+|also\s+)?(?:available|provided|offered|"
+    r"supported|considered|possible|arranged|covered|sponsored|granted)\b"
+    # "visa sponsorship available", "relocation support provided"
+    r"|\b(?:visa|work\s+permit|immigration|relocation)\s+"
+    r"(?:sponsorship|support|assistance|package)\b[^.;!?]{0,20}"
+    r"\b(?:available|provided|offered|included|possible)\b"
+    # "eligible for sponsorship", "open to / willing to / happy to sponsor"
+    r"|\beligible\s+for\b[^.;!?]{0,30}\b(?:visa|sponsorship|work\s+permit)\b"
+    r"|\b(?:open|willing|happy|able|prepared)\s+to\s+sponsor\w*"
+    r"|\bcan\s+sponsor\b|\bwill\s+sponsor\b"
+    r"|\bsponsorship\s+(?:is\s+)?(?:available|provided|offered)\b", re.I)
+
+
+# FIX P0-52: per-guard downgrade counters. "Sponsored Jobs = 24 out of 2,497"
+# is either the honest base rate or a guard eating true positives, and there
+# was no way to tell which. The scan summary now prints how many YES verdicts
+# each guard removed, so the question is answerable from the run itself.
+SUPPORT_GUARD_HITS = collections.Counter()
+
+
+def _guard_hit(name):
+    try:
+        SUPPORT_GUARD_HITS[name] += 1
+    except Exception:
+        pass
+
+
+def apply_support_fp_guards(visa, reloc, text, title=""):
+    """Downgrade visa/relocation YES verdicts that are not offers to the hire.
+
+    A mention is only "support offered to YOU" if it isn't the job FUNCTION,
+    an event/travel arrangement, or brand sponsorship. Returns the possibly
+    downgraded (visa, reloc) pair; anything other than YES is passed through
+    untouched, so this can never invent a verdict.
+    """
+    text = text or ""
+    # (1) "sponsorship" alone is ambiguous (event/brand/partnership). A visa
+    #     "Yes" needs an actual visa/immigration/work-authorization keyword.
+    if visa == VERDICT_YES and not _SUPPORT_VISA_KEYWORD_RE.search(text):
+        visa = VERDICT_UNKNOWN
+        _guard_hit("1_no_visa_keyword")
+    # (2) event/trade-show/partner sponsorship is not visa sponsorship.
+    #     FIX P0-52: this guard had NO candidate-offer veto, unlike (3) and
+    #     (5). That was survivable in ats_scanner.py, where the text is a
+    #     short structured API description, but career pages are whole
+    #     marketing pages: one "we are a proud partner sponsor of the Berlin
+    #     Tech Summit" or "we sponsor your conference attendance" in the
+    #     perks list wiped out a genuine "we provide full visa sponsorship"
+    #     further down the SAME page. Measured after shipping P0-50:
+    #     "Visa sponsorship: we provide full visa sponsorship and relocation
+    #     support" + a conference perk -> Unknown. Brand sponsorship and
+    #     candidate sponsorship routinely coexist, so the mention alone
+    #     cannot be disqualifying.
+    if visa == VERDICT_YES and (_SUPPORT_EVENT_RE.search(text)
+                                or _SUPPORT_EVENT_RE2.search(text)):
+        if not _SUPPORT_CANDIDATE_OFFER_RE.search(text):
+            visa = VERDICT_UNKNOWN
+            _guard_hit("2_event_sponsorship")
+    # (3) "visas for international events / speakers / travel", and the
+    #     travel-coordination list form, are travel documents arranged for
+    #     other people.
+    if visa == VERDICT_YES and (
+            _SUPPORT_TRAVEL_RE.search(text)
+            or _SUPPORT_TRAVEL_LIST_RE.search(text)):
+        if not _SUPPORT_CANDIDATE_OFFER_RE.search(text):
+            visa = VERDICT_UNKNOWN
+            _guard_hit("3_travel_documents")
+    # (4) job FUNCTION: the role administers mobility/immigration/relocation
+    #     for OTHERS (its title says so). These are not candidate benefits.
+    t = (title or "").lower()
+    if _SUPPORT_FUNCTION_TITLE_RE.search(t) and _SUPPORT_FUNCTION_ROLE_RE.search(t):
+        if visa == VERDICT_YES or reloc == VERDICT_YES:
+            _guard_hit("4_job_is_the_function")
+        visa = VERDICT_UNKNOWN if visa == VERDICT_YES else visa
+        reloc = VERDICT_UNKNOWN if reloc == VERDICT_YES else reloc
+    # (5) duty-frame: "tracking of work permits" / "manage visa applications"
+    #     describes work the HIRE performs for others, not a benefit.
+    if visa == VERDICT_YES and _SUPPORT_DUTY_RE.search(text):
+        if not _SUPPORT_CANDIDATE_OFFER_RE.search(text):
+            visa = VERDICT_UNKNOWN
+            _guard_hit("5_duty_not_benefit")
+    return visa, reloc
+
+
+
+
+_COUNTRY_TAIL_CACHE = {}
+
+
+def _is_country_token(tok: str) -> bool:
+    """True when tok is a country NAME or an ISO-2 / ISO-3 country code."""
+    t = (tok or "").strip().lower()
+    if not t:
+        return False
+    if not _COUNTRY_TAIL_CACHE:
+        names, iso2 = set(), set()
+        try:
+            from sponsorscout.core.location_country import ISO2_TO_COUNTRY
+            iso2 = {k.lower() for k in ISO2_TO_COUNTRY}
+            names = {str(v).lower() for v in ISO2_TO_COUNTRY.values() if v}
+        except Exception:
+            pass
+        _COUNTRY_TAIL_CACHE["names"] = names
+        _COUNTRY_TAIL_CACHE["iso2"] = iso2
+    if len(t) == 2:
+        return t in _COUNTRY_TAIL_CACHE["iso2"]
+    if len(t) == 3 and t in _ISO3_COUNTRY_CODES:
+        return True
+    return t in _COUNTRY_TAIL_CACHE["names"]
+
+
+def _location_confidence(location, loc_source):
+    """How much a Job Location can be trusted (FIX W2-8, shared rule).
+
+    Identical ladder to CareerPortalScanner._location_confidence so the two
+    scanners cannot drift: anything derived from the web host or a broad
+    region is "low", a detail/API/address read is "high".
+    """
+    loc = (location or "").strip()
+    src = (loc_source or "").strip().lower()
+    if not loc or loc.lower() in ("unknown", "not specified"):
+        return "none"
+    if "site" in src or src in ("company_hq", "region"):
+        return "low"
+        # NB: anything containing "site" was already caught above -- that is
+    # deliberate, "Milan" off the card plus "Italy" off the host is still
+    # a guessed country.
+    if src in ("detail", "api", "address", "card+detail"):
+        return "high"
+    if src == "card":
+        return "high" if "," in loc else "medium"
+    if src in ("url", "title", "slug", "seed_scope+card"):
+        return "medium"
+    return "medium"
+
+
+def _location_is_site_derived(loc_source):
+    """True when the country came from the web host, not from the posting."""
+    return "site" in (loc_source or "").strip().lower()
+
 
 class ATSScanner:
     def __init__(self, seed_file="company_ATS_seed.csv",
@@ -1198,17 +1683,39 @@ class ATSScanner:
         records = []
         errors = []
         seen_keys = set()
+        seed_path = self.seed_file
+        _legacy_provider_warned = False
         with open(self.seed_file, "r", encoding="utf-8-sig", newline="") as f:
             reader = csv.DictReader(f)
             reader.fieldnames = [clean(x) for x in (reader.fieldnames or [])]
             for line_no, row in enumerate(reader, 2):
+                # FIX P0-32: rows whose first column starts with "#" are
+                # human-readable group headers (the HQ-country banners and the
+                # "NEWLY ADDED" markers in the grouped seeds), not companies.
+                # Skip them -- and fully blank spacer rows -- BEFORE validation,
+                # otherwise each one is reported as "invalid URL ''" and the
+                # ENTIRE run aborts with "Seed validation failed".
+                _c0 = (row.get("name") or row.get("seed_name") or "").lstrip()
+                if _c0.startswith("#") or not any(
+                        (v or "").strip()
+                        for v in row.values() if isinstance(v, str)):
+                    continue
                 name = clean(row.get("name"))
-                # Schema support: the legacy v6 seed carries ``ats_type``
-                # directly; the v7 seed (shared with the career scanner)
-                # carries ``provider`` (+ optional ``board_slug``).  Accept
-                # both, and resolve ``auto`` / blank providers from the URL.
-                ats_type = (clean(row.get("ats_type"))
-                            or clean(row.get("provider"))).lower()
+                # Schema: the seed carries ``provider`` (+ optional
+                # ``board_slug``). ``ats_type`` was its v6 name and has been
+                # removed from the schema, the seed manager and the Data
+                # Management tab. It is still READ here -- a personal seed
+                # under %APPDATA% may predate the rename -- but it is
+                # announced once per file instead of being honoured in
+                # silence, because a seed that disagrees with the shipped
+                # schema will keep surprising its owner until they fix it.
+                _legacy_ats = clean(row.get("ats_type"))
+                ats_type = (clean(row.get("provider")) or _legacy_ats).lower()
+                if _legacy_ats and not _legacy_provider_warned:
+                    _legacy_provider_warned = True
+                    print(f"  [seed] {seed_path}: uses the removed v6 column "
+                          f"'ats_type'; read as 'provider'. Rename the column "
+                          f"(or re-copy the shipped seed) to silence this.")
                 industry = clean(row.get("industry") or "Tech")
                 url = clean(row.get("careers_url"))
                 if not name or not url:
@@ -1274,9 +1781,161 @@ class ATSScanner:
                     "notes": clean(row.get("notes")),
                     **scores,
                 })
+        self._audit_seed_contradictions(records)
         if errors:
             raise ValueError("Seed validation failed:\n - " + "\n - ".join(errors))
         return records
+
+    # ── FIX P0-44: contradictory seed rows are now reported at load time ─────
+    # Two silent-failure classes cost a full debugging cycle on 2026-10-03.
+    #
+    #   1. target_country=Global combined with scope_policy=job_location or
+    #      seed_url. _scope_allows() short-circuits on "Global" BEFORE it ever
+    #      reads scope_policy, so the policy is dead text. A2G Technologies
+    #      looked like a broken job_location filter for days; in fact the seed
+    #      had opted out of filtering altogether and its Pune postings were
+    #      being kept exactly as configured.
+    #
+    #   2. The seed URL names a country that contradicts target_country --
+    #      adecco.com/en-in/ scoped to Belgium, jobswype.pl scoped to Austria,
+    #      jobs.elastic.co/jobs/country/ireland scoped to Netherlands. Nothing
+    #      raises: the seed just quietly yields nothing, or yields rows from a
+    #      country nobody asked for.
+    #
+    # Neither is detectable from the output, only from the config, so the
+    # scanner says it out loud once per run instead of leaving it to be
+    # reverse-engineered from the dashboard. This NEVER blocks a run: a seed
+    # may legitimately be odd, and refusing to scan would be worse.
+    # Hosts that belong to the ATS/CMS vendor rather than the employer, so
+    # their TLD says nothing about where the jobs are.
+    _ATS_VENDOR_HOSTS = (
+        "personio.de", "personio.com", "greenhouse.io", "lever.co",
+        "ashbyhq.com", "recruitee.com", "workable.com", "smartrecruiters.com",
+        "smartrecruiterscareers.com", "myworkdayjobs.com", "teamtailor.com",
+        "bamboohr.com", "avature.net", "csod.com", "icims.com", "taleo.net",
+        "oraclecloud.com", "successfactors.eu", "successfactors.com",
+        "eightfold.ai", "phenompeople.com", "brassring.com", "jobvite.com",
+        "breezy.hr", "jobteaser.com", "avature.com",
+    )
+
+    _SEED_LOCALE_RE = re.compile(r"^([a-z]{2})[-_]([a-z]{2})$", re.I)
+
+    def _seed_url_country(self, url):
+        """Country named by the seed URL itself, or None.
+
+        Three gazetteer-free signals, strongest first: an explicit
+        /country/<name> segment, a locale segment such as /en-in/ or /nl-BE/,
+        and finally the host ccTLD (via _country_from_site, which already
+        excludes vanity TLDs like .io/.ai/.co).
+        """
+        if not url:
+            return None
+        try:
+            parsed = urlparse(str(url))
+            segments = [s for s in (parsed.path or "").split("/") if s]
+        except Exception:
+            return None
+        try:
+            from sponsorscout.core.location_country import ISO2_TO_COUNTRY
+        except Exception:
+            ISO2_TO_COUNTRY = {}
+        names = {}
+        for code, country in ISO2_TO_COUNTRY.items():
+            if country:
+                names[str(country).lower()] = country
+        # 1. .../country/ireland, .../location/netherlands
+        for index, segment in enumerate(segments[:-1]):
+            if segment.lower() in ("country", "countries", "location", "locations"):
+                candidate = segments[index + 1].replace("-", " ").replace("%20", " ")
+                hit = names.get(candidate.split("?")[0].strip().lower())
+                if hit:
+                    return hit
+        # 2. a bare country-name segment: .../jobs/netherlands
+        for segment in segments:
+            hit = names.get(segment.replace("-", " ").strip().lower())
+            if hit:
+                return hit
+        # 3. host ccTLD -- but never an ATS VENDOR's host. celus.jobs.personio.de
+        # is a German SaaS domain hosting a Portuguese company's board; the TLD
+        # describes Personio, not the employer. Same for every vendor below.
+        host = (parsed.hostname or "").lower()
+        if not any(host == v or host.endswith("." + v) for v in self._ATS_VENDOR_HOSTS):
+            from_host = self._country_from_site(url)
+            if from_host:
+                return from_host
+        # 4. a locale segment: /en-in/, /nl_BE/. Weakest signal, and deliberately
+        # last: "en_US" is the DEFAULT locale on most corporate sites rather than
+        # a market selector, so jobs.enel.com/en_US/careers/JobOpeningsItaly is
+        # an Italian board, not an American one. Skipping en-us alone removes
+        # every false positive observed across 391 seed rows.
+        for segment in segments:
+            match = self._SEED_LOCALE_RE.match(segment)
+            if not match:
+                continue
+            language, region = match.group(1).lower(), match.group(2).lower()
+            if region in self._VANITY_TLDS:
+                continue
+            if language == "en" and region == "us":
+                continue
+            hit = ISO2_TO_COUNTRY.get(region)
+            if hit:
+                return hit
+        return None
+
+    def _audit_seed_contradictions(self, records):
+        """Report seed rows whose own fields disagree. Warn only, never fail."""
+        dead_policy, url_mismatch = [], []
+        for record in records:
+            label = (record.get("seed_name") or record.get("name") or "?").strip()
+            url = (record.get("careers_url") or record.get("url") or "").strip()
+            target = (record.get("target_country") or "Global").strip()
+            policy = (record.get("scope_policy") or "global").strip().lower()
+            if target.casefold() in ("global", "") and policy != "global":
+                dead_policy.append((label, policy))
+                continue
+            if target.casefold() in ("global", "europe", ""):
+                continue
+            # A row whose notes say "scope_verified" has been eyeballed by a
+            # human; stop nagging about it.
+            if "scope_verified" in (record.get("notes") or "").lower():
+                continue
+            # Only seed_url policy treats the URL as the country authority.
+            # Under job_location the URL is EXPECTED to differ -- crawling a
+            # global careers page and keeping only Irish jobs is the whole
+            # point -- so comparing them there produces nothing but noise.
+            if policy != "seed_url":
+                continue
+            try:
+                implied = self._seed_url_country(url)
+            except Exception:
+                implied = None
+            if implied and implied.casefold() != target.casefold():
+                url_mismatch.append((label, target, implied, url))
+        if not dead_policy and not url_mismatch:
+            return
+        print("")
+        print("   " + "-" * 68)
+        print("   SEED WARNINGS (scan continues; nothing below blocks the run)")
+        if dead_policy:
+            print("   %d row(s) set target_country=Global, which makes scope_policy"
+                  % len(dead_policy))
+            print("   dead -- _scope_allows() returns True before it reads the policy:")
+            for label, policy in dead_policy:
+                print("     - %-32s scope_policy=%s is never applied" % (label, policy))
+            print("     Fix: name the country in target_country, or set scope_policy=global")
+            print("     to say 'accept everything' on purpose.")
+        if url_mismatch:
+            if dead_policy:
+                print("")
+            print("   %d row(s) whose seed URL names a different country than"
+                  % len(url_mismatch))
+            print("   target_country -- one of the two is wrong:")
+            for label, target, implied, url in url_mismatch:
+                print("     - %-28s target_country=%-16s URL says %s"
+                      % (label, target, implied))
+                print("       %s" % url[:96])
+        print("   " + "-" * 68)
+        print("")
 
     # URL fingerprints for the 8 adapters this scanner implements.  Mirrors
     # ``core.ats_detection`` (plus the SmartRecruiters legacy hosts) so a v7
@@ -1292,6 +1951,12 @@ class ATSScanner:
         (re.compile(r"(?:jobs|careers)\.smartrecruiters\.com|smartrecruiterscareers\.com", re.I),
          "smartrecruiters"),
         (re.compile(r"([a-z0-9_-]+\.)+recruitee\.com", re.I), "recruitee"),
+        (re.compile(r"([a-z0-9_-]+\.)+bamboohr\.com", re.I), "bamboohr"),
+        # FIX P19 (2026-10-04): parity with the career scanner, which gained
+        # adapters for both of these. A seed row moved between the two files
+        # must behave identically.
+        (re.compile(r"([a-z0-9_-]+\.)?icims\.com", re.I), "icims"),
+        (re.compile(r"([a-z0-9_-]+\.)?eightfold\.ai", re.I), "eightfold"),
     )
 
     @classmethod
@@ -1307,6 +1972,405 @@ class ATSScanner:
     def _strip_html(text):
         text = re.sub(r"<[^>]+>", " ", text or "")
         return clean(text)
+
+
+    # ── W3-2 (P6): supplementary gazetteer ───────────────────────────────
+    # core.location_country is authoritative and is NOT edited (user rule).
+    # This table only fills the gaps it leaves. Every entry below was
+    # checked against country_from_location() at build time: entries it
+    # already resolves were dropped, and the two names where it disagreed
+    # (Cordoba -> Argentina, Newcastle -> Australia) were removed rather
+    # than overridden. Evidence: run 20261003T233023 shipped 120 rows whose
+    # location resolved to no country at all -- Cuneo, Udine, Pordenone,
+    # Gorizia, Treviso, Ludwigsburg, Garching, Wels, Leoben and 53 more.
+    _W3_CITY_COUNTRY = {
+        "aalst": "Belgium", "abruzzo": "Italy", "agrigento": "Italy",
+        "aix-en-provence": "France", "albacete": "Spain", "alessandria": "Italy",
+        "almeria": "Spain", "amersfoort": "Netherlands", "amiens": "France",
+        "amstetten": "Austria", "ancona": "Italy", "andalucia": "Spain", "angers": "France",
+        "annecy": "France", "aosta": "Italy", "arad": "Romania", "arezzo": "Italy",
+        "ascoli piceno": "Italy", "asti": "Italy", "athlone": "Ireland", "aveiro": "Portugal",
+        "avellino": "Italy", "bacau": "Romania", "badajoz": "Spain",
+        "baden-wuerttemberg": "Germany", "baden-wurttemberg": "Germany", "baerum": "Norway",
+        "baia mare": "Romania", "barletta": "Italy", "basilicata": "Italy",
+        "basingstoke": "United Kingdom", "belluno": "Italy", "benevento": "Italy",
+        "bentonville": "United States", "besancon": "France", "bialystok": "Poland",
+        "białystok": "Poland", "biel": "Switzerland", "biella": "Italy", "birkirkara": "Malta",
+        "bodo": "Norway", "bodø": "Norway", "bolzano": "Italy", "boras": "Sweden",
+        "bradford": "United Kingdom", "brandenburg": "Germany", "brasov": "Romania",
+        "bregenz": "Austria", "brest": "France", "brindisi": "Italy", "brugge": "Belgium",
+        "bucuresti": "Romania", "burgas": "Bulgaria", "burgenland": "Austria",
+        "burgos": "Spain", "bydgoszcz": "Poland", "bærum": "Norway", "cadiz": "Spain",
+        "caen": "France", "calabria": "Italy", "caltanissetta": "Italy", "campania": "Italy",
+        "campobasso": "Italy", "cartagena": "Spain", "caserta": "Italy", "castellon": "Spain",
+        "cataluna": "Spain", "catanzaro": "Italy", "celje": "Slovenia",
+        "ceske budejovice": "Czech Republic", "charleroi": "Belgium", "chieti": "Italy",
+        "chur": "Switzerland", "clermont-ferrand": "France", "constanta": "Romania",
+        "coppell": "United States", "coruna": "Spain", "cosenza": "Italy", "craiova": "Romania",
+        "cremona": "Italy", "crotone": "Italy", "croydon": "United Kingdom", "cuneo": "Italy",
+        "czestochowa": "Poland", "daugavpils": "Latvia", "den bosch": "Netherlands",
+        "donostia": "Spain", "dordrecht": "Netherlands", "dornbirn": "Austria",
+        "drammen": "Norway", "drenthe": "Netherlands", "drogheda": "Ireland",
+        "dundalk": "Ireland", "dundee": "United Kingdom", "ede": "Netherlands",
+        "eisenstadt": "Austria", "elche": "Spain", "emilia-romagna": "Italy",
+        "emmen": "Netherlands", "enna": "Italy", "ennis": "Ireland", "erlangen": "Germany",
+        "esbjerg": "Denmark", "esch-sur-alzette": "Luxembourg", "eskilstuna": "Sweden",
+        "esslingen": "Germany", "euskadi": "Spain", "exeter": "United Kingdom",
+        "fermo": "Italy", "ferrara": "Italy", "flensburg": "Germany",
+        "flevoland": "Netherlands", "foggia": "Italy", "forli": "Italy",
+        "fredrikstad": "Norway", "fribourg": "Switzerland", "friesland": "Netherlands",
+        "friuli": "Italy", "friuli venezia giulia": "Italy", "frosinone": "Italy",
+        "fuerth": "Germany", "furth": "Germany", "galati": "Romania", "galicia": "Spain",
+        "garching": "Germany", "gavle": "Sweden", "gdynia": "Poland",
+        "gelderland": "Netherlands", "gelsenkirchen": "Germany", "gießen": "Germany",
+        "gijon": "Spain", "girona": "Spain", "goettingen": "Germany", "gorizia": "Italy",
+        "gottingen": "Germany", "granada": "Spain", "grosseto": "Italy",
+        "guimaraes": "Portugal", "gyor": "Hungary", "hagen": "Germany", "halmstad": "Sweden",
+        "hameenlinna": "Finland", "hamm": "Germany", "hanau": "Germany", "hasselt": "Belgium",
+        "heerlen": "Netherlands", "heilbronn": "Germany", "helsingborg": "Sweden",
+        "heraklion": "Greece", "herne": "Germany", "herning": "Denmark", "hessen": "Germany",
+        "hildesheim": "Germany", "hilversum": "Netherlands", "hoboken": "United States",
+        "horsens": "Denmark", "hradec kralove": "Czech Republic", "huelva": "Spain",
+        "huerth": "Germany", "hull": "United Kingdom", "hurth": "Germany", "iasi": "Romania",
+        "imperia": "Italy", "isernia": "Italy", "jaen": "Spain", "jelgava": "Latvia",
+        "jena": "Germany", "joensuu": "Finland", "jonkoping": "Sweden", "jyvaskyla": "Finland",
+        "kaernten": "Austria", "kaiserslautern": "Germany", "karlstad": "Sweden",
+        "karnten": "Austria", "kaunas": "Lithuania", "kecskemet": "Hungary", "kielce": "Poland",
+        "kilkenny": "Ireland", "klagenfurt": "Austria", "klaipeda": "Lithuania",
+        "kolding": "Denmark", "koper": "Slovenia", "kortrijk": "Belgium", "kosice": "Slovakia",
+        "krems": "Austria", "kufstein": "Austria", "kuopio": "Finland", "l'aquila": "Italy",
+        "la spezia": "Italy", "lahti": "Finland", "lappeenranta": "Finland",
+        "larissa": "Greece", "larnaca": "Cyprus", "latina": "Italy", "lazio": "Italy",
+        "le havre": "France", "le mans": "France", "lecce": "Italy", "lecco": "Italy",
+        "leeuwarden": "Netherlands", "leicester": "United Kingdom", "leiden": "Netherlands",
+        "leiria": "Portugal", "leoben": "Austria", "leon": "Spain", "liepaja": "Latvia",
+        "liguria": "Italy", "limassol": "Cyprus", "limoges": "France", "livorno": "Italy",
+        "lleida": "Spain", "lodi": "Italy", "logrono": "Spain", "lombardia": "Italy",
+        "lorsch": "Germany", "lubeck": "Germany", "lucca": "Italy", "ludwigsburg": "Germany",
+        "luebeck": "Germany", "lugo": "Spain", "macerata": "Italy", "mantova": "Italy",
+        "marburg": "Germany", "marche": "Italy", "maribor": "Slovenia", "massa": "Italy",
+        "matera": "Italy", "mechelen": "Belgium", "mecklenburg-vorpommern": "Germany",
+        "messina": "Italy", "metz": "France", "milton keynes": "United Kingdom",
+        "miskolc": "Hungary", "moenchengladbach": "Germany", "moers": "Germany",
+        "molise": "Italy", "monchengladbach": "Germany", "mons": "Belgium", "monza": "Italy",
+        "muelheim": "Germany", "muenster": "Germany", "mulheim": "Germany",
+        "mulhouse": "France", "murcia": "Spain", "namur": "Belgium", "nancy": "France",
+        "narva": "Estonia", "neuchatel": "Switzerland", "neunkirchen": "Austria",
+        "neuss": "Germany", "newcastle upon tyne": "United Kingdom",
+        "niederoesterreich": "Austria", "niederosterreich": "Austria",
+        "niedersachsen": "Germany", "nimes": "France", "nitra": "Slovakia",
+        "noord-brabant": "Netherlands", "noord-holland": "Netherlands",
+        "nordrhein-westfalen": "Germany", "norrkoping": "Sweden", "novara": "Italy",
+        "nuernberg": "Germany", "nuoro": "Italy", "nyiregyhaza": "Hungary",
+        "oberhausen": "Germany", "oberoesterreich": "Austria", "oberosterreich": "Austria",
+        "offenbach": "Germany", "offenburg": "Germany", "olsztyn": "Poland",
+        "oostende": "Belgium", "opole": "Poland", "oradea": "Romania", "oristano": "Italy",
+        "orleans": "France", "osijek": "Croatia", "osnabrueck": "Germany", "ourense": "Spain",
+        "overijssel": "Netherlands", "oviedo": "Spain", "paderborn": "Germany",
+        "palencia": "Spain", "pamplona": "Spain", "panevezys": "Lithuania", "paphos": "Cyprus",
+        "parnu": "Estonia", "patras": "Greece", "pavia": "Italy", "pecs": "Hungary",
+        "perpignan": "France", "perugia": "Italy", "pesaro": "Italy", "pescara": "Italy",
+        "piacenza": "Italy", "piemonte": "Italy", "piraeus": "Greece", "pisa": "Italy",
+        "pistoia": "Italy", "pitesti": "Romania", "ploiesti": "Romania", "plovdiv": "Bulgaria",
+        "plymouth": "United Kingdom", "poitiers": "France", "pordenone": "Italy",
+        "pori": "Finland", "potenza": "Italy", "prato": "Italy", "puglia": "Italy",
+        "radom": "Poland", "ragusa": "Italy", "randers": "Denmark", "ravenna": "Italy",
+        "recklinghausen": "Germany", "reggio calabria": "Italy", "reggio emilia": "Italy",
+        "reims": "France", "remscheid": "Germany", "reutlingen": "Germany",
+        "rheinland-pfalz": "Germany", "rieti": "Italy", "rijeka": "Croatia", "rimini": "Italy",
+        "roeselare": "Belgium", "roskilde": "Denmark", "rouen": "France", "rovigo": "Italy",
+        "rzeszow": "Poland", "saarbruecken": "Germany", "saarland": "Germany",
+        "sachsen": "Germany", "sachsen-anhalt": "Germany", "saint-etienne": "France",
+        "salamanca": "Spain", "salerno": "Italy", "salzgitter": "Germany", "sandnes": "Norway",
+        "sankt poelten": "Austria", "sankt polten": "Austria", "santander": "Spain",
+        "sardegna": "Italy", "sassari": "Italy", "savona": "Italy",
+        "schleswig-holstein": "Germany", "schwerin": "Germany", "segovia": "Spain",
+        "setubal": "Portugal", "siauliai": "Lithuania", "sibiu": "Romania", "sicilia": "Italy",
+        "siegen": "Germany", "siena": "Italy", "silkeborg": "Denmark",
+        "sint-niklaas": "Belgium", "sion": "Switzerland", "siracusa": "Italy",
+        "sliema": "Malta", "sligo": "Ireland", "slough": "United Kingdom",
+        "solingen": "Germany", "sollentuna": "Sweden", "solna": "Sweden", "sondrio": "Italy",
+        "soria": "Spain", "split": "Croatia", "st. poelten": "Austria", "steiermark": "Austria",
+        "steyr": "Austria", "stoke-on-trent": "United Kingdom", "sunderland": "United Kingdom",
+        "sundsvall": "Sweden", "swindon": "United Kingdom", "szeged": "Hungary",
+        "szekesfehervar": "Hungary", "taranto": "Italy", "tarragona": "Spain",
+        "tartu": "Estonia", "teramo": "Italy", "terni": "Italy", "teruel": "Spain",
+        "thueringen": "Germany", "thun": "Switzerland", "thuringen": "Germany",
+        "timisoara": "Romania", "tirol": "Austria", "toledo": "Spain", "torun": "Poland",
+        "toscana": "Italy", "toulon": "France", "tournai": "Belgium", "tours": "France",
+        "tralee": "Ireland", "trapani": "Italy", "trentino": "Italy", "trento": "Italy",
+        "treviso": "Italy", "trieste": "Italy", "tromso": "Norway", "tromsø": "Norway",
+        "tubingen": "Germany", "tuebingen": "Germany", "udine": "Italy", "umbria": "Italy",
+        "umea": "Sweden", "vaasa": "Finland", "varese": "Italy", "varna": "Bulgaria",
+        "vasteras": "Sweden", "vaxjo": "Sweden", "vejle": "Denmark", "veneto": "Italy",
+        "venlo": "Netherlands", "verbania": "Italy", "vercelli": "Italy",
+        "vibo valentia": "Italy", "vicenza": "Italy", "villach": "Austria",
+        "villeurbanne": "France", "viseu": "Portugal", "viterbo": "Italy", "vitoria": "Spain",
+        "vlaanderen": "Belgium", "volos": "Greece", "vorarlberg": "Austria",
+        "wallonie": "Belgium", "warszawa": "Poland", "waterloo": "Belgium",
+        "watford": "United Kingdom", "wels": "Austria", "wexford": "Ireland",
+        "white plains": "United States", "wiener neustadt": "Austria",
+        "wolverhampton": "United Kingdom", "wuerzburg": "Germany", "zaandam": "Netherlands",
+        "zabrze": "Poland", "zadar": "Croatia", "zamora": "Spain", "zaventem": "Belgium",
+        "zeltweg": "Austria", "zilina": "Slovakia", "zlin": "Czech Republic",
+        "zoetermeer": "Netherlands", "zuerich": "Switzerland", "zug": "Switzerland",
+        "zuid-holland": "Netherlands", "zwickau": "Germany",
+    }
+    # Country names in their own language (and the common exonyms).
+    _W3_COUNTRY_ALIASES = {
+        "allemagne": "Germany", "austria": "Austria", "belgie": "Belgium", "belgien": "Belgium",
+        "belgique": "Belgium", "belgium": "Belgium", "bulgaria": "Bulgaria",
+        "ceska republika": "Czech Republic", "cesko": "Czech Republic", "croatia": "Croatia",
+        "cyprus": "Cyprus", "czech republic": "Czech Republic", "daenemark": "Denmark",
+        "danemark": "Denmark", "danmark": "Denmark", "denmark": "Denmark",
+        "deutschland": "Germany", "duitsland": "Germany", "eesti": "Estonia", "eire": "Ireland",
+        "ellada": "Greece", "espana": "Spain", "estonia": "Estonia",
+        "etats-unis": "United States", "finland": "Finland", "finnland": "Finland",
+        "france": "France", "francia": "France", "frankreich": "France", "frankrijk": "France",
+        "germania": "Germany", "germany": "Germany", "gran bretagna": "United Kingdom",
+        "grecia": "Greece", "greece": "Greece", "griechenland": "Greece",
+        "grossbritannien": "United Kingdom", "großbritannien": "United Kingdom",
+        "hrvatska": "Croatia", "hungary": "Hungary", "ireland": "Ireland", "irland": "Ireland",
+        "irlanda": "Ireland", "italia": "Italy", "italien": "Italy", "italy": "Italy",
+        "kroatien": "Croatia", "latvia": "Latvia", "latvija": "Latvia", "lietuva": "Lithuania",
+        "lithuania": "Lithuania", "lussemburgo": "Luxembourg", "luxembourg": "Luxembourg",
+        "luxemburg": "Luxembourg", "magyarorszag": "Hungary", "malta": "Malta",
+        "nederland": "Netherlands", "netherlands": "Netherlands", "niederlande": "Netherlands",
+        "noreg": "Norway", "norge": "Norway", "norway": "Norway", "norwegen": "Norway",
+        "oesterreich": "Austria", "osterreich": "Austria", "paesi bassi": "Netherlands",
+        "pays-bas": "Netherlands", "poland": "Poland", "polen": "Poland", "polska": "Poland",
+        "portogallo": "Portugal", "portugal": "Portugal", "regno unito": "United Kingdom",
+        "romania": "Romania", "royaume-uni": "United Kingdom", "rumaenien": "Romania",
+        "rumanien": "Romania", "schweden": "Sweden", "schweiz": "Switzerland",
+        "slovakia": "Slovakia", "slovenia": "Slovenia", "slovenija": "Slovenia",
+        "slovensko": "Slovakia", "spagna": "Spain", "spain": "Spain", "spanien": "Spain",
+        "stati uniti": "United States", "suisse": "Switzerland", "suomi": "Finland",
+        "sverige": "Sweden", "svizra": "Switzerland", "svizzera": "Switzerland",
+        "sweden": "Sweden", "switzerland": "Switzerland", "tschechien": "Czech Republic",
+        "turkey": "Turkey", "turkiye": "Turkey", "ungarn": "Hungary",
+        "united kingdom": "United Kingdom", "united states": "United States",
+        "vereinigte staaten": "United States", "verenigd koninkrijk": "United Kingdom",
+        "viro": "Estonia",
+    }
+    # Multi-country / non-place markers: legitimate to display, never proof
+    # of a country.
+    _W3_REGION_MARKERS = frozenset({
+        "europe", "european union", "eu", "eea", "emea", "apac", "amer",
+        "americas", "latam", "nordics", "nordic", "benelux", "dach",
+        "worldwide", "global", "international", "north america",
+        "south america", "asia", "africa", "middle east", "anywhere",
+        "multiple locations", "various locations", "various", "multiple",
+    })
+    _W3_LEGAL_SUFFIX_RE = re.compile(
+        r"(?i)\b(s\.?p\.?a|s\.?r\.?l|s\.?a\.?s|gmbh|mbh|ag|kg|ohg|"
+        r"b\.?v|n\.?v|ltd|limited|plc|inc|llc|corp|oy|oyj|ab|a/s|aps|"
+        r"sp\.? z o\.?o|s\.?l|sarl)\b\.?\s*$")
+    _W3_LOC_PREFIX_RE = re.compile(
+        r"(?i)^(?:in|at|presso|sede\s+di|sede|standort|bei|near|c/o|"
+        r"location|luogo|ort|plaats|lieu)\s+[:\-]?\s*")
+
+    @staticmethod
+    def _w3_norm(value):
+        import unicodedata
+        s = unicodedata.normalize("NFKD", str(value or ""))
+        s = "".join(c for c in s if not unicodedata.combining(c))
+        s = re.sub(r"[^0-9a-zA-Z\u00c0-\u024f\s'\-/.]", " ", s)
+        return re.sub(r"\s+", " ", s).strip().lower()
+
+    def _w3_strip_location_noise(self, value):
+        """Trim the furniture that keeps a real place from being recognised.
+
+        "Sede di Cuneo" -> "Cuneo", "64100 Teramo" -> "Teramo",
+        "Innsbruck. Access to ..." -> "Innsbruck".
+        """
+        v = re.sub(r"\s+", " ", str(value or "")).strip(" \t,;|-")
+        if not v:
+            return ""
+        # a trailing sentence glued to the place name
+        v = re.split(r"(?<=[a-z\u00e0-\u024f])\.\s+[A-Z]", v)[0].strip(" .,;|-")
+        v = self._W3_LOC_PREFIX_RE.sub("", v).strip()
+        v = re.sub(r"^\d{4,6}[\s,-]+", "", v).strip()      # postcode first
+        v = re.sub(r"[\s,-]+\d{4,6}$", "", v).strip()      # postcode last
+        return v
+
+    def _supplementary_country(self, value):
+        """Country for a place core.location_country does not know. "" if none."""
+        v = self._w3_strip_location_noise(value)
+        if not v:
+            return ""
+        parts = [v] + [p.strip() for p in re.split(r"[,/|;()\[\]]+|\s+-\s+", v)
+                       if p.strip()]
+        for part in parts:
+            n = self._w3_norm(part)
+            if not n or n in self._W3_REGION_MARKERS:
+                continue
+            hit = self._W3_COUNTRY_ALIASES.get(n) or self._W3_CITY_COUNTRY.get(n)
+            if hit:
+                return hit
+            n2 = re.sub(r"^\d{4,6}\s+", "", n)
+            hit = self._W3_COUNTRY_ALIASES.get(n2) or self._W3_CITY_COUNTRY.get(n2)
+            if hit:
+                return hit
+        return ""
+
+    def _resolve_country(self, value):
+        """country_from_location first, the supplementary table second."""
+        v = str(value or "").strip()
+        if not v:
+            return ""
+        try:
+            # local import: the ATS module does not bind this name globally
+            from sponsorscout.core.location_country import (
+                country_from_location as _cfl)
+            c = (_cfl(v) or "").strip()
+            if c:
+                return c
+            c = (_cfl(self._w3_strip_location_noise(v)) or "").strip()
+            if c:
+                return c
+        except Exception:
+            pass
+        return self._supplementary_country(v)
+
+    def _w3_has_country(self, value):
+        """True when the string already names a country in any language."""
+        v = self._w3_strip_location_noise(value)
+        if not v:
+            return False
+        for part in re.split(r"[,/|;()\[\]]+", v):
+            n = self._w3_norm(part)
+            if not n:
+                continue
+            if n in self._W3_COUNTRY_ALIASES:
+                return True
+            try:
+                from sponsorscout.core.location_country import (
+                    country_from_location as _cfl)
+                c = (_cfl(part.strip()) or "").strip()
+                if c and self._w3_norm(c) == n:
+                    return True
+            except Exception:
+                pass
+        return False
+
+    def _w3_is_region_only(self, value):
+        n = self._w3_norm(self._w3_strip_location_noise(value))
+        return bool(n) and n in self._W3_REGION_MARKERS
+
+    # FIX P0-49 (S-09/S-04): same gate as career_scanner._sanitize_job_location.
+    # This file has no gazetteer of its own, so the test is the country
+    # resolver plus the company-echo and non-place-marker rules; the intent
+    # and the output vocabulary ("Unknown") are identical in both scanners.
+    _LOC_STOPWORDS = frozenset({"in", "at", "the", "of", "and", "for", "a", "an"})
+    _LOC_KEEP_MARKERS = frozenset({
+        "remote", "hybrid", "onsite", "on-site", "on site", "flexible",
+        "multiple locations", "multiple", "various", "various locations",
+        "work from home", "home office", "field-based", "field based",
+        "emea", "apac", "amer", "americas", "latam", "nordics", "benelux",
+        "dach", "europe", "european union", "eu",
+    })
+
+    # ── W3-3 (P7): cross-bucket URL de-duplication ───────────────────────
+    # Run 20261003T233023 shipped 69 job URLs in BOTH <run>.csv and
+    # <run>_recruiter.csv -- Bolt's own postings republished by Work in
+    # Estonia, and the like. The in-memory guard dedupes by canonical job
+    # id (company + title + location + url), which by design differs when
+    # two sources describe the same posting, so the DB collapses them and
+    # the CSVs do not. This pass runs once, after every company has
+    # finished, and keeps the EMPLOYER's copy: an aggregator's row carries
+    # a worse Hiring Company and usually a vaguer location.
+    _W3_DEDUPE_SKIP_URL_RE = re.compile(r"(?i)#job=|/(?:apply|application)(?:/|$)")
+
+    def _dedupe_cross_bucket(self, direct_csv, recruiter_csv, quarantine_csv,
+                             columns):
+        """Returns (moved, scanned). Rewrites the files only if moved > 0."""
+        import collections
+
+        def _read(path):
+            try:
+                with open(path, "r", newline="", encoding="utf-8-sig") as f:
+                    return list(csv.DictReader(f))
+            except FileNotFoundError:
+                return []
+
+        direct, recruiter = _read(direct_csv), _read(recruiter_csv)
+        if not direct or not recruiter:
+            return 0, len(direct) + len(recruiter)
+        # A URL that many rows share inside ONE company is a board/apply
+        # page, not a posting: never collapse those.
+        counts = collections.Counter(
+            (r.get("Company Name", ""), r.get("Job URL", ""))
+            for r in direct + recruiter)
+        shared = {u for (_c, u), n in counts.items() if n > 3}
+        employer_urls = {
+            (r.get("Job URL") or "").strip() for r in direct
+            if (r.get("Job URL") or "").strip()
+            and not self._W3_DEDUPE_SKIP_URL_RE.search(r.get("Job URL") or "")
+        } - shared
+        keep, moved = [], []
+        for r in recruiter:
+            u = (r.get("Job URL") or "").strip()
+            if u and u in employer_urls:
+                r["Record Status"] = "quarantine"
+                r["Quarantine Reason"] = "duplicate_url_cross_source"
+                moved.append(r)
+            else:
+                keep.append(r)
+        if not moved:
+            return 0, len(direct) + len(recruiter)
+        with open(recruiter_csv, "w", newline="", encoding="utf-8-sig") as f:
+            w = csv.DictWriter(f, fieldnames=columns)
+            w.writeheader()
+            for r in keep:
+                w.writerow({k: r.get(k, "") for k in columns})
+        with open(quarantine_csv, "a", newline="", encoding="utf-8-sig") as f:
+            w = csv.DictWriter(f, fieldnames=columns)
+            for r in moved:
+                w.writerow({k: r.get(k, "") for k in columns})
+        return len(moved), len(direct) + len(recruiter)
+
+    def _sanitize_job_location(self, value, company=""):
+        v = re.sub(r"\s+", " ", str(value or "")).strip(" \t,;|-")
+        if not v:
+            return "Unknown"
+        # W3-2 parity: a place with furniture glued to it is still a place
+        # ("Innsbruck. Access to the region", "64100 Teramo").
+        _trimmed = self._w3_strip_location_noise(v)
+        if _trimmed and _trimmed != v and self._resolve_country(_trimmed):
+            v = _trimmed
+        low = v.casefold()
+        if low in {"unknown", "not specified", "n/a", "na", "none", "tbd", "-"}:
+            return "Unknown"
+        if low in self._LOC_KEEP_MARKERS:
+            return v
+        # Being a real place wins over every other rule -- see the career
+        # scanner for the measurement ("Italia" at Piazza Italia is a real
+        # location, not the company name echoed back).
+        try:
+            from sponsorscout.core.location_country import country_from_location
+            if (country_from_location(v) or "").strip():
+                return v
+        except Exception:
+            return v
+        # W3-2 parity: a real town the core gazetteer does not list
+        # (Cuneo, Udine, Ludwigsburg, Garching, Wels ...).
+        if self._supplementary_country(v):
+            return v
+        if self._resolve_country(self._w3_strip_location_noise(v)):
+            return self._w3_strip_location_noise(v)
+        comp = re.sub(
+            r"\b(inc|llc|ltd|limited|gmbh|b\.?v|n\.?v|s\.?a|s\.?r\.?l|ag|plc|"
+            r"corp|corporation|company|group|holding|holdings|technologies|"
+            r"technology|solutions|services|international|global)\b",
+            " ", (company or "").casefold())
+        comp_tokens = {t for t in re.findall(r"[a-z0-9]+", comp) if len(t) > 2}
+        v_tokens = {t for t in re.findall(r"[a-z0-9]+", low)
+                    if t not in self._LOC_STOPWORDS}
+        if comp_tokens and v_tokens and v_tokens <= comp_tokens:
+            return "Unknown"
+        if re.search(r"[A-Za-z\u00c0-\u00ff]", v) and ("," in v or len(v.split()) <= 3):
+            return v
+        return "Unknown"
 
     def _norm(self, s):
         try:
@@ -1410,21 +2474,20 @@ class ATSScanner:
 
     # ── Classification (honest — no fabrication) ─────────────────────────────
     def classify_job_type(self, raw="", workplace="", description=""):
-        text = clean(f"{raw} {workplace} {description}").lower()
-        job_kind = "Unknown"
-        if re.search(r"\bintern(ship)?\b|praktikum|tirocinio|trainee|apprentic|stage\b", text):
-            job_kind = "Internship"
-        elif re.search(r"part[ -]?time|teilzeit|deeltijd", text):
-            job_kind = "Part-time"
-        elif re.search(r"\bfull[ -]?time|fulltime|vollzeit|voltijd|permanent|contract|fixed[ -]?term|temporary", text):
-            job_kind = "Full-time"
-        mode = "Unknown"
-        if re.search(r"\bremote\b|work from home|home office|100% remote|fully remote", text):
-            mode = "Remote"
-        elif re.search(r"\bhybrid\b|smart working|smartworking", text):
-            mode = "Hybrid"
-        elif re.search(r"\bon[- ]?site|onsite|in[- ]?office|in office", text):
-            mode = "On-site"
+        """FIX P27 / P27b: delegate to the shared classifier.
+
+        Two defects lived here. (a) `part[ -]?time` was tested BEFORE
+        full-time against raw+workplace+description, so Amazon's pay
+        footnote decided the schedule. (b) `contract|fixed-term|temporary`
+        mapped to **Full-time** here while career_scanner.py mapped the same
+        words to **Contract** -- the two scanners disagreed about the same
+        job. Both now call identical bytes.
+        """
+        job_kind = classify_workload(employer_field=raw, title="",
+                                     text=clean(f"{workplace} {description}")) \
+            or "Unknown"
+        mode = classify_work_location_mode(
+            clean(f"{raw} {workplace} {description}")) or "Unknown"
         return f"{job_kind} / {mode}"
 
     def classify_support(self, description, title=""):
@@ -1439,73 +2502,12 @@ class ATSScanner:
         sup = self.detector.detect(text)
         visa = sup["visa"]["verdict"]
         reloc = sup["relocation"]["verdict"]
-        # ── False-positive guards (a mention is only "support offered to YOU" if
-        # it isn't the job FUNCTION, an event/travel arrangement, or brand
-        # sponsorship) ─────────────────────────────────────────────────────────
-        # (1) "sponsorship" alone is ambiguous (event/brand/partnership).
-        #     A visa "Yes" needs an actual visa/immigration/work-authorization
-        #     keyword present, not merely "sponsor a session / trade show".
-        if visa == VERDICT_YES:
-            if not re.search(
-                r"visa|work permit|work authori[sz]ation|immigration|h-?1b|"
-                r"blue card|carta blu|blaue karte|blauwe kaart|carte bleue|"
-                r"tarjeta azul|skilled (migrant|worker)|aufenthaltstitel|"
-                r"arbeitserlaubnis|permesso di soggiorno|permis de travail|"
-                r"werkvergunning|arbeidsvergunning|permiso de trabajo",
-                text, re.I,
-            ):
-                visa = VERDICT_UNKNOWN
-        # (2) event/trade-show/partner sponsorship is not visa sponsorship.
-        if re.search(
-            r"sponsor\w*.{0,50}\b(event|conference|trade[- ]show|booth|"
-            r"session|co[- ]market|partner|speaker)\b",
-            text, re.I,
-        ) or re.search(
-            r"\b(event|conference|trade[- ]show|booth|session|co[- ]market|"
-            r"partner)\w*.{0,50}sponsor\w*",
-            text, re.I,
-        ):
-            visa = VERDICT_UNKNOWN if visa == VERDICT_YES else visa
-        # (3) "visas for international events / speakers / travel" = arranging
-        #     travel documents, not sponsoring the candidate.
-        if re.search(
-            r"\b(visas?|work permits?)\s+for\s+(international\s+events?|"
-            r"speakers?|travel|attendees?)",
-            text, re.I,
-        ):
-            visa = VERDICT_UNKNOWN if visa == VERDICT_YES else visa
-        # (4) job FUNCTION: the role administers mobility/immigration/relocation
-        #     for OTHERS (its title says so). These are not candidate benefits.
-        t = clean(title or "").lower()
-        if re.search(
-            r"\b(?:global|international)\s+mobility\b|\bimmigration\b|\brelocation\b",
-            t,
-        ) and re.search(
-            r"\b(manager|specialist|coordinator|officer|lead|director|program|"
-            r"administrator|consultant|partner|hr)\b",
-            t,
-        ):
-            visa = VERDICT_UNKNOWN if visa == VERDICT_YES else visa
-            reloc = VERDICT_UNKNOWN if reloc == VERDICT_YES else reloc
-        # (5) duty-frame: "tracking of work permits" / "manage visa applications"
-        #     describes work the HIRE performs for others, not a benefit. Downgrade
-        #     unless the JD ALSO makes a candidate-facing offer ("sponsor your
-        #     visa" / "we will sponsor your visa"). A bare "we offer" or
-        #     "benefits include" elsewhere in the JD is NOT enough.
-        if visa == VERDICT_YES and re.search(
-            r"\b(track(?:ing)?|manag(?:e|ing)|oversee(?:ing)?|administer(?:ing)?|"
-            r"process(?:ing)?|handle(?:ing)?|coordinat(?:e|ing))\s+(?:of\s+)?"
-            r"(work\s+permits?|visas?|immigration\s+cases?)\b",
-            text, re.I,
-        ):
-            candidate_offer = re.search(
-                r"\b(your|you)\b.{0,25}\b(visa|work\s+permit)\b"
-                r"|\b(sponsor\w*|cover\w*|pay\s+for)\s+(your|the)\s+(visa|work\s+permit)"
-                r"|\bwe\b.{0,30}\b(sponsor\w*)\b.{0,30}\b(visa|work\s+permit)\b",
-                text, re.I,
-            )
-            if not candidate_offer:
-                visa = VERDICT_UNKNOWN
+        # FIX P0-50: the five false-positive guards that used to be inline
+        # here now live in the shared apply_support_fp_guards() above, with
+        # identical bytes in career_scanner.py, which previously ran none of
+        # them at all (S-01). Guard (3) additionally covers the travel-list
+        # form (S-02).
+        visa, reloc = apply_support_fp_guards(visa, reloc, text, title)
         reloc_req = ("Yes" if sup["relocation"]["required"] else "Unknown")
         conf = round(max(sup["visa"]["confidence"], sup["relocation"]["confidence"]), 2)
         evidence = "; ".join(filter(None, [
@@ -1609,6 +2611,34 @@ class ATSScanner:
         segs = [s.strip() for s in title.split(",")]
         if len(segs) < 2:
             return False
+        # FIX P0-34b: the loop below needs at least one KNOWN place, so an
+        # unlisted town defeated it ("Jesi, AN, ITA" was kept as a title).
+        # A trailing country name/ISO-2/ISO-3 with no role word anywhere means
+        # the string is an address, known town or not.
+        # Guard rails (parity with career_scanner): >=3 segments AND a
+        # non-tail segment that is a code or known place, so "Sales, UK" and
+        # "Marketing, Digital, UK" stay titles.
+        # A full country NAME or ISO-3 code anywhere in the string (never a
+        # bare ISO-2, which collides with words like "UK" in "Sales, UK")
+        # plus no role noun => address, even when the town is unknown to the
+        # gazetteer ("ITA, PI, Pisa", "Pisa, Italy").
+        if (any(len(s.strip()) >= 3 and _is_country_token(s) for s in segs)
+                and not any(_has_role_noun(s.lower()) for s in segs)
+                and all(len(s.split()) <= 4 for s in segs if s)):
+            return True
+        _head = [s for s in segs[:-1] if s]
+        if (_is_country_token(segs[-1]) and _head
+                and all(re.fullmatch(r"[a-z]{2,3}", s.lower()) for s in _head)):
+            return True
+        _anchor = any(
+            re.fullmatch(r"[a-z]{2,3}", s.lower())
+            or all(x in self._TITLE_PLACES for x in s.lower().split())
+            for s in _head
+        )
+        if (_is_country_token(segs[-1]) and _anchor and len(segs) >= 3
+                and not any(_has_role_noun(s.lower()) for s in segs)):
+            if all(len(s.split()) <= 4 for s in segs if s):
+                return True
         saw_place = False
         for s in segs:
             if not s:
@@ -1623,8 +2653,117 @@ class ATSScanner:
             return False
         return saw_place
 
+
+    # ── W3-1 (P5): multilingual title hygiene ────────────────────────────
+    # Evidence, run 20261003T233023: the gate rejected real non-English
+    # roles ("Koch (m/w/d)" -> "Koch", 4 letters, killed by the
+    # single-word-under-5 rule) while accepting board furniture in the same
+    # languages ("Job Detail", "Careers FAQs", "Jobsuche", "Stellenangebote",
+    # "Offerte di lavoro", "Vacatures", "Alle Jobs anzeigen"). Both bugs are
+    # English bias: the junk list was English-only and the length rule
+    # assumes English role nouns are long.
+    _W3_NAV_TITLES = frozenset({
+        # English
+        "job", "jobs", "job detail", "jobdetail", "job details", "jobdetails",
+        "faq", "faqs", "careers faq", "careers faqs", "career faq",
+        "career faqs", "job search", "search jobs", "search for jobs",
+        "all jobs", "view all jobs", "see all jobs", "browse jobs",
+        "job alert", "job alerts", "create job alert", "open positions",
+        "all openings", "see all openings", "current openings",
+        "current vacancies", "our vacancies", "vacancies", "vacancy",
+        "career opportunities", "job opportunities", "opportunities",
+        "positions", "openings", "careers", "career", "our jobs",
+        "working here", "life at", "meet the team", "our teams",
+        # German
+        "jobsuche", "stellensuche", "stellenangebote", "stellenanzeigen",
+        "alle stellenangebote", "alle stellen", "offene stellen",
+        "alle jobs", "alle jobs anzeigen", "jobs anzeigen", "zur jobsuche",
+        "karriere", "karriere bei uns", "stellenmarkt", "initiativbewerbung",
+        "jobboerse", "jobbörse", "jobangebote",
+        # Italian
+        "offerte di lavoro", "tutte le offerte", "le nostre offerte",
+        "posizioni aperte", "lavora con noi", "candidatura spontanea",
+        "cerca lavoro", "ricerca lavoro", "opportunita di lavoro",
+        "opportunità di lavoro", "carriere",
+        # Dutch
+        "vacatures", "alle vacatures", "werken bij", "open sollicitatie",
+        "bekijk alle vacatures", "vacature",
+        # French
+        "emplois", "nos offres", "toutes les offres", "offres d'emploi",
+        "offre d'emploi", "candidature spontanee", "candidature spontanée",
+        "carrieres", "carrières", "nos metiers", "nos métiers",
+        # Spanish / Portuguese
+        "ofertas de empleo", "todas las ofertas", "trabaja con nosotros",
+        "empleo", "empleos", "vagas", "todas as vagas", "trabalhe conosco",
+        # Nordics / Finnish / Polish
+        "ledige stillinger", "alle ledige stillinger", "lediga jobb",
+        "alla lediga jobb", "avoimet tyopaikat", "avoimet työpaikat",
+        "hae tyopaikkoja", "oferty pracy", "wszystkie oferty", "praca",
+    })
+    # Substrings that are furniture in any sentence they appear in. Kept
+    # deliberately short: every entry was checked against the 9,280 accepted
+    # titles of run 20261003T233023 and matches 0 real roles.
+    _W3_NAV_SUBSTRINGS = (
+        "job detail", "jobdetails", "careers faq", "career faq",
+        "offerte di lavoro", "alle jobs anzeigen", "toutes les offres",
+        "candidatura spontanea", "open sollicitatie", "create job alert",
+        "bekijk alle vacatures", "initiativbewerbung",
+    )
+    # "<role> Jobs in <place>" / "<role> Stellenangebote in <ort>" — an
+    # aggregator listing pattern. The role is real, the suffix is the board's
+    # own search phrase, and the place is a usable location hint.
+    _W3_JOBS_IN_RE = re.compile(
+        r"(?i)\s*[-–—|,:]?\s*\b(?:jobs?|stellen(?:angebote|anzeigen)?|"
+        r"offerte(?:\s+di\s+lavoro)?|vacatures?|emplois?|empleos?|vagas?|"
+        r"oferty|tyopaikat|työpaikat)\s+"
+        r"(?:in|bei|at|à|a|en|te|w|na)\s+"
+        r"(?P<place>[A-Za-z\u00c0-\u024f][\w\u00c0-\u024f'’\-\. ]{1,38})\s*$"
+    )
+    # Role nouns that are complete titles in under five characters. English
+    # has almost none, which is why the old rule looked safe.
+    _W3_SHORT_ROLES = frozenset({
+        "koch", "arzt", "chef", "kok", "cook", "sous", "vet", "nurse",
+        "ceo", "cfo", "cto", "coo", "cio", "cmo", "chro", "cdo", "cso",
+        "md", "gp", "pm", "qa",
+    })
+
+    def _split_title_place(self, title):
+        """("Designer (m/w/d) Jobs in Innsbruck") -> ("Designer", "Innsbruck").
+
+        Returns the title unchanged and "" when the pattern does not apply.
+        """
+        t = re.sub(r"\s+", " ", str(title or "")).strip()
+        if not t:
+            return "", ""
+        m = self._W3_JOBS_IN_RE.search(t)
+        if not m:
+            return t, ""
+        head = t[:m.start()].strip(" \t-–—|,:")
+        place = re.sub(r"\s+", " ", m.group("place")).strip(" .,-")
+        if len(head) < 3 or not any(ch.isalpha() for ch in head):
+            return t, ""          # the suffix WAS the title ("Jobs in Wien")
+        return head, place
+
+    def _is_nav_title(self, title):
+        """Board navigation / search furniture, in any of the seed languages."""
+        low = re.sub(r"\s+", " ", str(title or "")).strip().casefold()
+        low = low.strip(" .:|-–—")
+        if not low:
+            return True
+        if low in self._W3_NAV_TITLES:
+            return True
+        if any(x in low for x in self._W3_NAV_SUBSTRINGS):
+            return True
+        # "Jobsuche Berlin", "Stellenangebote Hamburg", "Vacatures Amsterdam"
+        if re.match(r"^(jobsuche|stellensuche|stellenangebote|stellenanzeigen|"
+                    r"vacatures|offerte di lavoro|ofertas de empleo|"
+                    r"offres d'emploi|job search|search jobs)\b", low):
+            return True
+        return False
+
     def valid_title(self, title):
         title = clean(title)
+        title = self._split_title_place(title)[0]
         low = title.lower()
         if not title or len(title) > 180:
             return False
@@ -1632,12 +2771,24 @@ class ATSScanner:
         # make_row() quarantines invalid titles with a clear reason.
         if self._title_is_pure_location(title):
             return False
+        # FIX P0-34a: card metadata lines ("Updated: 9/3/2026", "Posted: ...")
+        # and bare dates were accepted as job titles.
+        if re.match(r"^(updated|posted|published|last\s+updated|date|"
+                    r"aggiornato|pubblicato|aktualisiert|bijgewerkt|"
+                    r"mis\s+a\s+jour)\b\s*[:\-–]?\s*", low):
+            return False
+        if re.fullmatch(r"[\d\s/.\-–]+", title):
+            return False
         # allow short CJK titles (e.g. 2-char "电工" = electrician); Latin titles
         # under 3 chars ("IT", "HR", "QA") are never real job titles
         if len(title) < 3 and not re.search(
                 r"[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]", title):
             return False
         if low in BAD_TITLES:
+            return False
+        # W3-1 (P5) parity with career_scanner: board navigation in any
+        # language ("Job Detail", "Jobsuche", "Offerte di lavoro", ...).
+        if self._is_nav_title(title):
             return False
         rejected = (
             "sorry, internet explorer", "skip to main", "looking for a job",
@@ -1670,15 +2821,213 @@ class ATSScanner:
         return True
 
     # ── Row construction (full v5 schema, honest defaults) ───────────────────
+    # ── FIX P0-41 (parity with career_scanner) ───────────────────────────
+    _STREET_WORDS = (r"via|viale|v\.le|piazza|piazzale|p\.zza|corso|c\.so|strada|"
+                     r"largo|vicolo|contrada|localit[àa]|lungomare|rue|avenue|"
+                     r"boulevard|calle|carrer|rua|stra[sß]e|strasse|weg|allee|"
+                     r"platz|laan|straat|street|road|avenida")
+    _VANITY_TLDS = frozenset({
+        "io", "ai", "co", "me", "tv", "cc", "ws", "fm", "ly", "to", "gg",
+        "im", "je", "sh", "st", "vc", "nu", "bz", "cx", "mu", "ms", "tk",
+        "ml", "ga", "cf", "gq", "am", "fo", "ag", "sc", "la", "ki", "mn",
+    })
+    _JUNK_TOWN_WORDS = frozenset({
+        "codice", "riferimento", "calcolare", "distanza", "applicare", "ora",
+        "sede", "indirizzo", "filiale", "negozio", "store", "adresse",
+        "standort", "location", "address", "apply", "now", "reference",
+        "job", "jobs", "contratto", "tempo", "full", "part", "time"})
+
+    def _town_from_address(self, text):
+        """Town out of a street address the place vocabulary does not list."""
+        if not text:
+            return None
+        t = re.sub(r"\s+", " ", str(text))[:400]
+        word = r"[A-ZÀ-ÖØ-Þ][\w'’\-\.]*(?:\s+(?:di|de|del|della|sul|sotto|a|in)\s+[A-ZÀ-ÖØ-Þ]?[\w'’\-\.]*)?"
+        name = rf"{word}(?:\s+{word}){{0,2}}"
+        m = (re.search(rf"({name})\s*,\s*(?:{self._STREET_WORDS})\b", t, re.IGNORECASE | re.UNICODE)
+             or re.search(rf"(?:{self._STREET_WORDS})\b[^,]{{0,60}},\s*({name})", t, re.IGNORECASE | re.UNICODE)
+             or re.search(rf"\b\d{{4,5}}\s+({name})\b", t))
+        if not m:
+            return None
+        cand = re.sub(r"\s+", " ", m.group(1)).strip(" ,.-")
+        if (not cand or len(cand) < 3 or len(cand.split()) > 3
+                or cand.lower() in self._JUNK_TOWN_WORDS
+                or _has_role_noun(cand.lower())
+                or not re.match(r"^[A-ZÀ-ÖØ-Þ]", cand)):
+            return None
+        return cand
+
+    def _country_from_site(self, *urls):
+        """Country implied by the host a posting is served from."""
+        try:
+            from sponsorscout.core.location_country import ISO2_TO_COUNTRY
+        except Exception:
+            return None
+        for u in urls:
+            if not u:
+                continue
+            try:
+                host = (urlparse(str(u)).hostname or "").lower().strip(".")
+            except Exception:
+                continue
+            if not host:
+                continue
+            labels = host.split(".")
+            head = labels[0]
+            if (len(head) == 2 and head != "ww" and head in ISO2_TO_COUNTRY
+                    and head not in self._VANITY_TLDS):
+                return ISO2_TO_COUNTRY[head]
+            tld = labels[-1]
+            if tld == "uk" and "gb" in ISO2_TO_COUNTRY:
+                return ISO2_TO_COUNTRY["gb"]
+            if (len(tld) == 2 and tld in ISO2_TO_COUNTRY
+                    and tld not in self._VANITY_TLDS):
+                return ISO2_TO_COUNTRY[tld]
+        return None
+
+    # ── FIX P0-40: scope enforcement (ported from career_scanner) ─────────
+    # This module READ scope_policy and wrote it to output, but never acted on
+    # it: there was no _scope_allows() in the file at all, and the scan log
+    # hard-coded "Rejected Scope": 0. Every ATS board therefore ingested every
+    # country regardless of the seed's target_country -- the same defect that
+    # put 10 Pune/Hyderabad jobs under a Netherlands-scoped recruiter on the
+    # career side. Same rule, same alias table, same quarantine reason, so the
+    # two scanners stay in lockstep.
+    EUROPE_COUNTRIES = frozenset({
+        "austria", "belgium", "bulgaria", "croatia", "cyprus",
+        "czech republic", "denmark", "estonia", "finland", "france",
+        "germany", "greece", "hungary", "iceland", "ireland", "italy",
+        "latvia", "liechtenstein", "lithuania", "luxembourg", "malta",
+        "netherlands", "norway", "poland", "portugal", "romania",
+        "slovakia", "slovenia", "spain", "sweden", "switzerland",
+        "united kingdom",
+    })
+
+    _SCOPE_ALIASES = {
+        "germany": {"germany", "deutschland", "berlin", "hamburg", "munich", "munchen", "muenchen", "frankfurt", "cologne", "koln", "koeln", "dusseldorf", "duesseldorf", "stuttgart", "hannover", "bremen", "leipzig", "dresden", "bayern", "bavaria"},
+        "italy": {"italy", "italia", "milan", "milano", "rome", "roma", "turin", "torino", "bologna", "napoli", "parma", "venice", "venezia", "florence", "firenze", "lombardia", "lombardy", "piemonte", "toscana", "sicilia"},
+        "netherlands": {"netherlands", "nederland", "amsterdam", "rotterdam", "utrecht", "haarlem", "delft", "eindhoven", "north holland", "noord holland", "zuid holland"},
+        "united kingdom": {"united kingdom", "england", "scotland", "wales", "northern ireland", "london", "manchester", "birmingham", "edinburgh", "glasgow", "uk"},
+        "ireland": {"ireland", "dublin", "cork", "galway", "limerick"},
+        "india": {"india", "bharat", "pune", "mumbai", "bombay", "delhi", "new delhi", "bengaluru", "bangalore", "hyderabad", "chennai", "madras", "kolkata", "calcutta", "ahmedabad", "noida", "gurgaon", "gurugram", "kochi", "cochin"},
+    }
+
+    def _scope_allows(self, target, location, context="", url=""):
+        policy = (target.get("scope_policy") or "global").lower()
+        tc = (target.get("target_country") or "Global").strip()
+        if policy == "global" or tc.casefold() == "global" or not tc:
+            return True
+        if policy == "seed_url":
+            # The seed URL is itself the country signal; accept, but the page
+            # evidence is still evaluated so the row can be flagged.
+            self._last_scope_verified = self._scope_country_match(
+                tc, location, context, url)
+            return True
+        # FIX P0-37 parity: "job_location" means the JOB's location decides.
+        # Page context and URL are deliberately NOT consulted -- blending them
+        # in let one mention of the target country anywhere on a board pass
+        # every job on it.
+        return self._scope_country_match(tc, location, "", "")
+
+    def _scope_country_match(self, target, location, context="", url=""):
+        blob = self._norm(" ".join([
+            location or "", context or "",
+            unquote(url or ""),
+        ]))
+        if target.casefold() == "europe":
+            try:
+                from sponsorscout.core.location_country import country_from_location
+                c = (country_from_location(location or "") or "").casefold()
+                if c and c in self.EUROPE_COUNTRIES:
+                    return True
+            except Exception:
+                pass
+            return any(
+                re.search(r"(?:^|[^a-z])" + re.escape(a) + r"(?:$|[^a-z])", blob)
+                for a in self.EUROPE_COUNTRIES)
+        aliases = self._SCOPE_ALIASES.get(target.casefold(), {target.casefold()})
+        if any(re.search(r"(?:^|[^a-z])" + re.escape(a) + r"(?:$|[^a-z])", blob)
+               for a in aliases):
+            return True
+        # W3-2 parity: the alias table lists ~20 cities per country, so a job
+        # in Cuneo or Ludwigsburg failed a scope test it should pass.
+        try:
+            return bool(location) and (
+                self._resolve_country(location) or "").casefold() == target.casefold()
+        except Exception:
+            return False
+
+    def _scope_confidence(self, target, location, context="", url=""):
+        """FIX P19b: career-scanner vocabulary for the scope verdict."""
+        policy = (target.get("scope_policy") or "global").lower()
+        tc = (target.get("target_country") or "Global").strip()
+        if not tc or tc.casefold() == "global":
+            return "n/a"
+        if policy == "seed_url":
+            return ("verified"
+                    if self._scope_country_match(tc, location, context, url)
+                    else "unverified_seed_url")
+        if policy == "job_location":
+            # Rows that fail the job-location test never reach the writer --
+            # make_row quarantines them -- so anything written is verified.
+            return "verified"
+        return "n/a"
+
     def make_row(self, target, title, url, location, raw_location, job_type,
                  description, extraction_method, location_source="api"):
         title = clean(title)
         url = clean(url)
+        # FIX P0-41: recover an unlisted town / name the country from the
+        # posting's host BEFORE the scope test, so an enriched row is judged
+        # on its real location instead of being quarantined as "unknown".
+        if not location or location in ("Not Specified", "Unknown"):
+            _town = (self._town_from_address(raw_location)
+                     or self._town_from_address(description))
+            _site_c = self._country_from_site(url, target.get("url"))
+            if _town and _site_c:
+                location, location_source = f"{_town}, {_site_c}", "address+site"
+            elif _town:
+                location, location_source = _town, "address"
+            elif _site_c:
+                location, location_source = _site_c, "site_host"
+        else:
+            try:
+                from sponsorscout.core.location_country import country_from_location
+                if not (country_from_location(location) or ""):
+                    # W3-2 parity: the place's own country first, the web
+                    # host only as a last resort.
+                    _gaz_c = self._supplementary_country(location)
+                    # W3-2 parity: do not append a country the string
+                    # already names in its own language.
+                    if _gaz_c and self._w3_has_country(location):
+                        _gaz_c = ""
+                        location_source = f"{location_source}+gazetteer"
+                    if _gaz_c:
+                        location = f"{location}, {_gaz_c}"
+                        location_source = f"{location_source}+gazetteer"
+                    else:
+                        _site_c = self._country_from_site(url, target.get("url"))
+                        if _site_c:
+                            location = f"{location}, {_site_c}"
+                            location_source = f"{location_source}+site"
+            except Exception:
+                pass
         reason = None
         if not self.valid_job_url(url):
             reason = "invalid_or_application_only_url"
         elif not self.valid_title(title):
             reason = "invalid_generic_or_department_title"
+        elif ((target.get("scope_policy") or "global").lower() == "job_location"
+              and _location_is_site_derived(location_source)):
+            # FIX W2-8 (parity): under job_location the JOB's own location is
+            # the only admissible evidence. A country read off the seed's host
+            # let 1,117 career rows through in run 20261003T233023 (Randstad
+            # -> "Belgium" x840) and inflated every Jobs-by-Country tile.
+            reason = "outside_or_unproven_target_country"
+        elif not self._scope_allows(target, location, description or "", url):
+            # FIX P0-40: out-of-scope rows are QUARANTINED, never dropped, so
+            # they stay reviewable in <output>_quarantine.csv.
+            reason = "outside_or_unproven_target_country"
         now = time.strftime("%Y-%m-%dT%H:%M:%S%z")
         rec = {
             "Company Name": target["name"],
@@ -1693,9 +3042,25 @@ class ATSScanner:
             "Remote Score": target.get("remote_score", ""),
             "Job Title": title,
             "Raw Job Title": title,
-            "Job Location": location if location and location != "Not Specified" else "Unknown",
+            # FIX P0-49 (S-09/S-04): gate the value, same rule as career.
+            "Job Location": self._sanitize_job_location(
+                location if location and location != "Not Specified" else "",
+                target["name"]),
             "Raw Location": raw_location or "",
             "Job Type": job_type,
+            # FIX P19b: scope verdict, same vocabulary as the career writer.
+            "Scope Confidence": self._scope_confidence(target, location,
+                                                       raw_location, url),
+            # FIX P19b: same classifier AND the same evidence the career
+            # scanner uses -- title, the employer's own contract/work-mode
+            # fields (job_type) and the location. Feeding the whole JD body
+            # in here made the two scanners disagree on identical rows
+            # (DocuSign: career "Hybrid" from the employer's tag vs ats
+            # "Remote/Hybrid" from the word "remote" somewhere in the prose)
+            # and is the same weak-evidence mistake that inflated the
+            # dashboard Remote tile to 589 (P9).
+            "Work Mode": classify_work_mode(
+                f"{title} {job_type or ''} {raw_location or ''} {location or ''}"),
             "Job URL": url,
             "Canonical Job ID": self.canonical_job_id(
                 target["name"], url, target["ats_type"], title, location or ""),
@@ -1710,6 +3075,12 @@ class ATSScanner:
             "Experience Level": "Unknown",
             "Experience Source": "none",
             "Location Source": location_source if location and location not in ("Not Specified", "Unknown") else "none",
+            # FIX W2-8 (parity with career_scanner): a location inferred from
+            # the web host is a hint, not an observation. It is still
+            # published, but it is labelled and it cannot prove scope.
+            "Location Confidence": _location_confidence(
+                location if location and location not in ("Not Specified", "Unknown") else "",
+                location_source),
             "URL Type": "real",
             "Visa Sponsorship": "Unknown",
             "Relocation Support": "Unknown",
@@ -1732,6 +3103,9 @@ class ATSScanner:
         rec["Support Confidence"] = conf
         rec["Support Evidence"] = evidence
         rec["Relocation/Visa Support"] = flag
+        # FIX P19b: an evidence URL with no evidence behind it is noise, and
+        # the career scanner never writes one. Same rule here.
+        rec["Support Evidence URL"] = url if evidence else ""
         if evidence:
             rec["Support Evidence Type"] = "explicit_jd_sentence"
         # FIX P0-30: experience from the JD text the adapter already fetched
@@ -1740,12 +3114,43 @@ class ATSScanner:
         return rec
 
     # ── ATS adapters ─────────────────────────────────────────────────────────
+
+    # ── FIX P0-43: board_slug was a dead column ──────────────────────────────
+    # Every adapter re-derived the board identifier from the URL and ignored
+    # the board_slug the seed already carried, so a vanity careers URL silently
+    # pointed the API at the wrong board:
+    #
+    #   Virtuagym   jobs.virtuagym.com  -> host.split(".")[0] = "jobs"
+    #                                      -> jobs.recruitee.com (not Virtuagym)
+    #   SOTI        /Careers/jobs       -> last path segment = "jobs"
+    #                                      -> .../soti/jobs (site is "Careers")
+    #
+    # Both returned an empty or wrong board with no error. The seed column is
+    # now authoritative when it is filled in; URL sniffing remains the
+    # fallback, so every existing row behaves exactly as before.
+    @staticmethod
+    def _seed_slug(target, part=None):
+        """board_slug from the seed, or "" to fall back to URL sniffing.
+
+        ``part`` selects a field of a compound slug: Workday rows store
+        "<tenant>/<site>", so _seed_slug(target, 0) -> tenant, 1 -> site.
+        """
+        slug = (target.get("board_slug") or "").strip().strip("/")
+        if not slug:
+            return ""
+        if part is None:
+            return slug
+        pieces = [p for p in slug.split("/") if p]
+        if len(pieces) <= part:
+            return ""
+        return pieces[part]
+
     def scan_ashby(self, target):
         url = target["url"]
         parts = [p for p in urlparse(url).path.split("/") if p]
-        if not parts:
+        board = self._seed_slug(target) or (parts[0] if parts else "")
+        if not board:
             return []
-        board = parts[0]
         data = self._get_json(
             f"https://api.ashbyhq.com/posting-api/job-board/{board}"
             f"?includeCompensation=false")
@@ -1778,8 +3183,9 @@ class ATSScanner:
             board = parsed.query.split("job_board=", 1)[1].split("&", 1)[0]
         elif path_parts:
             board = path_parts[-1]
-        if "figma.com" in urlparse(url).netloc:
-            board = "figma"
+        # FIX P0-43: the seed wins. This also retires the "figma.com -> figma"
+        # hard-code, which only existed because board_slug was being ignored.
+        board = self._seed_slug(target) or board
         if board.lower() in {"careers", "job-openings"} or not board:
             return []
         data = self._get_json(
@@ -1800,9 +3206,9 @@ class ATSScanner:
     def scan_lever(self, target):
         url = target["url"]
         parts = [p for p in urlparse(url).path.split("/") if p]
-        if not parts:
+        board = self._seed_slug(target) or (parts[0] if parts else "")
+        if not board:
             return []
-        board = parts[0]
         region = target.get("lever_region") or ""
         if not region and ".eu.lever.co" in urlparse(url).netloc:
             region = "eu"
@@ -1829,15 +3235,22 @@ class ATSScanner:
         host = urlparse(url).netloc.lower()
         # SmartRecruiters' own careers site uses a legacy host with no board in the
         # URL; its public board slug is "SmartRecruiters".
-        if "smartrecruiterscareers.com" in host:
-            board = "SmartRecruiters"
-        else:
-            m = re.search(r"smartrecruiters\.com/(?:jobs/)?([^/?#]+)", url, re.I)
-            if not m:
-                return []
-            board = m.group(1)
+        board = self._seed_slug(target)
+        if not board:
+            if "smartrecruiterscareers.com" in host:
+                board = "SmartRecruiters"
+            else:
+                m = re.search(r"smartrecruiters\.com/(?:jobs/)?([^/?#]+)", url, re.I)
+                if not m:
+                    return []
+                board = m.group(1)
         offset = 0
         rows = []
+        try:
+            sr_detail_budget = [int(os.environ.get(
+                "SPONSORSCOUT_SMARTRECRUITERS_DETAILS", "150"))]
+        except ValueError:
+            sr_detail_budget = [150]
         while True:
             data = self._get_json(
                 f"https://api.smartrecruiters.com/v1/companies/{board}/postings"
@@ -1855,14 +3268,33 @@ class ATSScanner:
                 slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
                 job_url = (f"https://jobs.smartrecruiters.com/{board}/"
                            f"{job.get('id')}-{slug}")
-                # gather JD text from jobAd sections for support detection
+                # FIX W1-1c: the /postings LIST response does NOT include
+                # jobAd -- verified live against DeliveryHero (971 postings,
+                # no jobAd key anywhere). So this loop always produced
+                # desc="" and every SmartRecruiters row reported Unknown
+                # sponsorship. The per-posting endpoint carries the sections.
                 desc_parts = []
                 jobad = job.get("jobAd") or {}
                 for sec in (jobad.get("sections") or {}).values():
                     if isinstance(sec, dict):
                         txt = sec.get("text") or sec.get("description") or ""
                         desc_parts.append(self._strip_html(txt))
-                desc = " ".join(desc_parts)
+                desc = " ".join(desc_parts).strip()
+                if not desc and sr_detail_budget[0] > 0 and job.get("id"):
+                    try:
+                        full = self._get_json(
+                            f"https://api.smartrecruiters.com/v1/companies/"
+                            f"{board}/postings/{job.get('id')}")
+                        secs = ((full or {}).get("jobAd") or {}).get("sections") or {}
+                        desc = " ".join(
+                            self._strip_html((secs.get(k) or {}).get("text") or "")
+                            for k in ("companyDescription", "jobDescription",
+                                      "qualifications", "additionalInformation")
+                        ).strip()
+                        if desc:
+                            sr_detail_budget[0] -= 1
+                    except Exception:
+                        desc = ""
                 job_type = self.classify_job_type(
                     (job.get("typeOfEmployment") or {}).get("label"),
                     location, desc)
@@ -1885,7 +3317,7 @@ class ATSScanner:
     def scan_personio(self, target):
         import xml.etree.ElementTree as ET
         host = urlparse(target["url"]).netloc
-        slug = host.split(".")[0] if host else ""
+        slug = self._seed_slug(target) or (host.split(".")[0] if host else "")
         if not slug:
             return []
         raw = self._fetch(f"https://{slug}.jobs.personio.de/xml?language=en")
@@ -1912,7 +3344,9 @@ class ATSScanner:
 
     def scan_recruitee(self, target):
         host = urlparse(target["url"]).netloc
-        slug = host.split(".")[0] if host else ""
+        slug = self._seed_slug(target) or (host.split(".")[0] if host else "")
+        if not slug:
+            return []
         data = self._get_json(f"https://{slug}.recruitee.com/api/offers/")
         rows = []
         for offer in data.get("offers", []):
@@ -1932,7 +3366,7 @@ class ATSScanner:
     def scan_workable(self, target):
         # apply.workable.com/<slug>/  → slug is the FIRST PATH segment
         path_seg = [p for p in urlparse(target["url"]).path.split("/") if p]
-        slug = path_seg[0] if path_seg else ""
+        slug = self._seed_slug(target) or (path_seg[0] if path_seg else "")
         if not slug:
             return []
         data = self._get_json(f"https://www.workable.com/api/accounts/{slug}?details=true")
@@ -1952,19 +3386,119 @@ class ATSScanner:
             rows.append(row)
         return rows
 
+    # ── BambooHR ─────────────────────────────────────────────────────────────
+    # Added 2026-10-03. Two seed rows (Astroscale, Brain Rocket) carried
+    # provider=bamboohr with no adapter behind it, so scan_target fell through
+    # to the DOM fallback on a board that renders entirely from JSON -- i.e.
+    # they could only ever return 0 rows.
+    #
+    # Two endpoints, both public, no key:
+    #   /careers/list          -> {"meta":{"totalCount":N},"result":[...]}
+    #   /careers/<id>/detail   -> result.jobOpening.description (HTML) and
+    #                             location.addressCountry, which the LIST
+    #                             response does not carry.
+    # Verified live against astroscale.bamboohr.com (46 openings) on
+    # 2026-10-03; brainrocket.bamboohr.com answers with totalCount 0, i.e. an
+    # empty board, not an error.
+    #
+    # The list alone has no JD text, so without the detail pass every verdict
+    # would be "Unknown" -- the same blind spot scan_personio has. The detail
+    # pass is therefore ON, with a per-company budget: SPONSORSCOUT_BAMBOOHR_DETAILS
+    # (default 150). Past the budget rows are still emitted, just with no
+    # description, which is honest rather than silently truncating the board.
+    def scan_bamboohr(self, target):
+        host = urlparse(target["url"]).netloc
+        slug = self._seed_slug(target) or (host.split(".")[0] if host else "")
+        if not slug:
+            return []
+        data = self._get_json(f"https://{slug}.bamboohr.com/careers/list")
+        openings = (data or {}).get("result") or []
+        try:
+            budget = int(os.environ.get("SPONSORSCOUT_BAMBOOHR_DETAILS", "150"))
+        except (TypeError, ValueError):
+            budget = 150
+        rows = []
+        for job in openings:
+            jid = str(job.get("id") or "").strip()
+            if not jid:
+                continue
+            job_url = f"https://{slug}.bamboohr.com/careers/{jid}"
+            loc = job.get("location") or {}
+            ats_loc = job.get("atsLocation") or {}
+            desc = ""
+            country = ""
+            if budget > 0:
+                budget -= 1
+                try:
+                    detail = self._get_json(
+                        f"https://{slug}.bamboohr.com/careers/{jid}/detail")
+                    opening = ((detail or {}).get("result") or {}).get("jobOpening") or {}
+                    desc = self._strip_html(opening.get("description") or "")
+                    d_loc = opening.get("location") or {}
+                    country = clean(d_loc.get("addressCountry") or "")
+                    if not loc:
+                        loc = d_loc
+                except Exception:
+                    desc, country = "", ""
+            raw_parts = [
+                clean(loc.get("city") or ats_loc.get("city") or ""),
+                clean(loc.get("state") or ats_loc.get("state")
+                      or ats_loc.get("province") or ""),
+                country or clean(ats_loc.get("country") or ""),
+            ]
+            raw_parts = [p for p in raw_parts if p]
+            # Some employers fill BambooHR's city/state boxes the wrong way
+            # round ("city: France, state: Toulouse" on the Astroscale board,
+            # observed live 2026-10-03). A segment that IS a country name is
+            # moved to the end so the string reads city-first like every other
+            # adapter. The test is exact: "Tokyo" resolves to Japan but is not
+            # the word "Japan", so it is left where it is.
+            try:
+                from sponsorscout.core.location_country import country_from_location as _cfl
+                for _i, _p in enumerate(list(raw_parts[:-1])):
+                    if (_cfl(_p) or "").strip().casefold() == _p.strip().casefold():
+                        raw_parts.append(raw_parts.pop(_i))
+                        break
+            except Exception:
+                pass
+            raw_location = ", ".join(raw_parts)
+            remote = bool(job.get("isRemote")) or str(job.get("locationType") or "") == "1"
+            location = self.format_location(raw_location, "remote" if remote else "")
+            job_type = self.classify_job_type(
+                job.get("employmentStatusLabel") or job.get("employmentType") or "",
+                raw_location, desc)
+            rows.append(self.make_row(
+                target, job.get("jobOpeningName"), job_url, location,
+                raw_location, job_type, desc, "bamboohr_api"))
+        return rows
+
     def scan_workday(self, target):
         url = target["url"]
         parsed = urlparse(url)
         host = parsed.netloc
         # tenant.wdX.myworkdayjobs.com → tenant + wdX
-        m = re.match(r"([^.]+)\.(wd\d)\.myworkdayjobs\.com", host, re.I)
+        # FIX P0-42: the pattern was wd\d -- a SINGLE digit. EMBL is hosted on
+        # embl.wd103.myworkdayjobs.com, so the match failed and scan_workday
+        # returned [] with no error at all: the seed reported 0 jobs forever
+        # and looked like an empty board.
+        m = re.match(r"([^.]+)\.(wd\d+)\.myworkdayjobs\.com", host, re.I)
         if not m:
             return []
         tenant, wd = m.group(1), m.group(2)
         site = (parsed.path.strip("/").split("/") or [""])[-1]
+        # FIX P0-43: board_slug is "<tenant>/<site>". SOTI's URL is
+        # /Careers/jobs, so the last-segment guess picked "jobs" and queried a
+        # site that does not exist.
+        tenant = self._seed_slug(target, 0) or tenant
+        site = self._seed_slug(target, 1) or site
         if not site:
             return []
         api = f"https://{tenant}.{wd}.myworkdayjobs.com/wday/cxs/{tenant}/{site}/jobs"
+        try:
+            detail_budget = [int(os.environ.get(
+                "SPONSORSCOUT_WORKDAY_DETAILS", "150"))]
+        except ValueError:
+            detail_budget = [150]
         rows = []
         offset = 0
         limit = 20  # Workday API rejects limit > 20 (HTTP 400)
@@ -1983,7 +3517,9 @@ class ATSScanner:
             for job in jobs:
                 title = job.get("title", "")
                 ext = job.get("externalPath", "")
-                job_url = f"https://{host}{ext}" if ext else ""
+                # FIX W1-1b: the public URL is /<site><externalPath>; without
+                # the site segment the link does not resolve to the posting.
+                job_url = f"https://{host}/{site}{ext}" if ext else ""
                 location = self.format_location(job.get("locationsText") or "")
                 req = ""
                 bf = job.get("bulletFields") or []
@@ -1991,11 +3527,30 @@ class ATSScanner:
                     if re.match(r"^R\d+$", str(b)):
                         req = str(b)
                         break
-                # Workday list API has no JD text → support Unknown; use remoteType
-                job_type = self.classify_job_type("", job.get("remoteType") or "", "")
+                # FIX W1-1b: the Workday LIST response carries no JD, so
+                # every Workday company (11 seeds: Zalando, Philips, NXP,
+                # Autodesk, Leonardo, SimCorp, SOTI, Zendesk, EMBL, Prysmian,
+                # Wolters Kluwer) reported Unknown for sponsorship, Blue Card
+                # and relocation. The CXS detail endpoint returns the full
+                # description for one extra GET; budgeted like BambooHR.
+                desc = ""
+                if ext and detail_budget[0] > 0:
+                    try:
+                        d = self._get_json(
+                            f"https://{tenant}.{wd}.myworkdayjobs.com"
+                            f"/wday/cxs/{tenant}/{site}{ext}")
+                        info = (d or {}).get("jobPostingInfo") or {}
+                        desc = self._strip_html(info.get("jobDescription") or "")
+                        if desc:
+                            detail_budget[0] -= 1
+                    except Exception:
+                        desc = ""
+                job_type = self.classify_job_type(
+                    "", job.get("remoteType") or "", desc)
                 row = self.make_row(
                     target, title, job_url, location,
-                    job.get("locationsText") or "", job_type, "", "workday_api")
+                    job.get("locationsText") or "", job_type, desc,
+                    "workday_api")
                 if req:
                     row["Canonical Job ID"] = (
                         f"{target['name'].casefold()}|workday|{req.casefold()}")
@@ -2070,6 +3625,161 @@ class ATSScanner:
         return rows
 
     # ── Orchestration ────────────────────────────────────────────────────────
+    # ── FIX P19 (2026-10-04): iCIMS + Eightfold ─────────────────────────
+    # Same two boards the career scanner now handles, same request shapes,
+    # same fallbacks -- the scanners must stay interchangeable.
+    def _careersite_api_hosts(self, target):
+        """Hosts that may serve a career-site JSON API, strongest first."""
+        host = urlparse(target.get("url") or "").netloc
+        slug = self._seed_slug(target) or ""
+        out = []
+        for h in (slug, host):
+            if h and "." in h and h not in out:
+                out.append(h)
+        root = ".".join(host.split(".")[-2:]) if host.count(".") >= 1 else host
+        for pre in ("careers", "jobs", "career"):
+            cand = f"{pre}.{root}"
+            if cand not in out:
+                out.append(cand)
+        return out[:4]
+
+    def scan_icims(self, target):
+        """iCIMS career-site (Jibe) feed: /api/jobs?page=N&limit=100.
+
+        Verified live on careers.docusign.com (2026-10-04): 255 postings,
+        full JD text, 24 of them in Ireland.
+        """
+        api_host, first = "", None
+        for host in self._careersite_api_hosts(target):
+            try:
+                data = self._get_json(
+                    f"https://{host}/api/jobs?page=1&limit=100"
+                    "&sortBy=relevance&internal=false")
+            except Exception:
+                continue
+            if isinstance(data, dict) and isinstance(data.get("jobs"), list):
+                api_host, first = host, data
+                break
+        if not api_host:
+            return []
+
+        def _rows(payload):
+            rows = []
+            for entry in payload.get("jobs") or []:
+                d = (entry or {}).get("data") or {}
+                title = clean(d.get("title") or "")
+                slug = str(d.get("slug") or d.get("req_id") or "").strip()
+                if not title or not slug:
+                    continue
+                raw_loc = clean(d.get("full_location") or "") or ", ".join(
+                    x for x in (d.get("city"), d.get("state"), d.get("country")) if x)
+                desc = self._strip_html(" ".join(str(d.get(k) or "") for k in (
+                    "description", "qualifications", "responsibilities")))
+                tags = d.get("tags2")
+                tags = tags if isinstance(tags, list) else ([tags] if tags else [])
+                _emp = str(d.get("employment_type") or "").strip().upper()
+                _emp = {"FULL_TIME": "Full-time", "PART_TIME": "Part-time",
+                        "INTERN": "Internship", "INTERNSHIP": "Internship",
+                        "CONTRACTOR": "Contract", "CONTRACT": "Contract",
+                        "TEMPORARY": "Contract", "TEMP": "Contract",
+                        "VOLUNTEER": "Volunteer", "PER_DIEM": "Contract",
+                        "OTHER": ""}.get(_emp, _emp.replace("_", " ").title())
+                # FIX P19b: classify from the employer's OWN fields, never
+                # from the JD prose -- the career scanner does the same, and
+                # feeding the body in made the two disagree on these rows.
+                job_type = self.classify_job_type(
+                    _emp, " ".join([raw_loc] + [str(t) for t in tags]), "")
+                rows.append(self.make_row(
+                    target, title,
+                    f"https://{api_host}/jobs/{slug}?lang=en-us",
+                    self.format_location(raw_loc), raw_loc, job_type, desc,
+                    "icims_api"))
+            return rows
+
+        rows = _rows(first)
+        try:
+            total = int(first.get("totalCount") or first.get("count") or len(rows))
+        except Exception:
+            total = len(rows)
+        page = 2
+        while len(rows) < min(total, 2000) and page <= 25:
+            if check_control(self.cancel_event, self.pause_event):
+                break
+            try:
+                batch = _rows(self._get_json(
+                    f"https://{api_host}/api/jobs?page={page}&limit=100"
+                    "&sortBy=relevance&internal=false"))
+            except Exception:
+                break
+            if not batch:
+                break
+            rows.extend(batch)
+            page += 1
+        return rows
+
+    def scan_eightfold(self, target):
+        """Eightfold.ai feed: /api/apply/v2/jobs?domain=<domain>&start=&num=.
+
+        NOT verified against a live tenant (no Eightfold board was reachable
+        from the build machine), so every unexpected shape returns [] and
+        scan_target falls back to the DOM crawl used today.
+        """
+        host = (self._seed_slug(target)
+                or urlparse(target.get("url") or "").netloc)
+        if not host or "." not in host:
+            return []
+        parts = host.split(".")
+        domain = ".".join(parts[-2:]) if len(parts) >= 2 else host
+        rows, start, total = [], 0, None
+        while start < 2000:
+            if check_control(self.cancel_event, self.pause_event):
+                break
+            try:
+                data = self._get_json(
+                    f"https://{host}/api/apply/v2/jobs?domain={domain}"
+                    f"&start={start}&num=50&exclude_pills=true")
+            except Exception:
+                break
+            if not isinstance(data, dict):
+                break
+            if str(data.get("status") or "").lower() == "failure":
+                break
+            positions = data.get("positions")
+            if not isinstance(positions, list) or not positions:
+                break
+            if total is None:
+                try:
+                    total = int(data.get("count") or 0)
+                except Exception:
+                    total = 0
+            for it in positions:
+                if not isinstance(it, dict):
+                    continue
+                title = clean(it.get("name") or it.get("title") or "")
+                if not title:
+                    continue
+                loc = it.get("location")
+                if not loc:
+                    locs = it.get("locations")
+                    loc = (locs[0] if isinstance(locs, list) and locs else "")
+                raw_loc = clean(str(loc or ""))
+                url = str(it.get("canonicalPositionUrl") or "").strip()
+                if not url:
+                    pid = str(it.get("id") or it.get("display_job_id") or "").strip()
+                    if not pid:
+                        continue
+                    url = f"https://{host}/careers/job/{pid}"
+                desc = self._strip_html(str(it.get("job_description") or ""))
+                job_type = self.classify_job_type(
+                    it.get("type") or "", raw_loc, desc)
+                rows.append(self.make_row(
+                    target, title, url, self.format_location(raw_loc),
+                    raw_loc, job_type, desc, "eightfold_api"))
+            if len(positions) < 50:
+                break
+            start += 50
+        return rows
+
     def scan_target(self, target):
         adapters = {
             "ashby": self.scan_ashby,
@@ -2080,6 +3790,9 @@ class ATSScanner:
             "recruitee": self.scan_recruitee,
             "workable": self.scan_workable,
             "workday": self.scan_workday,
+            "bamboohr": self.scan_bamboohr,
+            "icims": self.scan_icims,            # FIX P19
+            "eightfold": self.scan_eightfold,    # FIX P19
         }
         adapter = adapters.get(target["ats_type"])
         if adapter is None:
@@ -2251,7 +3964,12 @@ class ATSScanner:
                     "Target Country": target.get("target_country", "Global"), "Status": status,
                     "Provider": target["ats_type"], "Jobs Found": len(accepted),
                     "Quarantined": len(quarantined), "Duplicates": duplicates,
-                    "Rejected Scope": 0, "Error": error,
+                    # FIX P0-40: was hard-coded 0 because nothing enforced scope.
+                    "Rejected Scope": sum(
+                        1 for _r in quarantined
+                        if _r.get("Quarantine Reason")
+                        == "outside_or_unproven_target_country"),
+                    "Error": error,
                     "Diagnostics": " | ".join(diagnostics)[-4000:],
                     "Duration Sec": round(time.monotonic() - started, 1),
                     "Seed URL": target["url"],
@@ -2261,6 +3979,27 @@ class ATSScanner:
                                    target["url"])
             print(f"   {status.upper()}: wrote={len(accepted)}, quarantined={len(quarantined)}, dups={duplicates}")
 
+        # FIX P0-52: make the false-positive guards auditable. If the
+        # sponsored-jobs count looks low, this says whether the guards took
+        # the verdicts or the JDs simply never offered sponsorship.
+        if SUPPORT_GUARD_HITS:
+            _tot = sum(SUPPORT_GUARD_HITS.values())
+            print(f"  Support FP guards downgraded {_tot} 'Yes' verdict(s):")
+            for _g, _n in sorted(SUPPORT_GUARD_HITS.items()):
+                print(f"     {_g}: {_n}")
+        else:
+            print("  Support FP guards downgraded 0 verdicts "
+                  "(a low sponsored count is the JDs, not the guards).")
+        # W3-3 (P7) parity: an aggregator copy of an employer's own posting
+        # must not sit in both result files.
+        try:
+            _dupes, _ = self._dedupe_cross_bucket(
+                self.output_file, recruiter_csv, quarantine_csv, OUTPUT_FIELDS)
+            if _dupes:
+                print(f"  Cross-source duplicates moved to quarantine: {_dupes}")
+        except Exception as _dexc:
+            print(f"  [warn] cross-source dedupe skipped: "
+                  f"{type(_dexc).__name__}: {_dexc}")
         print(f"\nATS scan complete. Outputs:\n  Direct: {self.output_file}\n"
               f"  Recruiters: {recruiter_csv}\n  Quarantine: {quarantine_csv}\n  Log: {scan_log_csv}\n"
               f"  Errors: {errors_csv}")

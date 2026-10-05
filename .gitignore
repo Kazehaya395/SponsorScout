@@ -59,7 +59,6 @@ data/*.csv
 data/*.json
 # Bundled seed CSVs are committed resources — don't ignore them:
 !data/seeds/*.csv
-CODEBASE.md
 
 # ── Tracked source that must NEVER be ignored ─────────────────────────────
 # NOTE: CODEBASE.md, SponsorScout.spec, .gitattributes, .editorconfig and the
@@ -72,8 +71,9 @@ CODEBASE.md
 extra_for_dev_purpose(do not delete)/*.exe
 
 # ── Build tools (large binaries, not for git) ─────────────────────────────
+# NOTE: tools/*.py (find_dead_code.py, check_readme_anchors.py) are tracked
+# source. Only windows_build_tools/ (large binaries) stays ignored.
 windows_build_tools/
-tools/
 
 
 # ── OS-specific ────────────────────────────────────────────────────────────

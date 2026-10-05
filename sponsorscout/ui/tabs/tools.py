@@ -453,6 +453,24 @@ class _CompanyPicker(QWidget):
         self.none_btn.setEnabled(on)
         self.filter.setEnabled(on)
 
+    # FIX UI-1: the seed files carry comment rows -- the country banners
+    # ("# ----- GERMANY (31) -----") that group the career seed. Every one
+    # of them was built into the list as a checkable company, so the picker
+    # showed 45 phantom entries, "Select all" ticked them, the counter read
+    # "328/373", and the scanner was handed names like
+    # "# ----- GLOBAL / Netherlands (6) -----" as companies to scan.
+    # They are now rendered as non-selectable section headers, which is
+    # what they are, and they are excluded from every count and from the
+    # selection.
+    @staticmethod
+    def _is_banner(name: str) -> bool:
+        return (name or "").lstrip().startswith("#")
+
+    @staticmethod
+    def _banner_text(name: str) -> str:
+        """'# ----- GERMANY (31) -----' -> 'GERMANY (31)'."""
+        return (name or "").lstrip("# ").strip().strip("-").strip() or "\u2014"
+
     def reload(self):
         try:
             rows = seed_manager.read_seed_rows(self.seed_path)["rows"]
@@ -464,6 +482,17 @@ class _CompanyPicker(QWidget):
             name = (r.get("name") or "").strip()
             if not name:
                 continue
+            if self._is_banner(name):
+                header = QListWidgetItem(self._banner_text(name))
+                header.setData(Qt.UserRole, None)
+                # not checkable, not selectable, not hit by Select all
+                header.setFlags(Qt.NoItemFlags)
+                font = header.font()
+                font.setBold(True)
+                header.setFont(font)
+                header.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+                self.list.addItem(header)
+                continue
             industry = (r.get("industry") or "").strip()
             label = f"{name}  ({industry})" if industry else name
             item = QListWidgetItem(label)
@@ -474,18 +503,39 @@ class _CompanyPicker(QWidget):
         self.list.blockSignals(False)
         self.selection_changed.emit()
 
+    def _is_company_item(self, item) -> bool:
+        return bool(item) and item.data(Qt.UserRole) is not None
+
     def _apply_filter(self, text):
         low = (text or "").lower()
+        if not low:
+            for i in range(self.list.count()):
+                self.list.item(i).setHidden(False)
+            return
+        # A header stays only while at least one company under it is still
+        # visible, so filtering does not leave empty country sections behind.
+        visible_under_header = False
+        last_header = None
         for i in range(self.list.count()):
             item = self.list.item(i)
-            item.setHidden(bool(low) and low not in item.text().lower())
+            if not self._is_company_item(item):
+                if last_header is not None:
+                    last_header.setHidden(not visible_under_header)
+                last_header, visible_under_header = item, False
+                continue
+            hidden = bool(low) and low not in item.text().lower()
+            item.setHidden(hidden)
+            visible_under_header = visible_under_header or not hidden
+        if last_header is not None:
+            last_header.setHidden(not visible_under_header)
 
     def _set_all(self, checked: bool):
         state = Qt.Checked if checked else Qt.Unchecked
         self.list.blockSignals(True)
         for i in range(self.list.count()):
-            if not self.list.item(i).isHidden():
-                self.list.item(i).setCheckState(state)
+            item = self.list.item(i)
+            if self._is_company_item(item) and not item.isHidden():
+                item.setCheckState(state)
         self.list.blockSignals(False)
         self.selection_changed.emit()
 
@@ -495,10 +545,13 @@ class _CompanyPicker(QWidget):
     def selected_names(self) -> list:
         return [self.list.item(i).data(Qt.UserRole)
                 for i in range(self.list.count())
-                if self.list.item(i).checkState() == Qt.Checked]
+                if self._is_company_item(self.list.item(i))
+                and self.list.item(i).checkState() == Qt.Checked]
 
     def total_count(self) -> int:
-        return self.list.count()
+        """Real companies only -- banners are not scannable targets."""
+        return sum(1 for i in range(self.list.count())
+                   if self._is_company_item(self.list.item(i)))
 
 
 class CustomScanDialog(QDialog):

@@ -90,6 +90,16 @@ LANGUAGES: dict[str, dict[str, str]] = {
         "No experience requirement found in the job description": "No experience requirement found in the job description",
         "The ad mentions experience without stating a figure or a level.": "The ad mentions experience without stating a figure or a level.",
         "Seniority level \"{level}\" — the ad states no number of years.": "Seniority level \"{level}\" — the ad states no number of years.",
+        # Verdict tooltips (Sponsor / Blue Card / Reloc): these quote the sentence
+        # that produced the Y / N / ? so a verdict can be audited without opening
+        # the posting. "Unknown" is spelled out because a bare "?" next to a "Y"
+        # reads like a rendering bug rather than a missing statement.
+        "Confidence: {c:.0%}": "Confidence: {c:.0%}",
+        "Found in the job description:": "Found in the job description:",
+        "{col}: {v}\n\nThe job description makes no explicit statement about this. Unknown means the ad did not say — it is not a \"no\".":
+            "{col}: {v}\n\nThe job description makes no explicit statement about this. Unknown means the ad did not say — it is not a \"no\".",
+        "{col}: {v}\n\nNo supporting sentence was recorded for this verdict.":
+            "{col}: {v}\n\nNo supporting sentence was recorded for this verdict.",
         "Sort:": "Sort:",
         "Objective:": "Objective:",
         "Balanced": "Balanced",
@@ -476,6 +486,17 @@ LANGUAGES: dict[str, dict[str, str]] = {
         "No experience requirement found in the job description": "Nessun requisito di esperienza indicato nella descrizione del lavoro",
         "The ad mentions experience without stating a figure or a level.": "L'annuncio cita l'esperienza senza indicare né cifre né livello.",
         "Seniority level \"{level}\" — the ad states no number of years.": "Livello di seniority \"{level}\" — l'annuncio non indica un numero di anni.",
+        # Tooltip dei verdetti (Sponsor / Carta Blu / Ricolloc.): cita la frase
+        # che ha prodotto Y / N / ?, così l'utente può verificare la valutazione
+        # senza aprire l'annuncio. "Unknown" è spiegato esplicitamente perché una
+        # "?" accanto a una "Y" sembrerebbe un bug di rendering anziché
+        # un'assenza di dichiarazione.
+        "Confidence: {c:.0%}": "Affidabilità: {c:.0%}",
+        "Found in the job description:": "Trovato nella descrizione del lavoro:",
+        "{col}: {v}\n\nThe job description makes no explicit statement about this. Unknown means the ad did not say — it is not a \"no\".":
+            "{col}: {v}\n\nLa descrizione del lavoro non contiene alcuna dichiarazione esplicita al riguardo. \"Unknown\" significa che l'annuncio non lo dice: non è un \"no\".",
+        "{col}: {v}\n\nNo supporting sentence was recorded for this verdict.":
+            "{col}: {v}\n\nNessuna frase di supporto è stata registrata per questa valutazione.",
         "Job title": "Posizione",
         "Location": "Località",
         "Copy URL": "Copia URL",
