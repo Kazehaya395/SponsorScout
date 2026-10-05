@@ -68,7 +68,7 @@ data/*.json
 
 # Large third-party installers cached inside the legacy reference folder are
 # NOT source and are not committed.
-extra_for_dev_purpose(do not delete)/*.exe
+extra_for_dev_purpose(do not delete)/
 
 # ── Build tools (large binaries, not for git) ─────────────────────────────
 # NOTE: tools/*.py (find_dead_code.py, check_readme_anchors.py) are tracked
