@@ -35,6 +35,54 @@ def check_control(cancel_event, pause_event=None, poll_sec: float = 0.1) -> bool
     return cancel_event is not None and cancel_event.is_set()
 
 
+class ScanCancelled(Exception):
+    """Raised to unwind a scan phase immediately after Stop is pressed.
+
+    Caught at the per-company / per-phase boundary (never in the UI): the
+    partial rows already written stay on disk and the pipeline still writes
+    its checkpoint, so Resume keeps working exactly as before.  It exists so
+    a Stop pressed mid-company does not wait for the rest of that company's
+    pages, retries and sleeps to finish.
+    """
+
+
+def check_cancelled(cancel_event) -> None:
+    """Raise :class:`ScanCancelled` when the Stop event is set (no-op if None)."""
+    if cancel_event is not None and cancel_event.is_set():
+        raise ScanCancelled()
+
+
+def sleep_interruptible(seconds: float, cancel_event=None,
+                         pause_event=None, poll_sec: float = 0.1) -> bool:
+    """Sleep up to ``seconds`` but return early on Stop/Pause changes.
+
+    Returns ``True`` when the full sleep elapsed (scan may continue),
+    ``False`` when Stop was pressed (caller must abort) or the sleep was cut
+    short by a Pause that later cleared.  Pause is still honoured via
+    ``check_control`` so backoff sleeps never busy-spin through a pause.
+    """
+    if seconds is None or seconds <= 0:
+        return not (cancel_event is not None and cancel_event.is_set())
+    import time as _time
+
+    deadline = _time.monotonic() + max(0.0, float(seconds))
+    step = max(0.02, min(poll_sec, 0.25))
+    while True:
+        if check_control(cancel_event, pause_event, poll_sec=step):
+            return False
+        remaining = deadline - _time.monotonic()
+        if remaining <= 0:
+            return True
+        _wait = pause_event.wait if pause_event is not None else None
+        try:
+            if _wait is not None:
+                _wait(min(step, remaining))
+            else:
+                _time.sleep(min(step, remaining))
+        except Exception:
+            _time.sleep(min(step, remaining))
+
+
 #: Absolute memory floor for pool sizing (2 GiB).  Sizing reads AVAILABLE RAM,
 #: not total; this only prevents a transient dip from pinning a scan to one
 #: worker for the whole run.

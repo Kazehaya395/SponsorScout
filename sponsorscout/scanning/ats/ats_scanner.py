@@ -45,7 +45,12 @@ except ModuleNotFoundError as _pw_exc:
 
 # Desktop UI Stop/Pause. Imported, not reimplemented, so both scanners obey
 # the same control protocol.
-from sponsorscout.scanning.common import check_control
+from sponsorscout.scanning.common import (
+    ScanCancelled,
+    check_cancelled,
+    check_control,
+    sleep_interruptible,
+)
 
 # Real-time logging: flush prints during long runs.
 import builtins as _builtins
@@ -1637,10 +1642,15 @@ class ATSScanner:
 
     def _fetch(self, url, method="GET", body=None, timeout=None):
         """Fetch a URL with transient-error retry + exponential backoff.
-        Returns decoded text. Raises on definitive 404/410 (no retry)."""
+
+        Returns decoded text. Raises on definitive 404/410 (no retry).
+        Backoff sleeps are interruptible: a desktop Stop pressed mid-retry
+        aborts within ~0.25 s instead of sleeping through the delay.
+        """
         timeout = timeout or HTTP_TIMEOUT_SEC
         last_exc = None
         for attempt in range(1, HTTP_RETRIES + 1):
+            check_cancelled(self.cancel_event)
             try:
                 data = json.dumps(body).encode() if body is not None else None
                 req = Request(url, data=data, method=method, headers={
@@ -1664,7 +1674,10 @@ class ATSScanner:
                 else:
                     last_exc = exc
             if attempt < HTTP_RETRIES:
-                time.sleep(HTTP_BACKOFF_BASE_SEC * (2 ** (attempt - 1)))
+                if not sleep_interruptible(
+                        HTTP_BACKOFF_BASE_SEC * (2 ** (attempt - 1)),
+                        self.cancel_event, self.pause_event):
+                    raise ScanCancelled()
         raise last_exc
 
     def _get_json(self, url):
@@ -3504,6 +3517,10 @@ class ATSScanner:
         limit = 20  # Workday API rejects limit > 20 (HTTP 400)
         total = None
         while True:
+            # STOP FAST (your screenshot hung here on Autodesk): without this
+            # gate a Stop pressed mid-board waits for every remaining page +
+            # up to 150 detail GETs before the outer loop even sees it.
+            check_cancelled(self.cancel_event)
             data = self._post_json(api, {
                 "appliedFacets": {}, "limit": limit, "offset": offset,
                 "searchText": "",
@@ -3515,6 +3532,9 @@ class ATSScanner:
             if not jobs:
                 break
             for job in jobs:
+                # Same fast-stop gate per posting: the detail GET below is a
+                # blocking network call, so check again before each one.
+                check_cancelled(self.cancel_event)
                 title = job.get("title", "")
                 ext = job.get("externalPath", "")
                 # FIX W1-1b: the public URL is /<site><externalPath>; without
@@ -3564,6 +3584,8 @@ class ATSScanner:
 
     def browser_fallback(self, target):
         """Last-resort DOM scrape for ATS types without a public API."""
+        # STOP FAST: never launch Chromium for a run the user already stopped.
+        check_cancelled(self.cancel_event)
         if sync_playwright is None:
             logging.error(
                 "Playwright required for %s (%s)",
@@ -3582,7 +3604,10 @@ class ATSScanner:
                 ctx = browser.new_context(viewport={"width": 1280, "height": 800})
                 install_page_resource_blocking(ctx)
                 page = ctx.new_page()
+                # The goto below blocks up to 35 s — gate before paying it.
+                check_cancelled(self.cancel_event)
                 page.goto(target["url"], wait_until="domcontentloaded", timeout=35000)
+                check_cancelled(self.cancel_event)
                 page.wait_for_timeout(2500)
                 jobs = page.evaluate(
                     """
@@ -3602,6 +3627,8 @@ class ATSScanner:
                     """
                 )
                 browser.close()
+        except ScanCancelled:
+            raise  # Stop is not a browser failure — let the run loop end.
         except Exception as exc:
             logging.exception("Browser fallback failed for %s", target["url"])
             self._record_error(target.get("name", "?"), "browser_fallback",
@@ -3929,6 +3956,9 @@ class ATSScanner:
             err_type = err_msg = ""
             try:
                 result = self.scan_target(target)
+            except ScanCancelled:
+                print(f"   CANCELLED: stopped during target [{idx}] {target.get('name', '?')}")
+                break
             except Exception as exc:
                 result = []
                 err_type, err_msg = type(exc).__name__, str(exc)

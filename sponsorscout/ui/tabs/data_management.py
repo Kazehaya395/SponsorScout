@@ -31,6 +31,43 @@ from sponsorscout.i18n import _
 # and writes it back unchanged.
 FALLBACK_COLUMNS = sm.SEED_COLUMNS
 
+# Long guidance string lives in ONE place so __init__ and retranslate()
+# cannot drift (same pattern as tools.py *_TOOLTIP): the constant IS the
+# exact i18n key. Regression (screenshot): the hint was set only at
+# construction, so switching language left this whole paragraph in the
+# old locale while the tab titles around it retranslated.
+HINT_TEXT = (
+    "Manage the source URLs scanned by SponsorScout.  ATS portals are "
+    "scanned via their job-board APIs; career portals are crawled on "
+    "the company site.  Edits are saved to your personal seed files "
+    "and take effect on the next scan."
+)
+
+
+def _column_label(col: str) -> str:
+    """Translated display label for one seed CSV column.
+
+    The grid shows the FILE's own header (snake_case, English) — only the
+    label handed to the horizontal header is localised, never the column
+    NAME used to read/write rows.  Unknown/custom columns fall back to a
+    title-cased form so a user-added column is still readable.
+    """
+    labels = {
+        "name": _("Company name"),
+        "careers_url": _("Careers URL"),
+        "provider": _("Provider"),
+        "board_slug": _("Board Slug"),
+        "source_type": _("Source type"),
+        "target_country": _("Target Country"),
+        "scope_policy": _("Scope policy"),
+        "industry": _("Industry"),
+        "sponsorship_history": _("Sponsorship History"),
+        "english_friendly": _("English Friendly"),
+        "remote_score": _("Remote Score"),
+        "notes": _("Notes"),
+    }
+    return labels.get(col) or _(col.replace("_", " ").title())
+
 
 class SeedRowDialog(QDialog):
     """Add/edit form for one seed row, grouped into base + advanced fields."""
@@ -130,6 +167,7 @@ class SeedEditor(QWidget):
         self.title = title
         self.bundled_path = bundled_path
         self.rows: list[dict] = []
+        self._companies = 0
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(8, 8, 8, 8)
@@ -137,7 +175,9 @@ class SeedEditor(QWidget):
         info = QHBoxLayout()
         self.file_label = QLabel(str(path))
         self.file_label.setObjectName("MutedLabel")
-        info.addWidget(QLabel(_("File:")))
+        # Kept as a reference so retranslate() can refresh the caption.
+        self.file_label_title = QLabel(_("File:"))
+        info.addWidget(self.file_label_title)
         info.addWidget(self.file_label, 1)
         self.count_label = QLabel("")
         info.addWidget(self.count_label)
@@ -145,7 +185,8 @@ class SeedEditor(QWidget):
 
         self.columns = list(FALLBACK_COLUMNS)
         self.table = QTableWidget(0, len(self.columns))
-        self.table.setHorizontalHeaderLabels(self.columns)
+        self.table.setHorizontalHeaderLabels(
+            [_column_label(c) for c in self.columns])
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SingleSelection)
@@ -191,6 +232,14 @@ class SeedEditor(QWidget):
 
     # ── i18n ─────────────────────────────────────────────────────────────────
     def retranslate(self):
+        # Refresh EVERYTHING this editor shows: buttons, the "File:" caption,
+        # the column headers (raw snake_case before the fix) and the count.
+        # Regression: only the buttons were refreshed, so a language switch
+        # left "careers_url / board_slug / …" headers and "N companies" stale.
+        self.file_label_title.setText(_("File:"))
+        self.table.setHorizontalHeaderLabels(
+            [_column_label(c) for c in self.columns])
+        self.count_label.setText(_("{} companies").format(self._companies))
         self.add_btn.setText(_("Add…"))
         self.edit_btn.setText(_("Edit…"))
         self.delete_btn.setText(_("Delete"))
@@ -206,7 +255,8 @@ class SeedEditor(QWidget):
         self.rows = data["rows"]
         self.columns = list(data.get("columns") or FALLBACK_COLUMNS)
         self.table.setColumnCount(len(self.columns))
-        self.table.setHorizontalHeaderLabels(self.columns)
+        self.table.setHorizontalHeaderLabels(
+            [_column_label(c) for c in self.columns])
         self.file_label.setText(str(self.path))
         # An old personal seed still carrying the removed v6 column is
         # migrated on read; say so rather than let it look like data loss.
@@ -247,6 +297,7 @@ class SeedEditor(QWidget):
                     font.setBold(True)
                     item.setFont(font)
                 self.table.setItem(r, c, item)
+        self._companies = companies
         self.count_label.setText(_("{} companies").format(companies))
 
     def _current_index(self):
@@ -365,11 +416,7 @@ class DataManagementTab(QWidget):
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(8, 8, 8, 8)
-        hint = QLabel(_(
-            "Manage the source URLs scanned by SponsorScout.  ATS portals are "
-            "scanned via their job-board APIs; career portals are crawled on "
-            "the company site.  Edits are saved to your personal seed files "
-            "and take effect on the next scan."))
+        hint = QLabel(_(HINT_TEXT))
         hint.setWordWrap(True)
         hint.setObjectName("MutedLabel")
         lay.addWidget(hint)
@@ -391,6 +438,9 @@ class DataManagementTab(QWidget):
 
     # ── i18n ──────────────────────────────────────────────────────────────
     def retranslate(self):
+        # The hint was built once in __init__ and never refreshed here, so
+        # switching language left this paragraph in the old locale.
+        self._hint.setText(_(HINT_TEXT))
         self._tabs.setTabText(0, _("ATS portals"))
         self._tabs.setTabText(1, _("Career portals"))
         self.ats_editor.retranslate()

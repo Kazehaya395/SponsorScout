@@ -70,6 +70,8 @@ entry; the bundled Chromium is used automatically.
 **Data Management — editable ATS and career seed files**
 <img src="assets/backend_data_management.png" alt="SponsorScout Data Management tab: ATS portals and career portals seed editor with Add, Edit, Delete, Save to CSV, Reload and Reset to bundled defaults" width="860">
 
+**Custom Scan - Custom job search portals selection**
+<img src="assets/custom_portal_selection.png" alt="SponsorScout Data Management tab: ATS portals and career portals seed editor with Add, Edit, Delete, Save to CSV, Reload and Reset to bundled defaults" width="860">
 ---
 
 ## ✨ What It Does
@@ -431,6 +433,9 @@ automaticamente.
 
 **Gestione Dati — file seed ATS e Career modificabili**
 <img src="assets/backend_data_management.png" alt="Scheda Gestione Dati di SponsorScout: editor dei file seed Portali ATS e Portali Career con Aggiungi, Modifica, Elimina, Salva su CSV, Ricarica e Ripristina predefiniti" width="860">
+
+**Scansione personalizzata - Selezione dei portali di ricerca lavoro personalizzati**
+<img src="assets/custom_portal_selection.png" alt="SponsorScout Data Management tab: ATS portals and career portals seed editor with Add, Edit, Delete, Save to CSV, Reload and Reset to bundled defaults" width="860">
 
 ---
 

@@ -74,6 +74,44 @@ def test_check_control_stop_wins_over_a_pause():
     assert time.monotonic() - started < 1.0
 
 
+def test_sleep_interruptible_wakes_on_cancel():
+    """Backoff sleeps must not stall Stop: wake within ~0.3 s, report abort."""
+    from sponsorscout.scanning.common import ScanCancelled, sleep_interruptible
+
+    cancel = threading.Event()
+    started = time.monotonic()
+
+    def _stop_soon():
+        time.sleep(0.1)
+        cancel.set()
+
+    threading.Thread(target=_stop_soon, daemon=True).start()
+    assert sleep_interruptible(20, cancel, None) is False
+    assert time.monotonic() - started < 2.0
+
+
+def test_sleep_interruptible_sleeps_through_when_idle():
+    """No events set: the full (short) sleep elapses and returns True."""
+    from sponsorscout.scanning.common import sleep_interruptible
+
+    started = time.monotonic()
+    assert sleep_interruptible(0.15, threading.Event(), None) is True
+    assert 0.1 <= time.monotonic() - started < 2.0
+
+
+def test_check_cancelled_raises_only_when_set():
+    """check_cancelled is a no-op for None/unset, raises ScanCancelled on Stop."""
+    from sponsorscout.scanning.common import ScanCancelled, check_cancelled
+
+    check_cancelled(None)
+    check_cancelled(threading.Event())
+    cancel = threading.Event()
+    cancel.set()
+    with pytest.raises(ScanCancelled):
+        check_cancelled(cancel)
+
+
+
 # ── ScanCoordinator: pause/resume/stop state machine ─────────────────────────
 
 class _LiveThread:

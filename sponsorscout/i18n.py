@@ -982,6 +982,33 @@ LANGUAGES: dict[str, dict[str, str]] = {
         "Remove  {title}  at  {company}?": "Rimuovere  {title}  presso  {company}?",
         "Removed {jobs} duplicate job(s) and {companies} duplicate company entry(ies).":
             "Rimosse {jobs} voci duplicate di lavori e {companies} voci duplicate di aziende.",
+        # ── Data Management: seed-grid column labels, dialog fields ─────────
+        # Keys are the title-cased column names (SeedRowDialog) and the
+        # explicit labels of _column_label() (seed-grid headers).
+        "Provider": "Provider",
+        "Board Slug": "Board Slug",
+        "Target Country": "Paese target",
+        "Sponsorship History": "Storico sponsorship",
+        "English Friendly": "English friendly",
+        "Remote Score": "Punteggio remoto",
+        "Notes": "Note",
+        "Seed Name": "Nome seed",
+        "Canonical Name": "Nome canonico",
+        "Seed file updated": "File seed aggiornato",
+        "This file uses a removed column ({}). It has been read correctly and will be written in the current format the next time you save.":
+            "Questo file usa una colonna rimossa ({}). È stato letto correttamente e verrà riscritto nel formato corrente la prossima volta che salvi.",
+        # ── Dashboard: empty-run panel + work-mode stats ────────────────────
+        "No Jobs Found (last run)": "Nessun lavoro trovato (ultima esecuzione)",
+        "Top Employers by Sponsorship": "Principali datori di lavoro per sponsorship",
+        "Why": "Perché",
+        "auto": "auto",
+        "error": "errore",
+        "hybrid": "ibrido",
+        "no jobs": "nessun lavoro",
+        "{remote} fully remote, {hybrid} hybrid. {unknown} job(s) state no work mode at all.":
+            "{remote} full remote, {hybrid} ibridi. {unknown} lavori non indicano alcuna modalità di lavoro.",
+        "Run {run}: {empty} of {total} scanned companies returned no jobs at all; {errors} of those failed with an error.":
+            "Esecuzione {run}: {empty} aziende su {total} scansionate non hanno restituito alcun lavoro; {errors} di queste hanno fallito con un errore.",
         "Manage the source URLs scanned by SponsorScout.  ATS portals are scanned via their job-board APIs; career portals are crawled on the company site.  Edits are saved to your personal seed files and take effect on the next scan.":
             "Gestisci gli URL delle fonti scansionate da SponsorScout. I portali ATS vengono scansionati tramite le API dei job board; i portali carriere vengono crawpati sul sito dell'azienda. Le modifiche sono salvate nei tuoi file seed personali e hanno effetto alla prossima scansione.",
         "No data yet.\n\nRun the first scan now? It fetches jobs from each company's official career page and ATS board (1–3 minutes).":

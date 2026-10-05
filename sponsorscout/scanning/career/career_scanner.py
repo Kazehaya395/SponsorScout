@@ -1610,7 +1610,12 @@ class ProductionScannerConfig:
 # A loud ImportError is better than a silent downgrade.
 # App/UI integration: Stop and Pause must take effect between pages, not
 # only at the 15-minute MAX_COMPANY_TIME_SEC cutoff.
-from sponsorscout.scanning.common import check_control
+from sponsorscout.scanning.common import (
+    ScanCancelled,
+    check_cancelled,
+    check_control,
+    sleep_interruptible,
+)
 
 from sponsorscout.scanning.jd_support import (
         JDSupportDetector,
@@ -2746,7 +2751,7 @@ def _is_download_url(url: str) -> bool:
     return bool(url and _DOWNLOAD_URL_RE.search(url))
 
 
-def _dns_resolves(host: str) -> bool:
+def _dns_resolves(host: str, cancel_event=None, pause_event=None) -> bool:
     """Fail-fast DNS check so dead hosts skip browser retries entirely.
 
     Batch F2: one retry after 10s — survives sub-minute resolver blips
@@ -2757,17 +2762,23 @@ def _dns_resolves(host: str) -> bool:
     the old 2-try/10s window. Re-testing those hosts afterwards showed 7 of
     8 resolving fine. Now: 3 attempts, 5s/15s backoff, and AF_UNSPEC so an
     IPv6-only answer still counts as alive.
+
+    STOP FAST: the 5s/15s waits are interruptible — a Stop pressed here
+    returns False immediately so the scan unwinds instead of sleeping.
     """
     if not host:
         return False
     delays = (5, 15, 0)
     for attempt, delay in enumerate(delays, 1):
+        if cancel_event is not None and cancel_event.is_set():
+            return False
         try:
             socket.getaddrinfo(host, 443)  # AF_UNSPEC: A or AAAA both count
             return True
         except Exception:
             if delay:
-                time.sleep(delay)
+                if not sleep_interruptible(delay, cancel_event, pause_event):
+                    return False
     return False
 
 
@@ -3892,6 +3903,7 @@ class CareerPortalScanner:
         last_exc = None
         dns_retried = False
         for attempt in range(1, self.config.HTTP_RETRIES + 1):
+            check_cancelled(self.cancel_event)
             try:
                 req = urllib.request.Request(url, data=data, headers=headers,
                                              method="POST" if data is not None else "GET")
@@ -3910,12 +3922,16 @@ class CareerPortalScanner:
                 if not dns_retried and _is_dns_error(exc):
                     # Batch F2: resolver blips outlast the normal backoff;
                     # wait them out once (covers the Pam/DR adapter path,
-                    # which has no preflight).
+                    # which has no preflight). Interruptible so Stop lands fast.
                     dns_retried = True
-                    time.sleep(10)
+                    if not sleep_interruptible(
+                            10, self.cancel_event, self.pause_event):
+                        raise ScanCancelled()
             if attempt < self.config.HTTP_RETRIES:
                 backoff = self.config.HTTP_BACKOFF_BASE_SEC * (2 ** (attempt - 1))
-                time.sleep(backoff)
+                if not sleep_interruptible(
+                        backoff, self.cancel_event, self.pause_event):
+                    raise ScanCancelled()
         raise last_exc
 
     def read_seed_file(self):
@@ -6703,6 +6719,11 @@ class CareerPortalScanner:
 
     def _sniff_one_target(self, target_row):
         """One cheap HTTP fetch of a seed page -> (provider, slug, note)."""
+        # STOP FAST: queued sniff tasks must drain instantly on Stop/pause
+        # instead of running full HTTP fetches nobody will read — the sniff
+        # pool's context manager waits for every submitted task to finish.
+        if check_control(self.cancel_event, self.pause_event):
+            return "", "", ""
         url = (target_row.get("careers_url") or "").strip()
         if not url.startswith("http"):
             return "", "", ""
@@ -6763,6 +6784,12 @@ class CareerPortalScanner:
                 for fut in _cf.as_completed(futs):
                     t = futs[fut]
                     if check_control(self.cancel_event, self.pause_event):
+                        # STOP FAST: cancel the queued sniffs too — the pool's
+                        # context manager waits for every submitted task, and
+                        # un-cancelled queued tasks would each pay an HTTP
+                        # fetch the scan will never read.
+                        for _f in futs:
+                            _f.cancel()
                         break
                     try:
                         prov, slug, note = fut.result()
@@ -9200,6 +9227,7 @@ class CareerPortalScanner:
         """
         if _is_download_url(url):
             return "", "", ""
+        check_cancelled(self.cancel_event)
         try:
             req = urllib.request.Request(url, headers={
                 "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -9208,8 +9236,10 @@ class CareerPortalScanner:
             })
             with urllib.request.urlopen(req, timeout=12) as resp:
                 html = resp.read().decode("utf-8", "replace")
+        except ScanCancelled:
+            raise
         except Exception:
-            return "", ""
+            return "", "", ""
         desc = ""
         loc = ""
         org = ""
@@ -9396,6 +9426,8 @@ class CareerPortalScanner:
                 return "", ""
             try:
                 return self._fetch_jd_text(url)
+            except ScanCancelled:
+                raise
             except Exception:
                 return "", "", ""
 
@@ -10481,7 +10513,8 @@ class CareerPortalScanner:
                     # FIX: fail fast on unresolvable seed hosts (DNS) instead
                     # of burning GOTO_RETRIES x backoff on doomed navigations.
                     _seed_host = urlparse(seed_url).hostname or ""
-                    if _seed_host and not _dns_resolves(_seed_host):
+                    if _seed_host and not _dns_resolves(
+                            _seed_host, self.cancel_event, self.pause_event):
                         diagnostics.append(f"seed host does not resolve (DNS): {_seed_host}")
                         raise RuntimeError(f"seed host does not resolve (DNS): {_seed_host} [{seed_url}]")
                     if sync_playwright is None:
@@ -10543,6 +10576,11 @@ class CareerPortalScanner:
                         page = ctx.new_page()
                         loaded = False
                         for attempt in range(1, self.config.GOTO_RETRIES + 1):
+                            # STOP FAST: seed navigation retries are a blocking
+                            # Playwright wait — gate each attempt on Stop so a
+                            # cancel mid-backoff doesn't wait out the retry
+                            # chain.
+                            check_cancelled(self.cancel_event)
                             try:
                                 page.goto(seed_url, wait_until="domcontentloaded", timeout=self.config.ACTION_TIMEOUT_MS)
                                 loaded = True; break
@@ -10739,6 +10777,11 @@ class CareerPortalScanner:
                 pass
             except _DetailHttpOnly:
                 pass
+            except ScanCancelled:
+                print(f"   CANCELLED: stopped during {name}")
+                error = "ScanCancelled: stopped by user"
+                diagnostics.append(error)
+                status = "cancelled"
             except Exception as exc:
                 error = f"{type(exc).__name__}: {exc}"
                 diagnostics.append(error)
@@ -10888,16 +10931,50 @@ class CareerPortalScanner:
               f"x{self.max_workers} browser worker(s)")
 
         def _drain(futures):
-            for future in cf.as_completed(futures):
-                try:
-                    wrote, quarantined, status = future.result()
-                    totals["written"] += wrote
-                    totals["quarantined"] += quarantined
-                    totals[status] += 1
-                except Exception as exc:
-                    totals["thread_errors"] += 1
-                    print(f"Worker escaped error: {type(exc).__name__}: {exc}")
-                    self._record_error("?", "worker", type(exc).__name__, str(exc))
+            # STOP FAST: cf.as_completed() blocks until the NEXT future
+            # finishes, so a Stop pressed while every worker sat inside a slow
+            # browser fetch waited minutes for the drain to even notice.  Poll
+            # the pending set every 0.5 s instead: the cancel is seen promptly,
+            # queued work is cancelled, and in-flight companies get a short
+            # grace window to unwind through their own gates.
+            pending = set(futures)
+            while pending:
+                if self.cancel_event is not None and self.cancel_event.is_set():
+                    for _f in pending:
+                        _f.cancel()
+                    # Grace: gated workers raise ScanCancelled within ~1 s of
+                    # their current blocking call.  Stragglers stuck in a long
+                    # Playwright goto are left to finish in the background —
+                    # pool shutdown is wait=False and the CSV/DB ingest is
+                    # idempotent, so nothing is corrupted by walking away.
+                    done, pending = cf.wait(pending, timeout=3.0)
+                    for _f in done:
+                        try:
+                            wrote, quarantined, status = _f.result()
+                        except (ScanCancelled, cf.CancelledError):
+                            totals["cancelled"] += 1
+                        except Exception:
+                            pass  # already stopping; don't log straggler noise
+                        else:
+                            totals["written"] += wrote
+                            totals["quarantined"] += quarantined
+                            totals[status] += 1
+                    break
+                done, pending = cf.wait(
+                    pending, timeout=0.5,
+                    return_when=cf.FIRST_COMPLETED)
+                for future in done:
+                    try:
+                        wrote, quarantined, status = future.result()
+                        totals["written"] += wrote
+                        totals["quarantined"] += quarantined
+                        totals[status] += 1
+                    except (ScanCancelled, cf.CancelledError):
+                        totals["cancelled"] += 1
+                    except Exception as exc:
+                        totals["thread_errors"] += 1
+                        print(f"Worker escaped error: {type(exc).__name__}: {exc}")
+                        self._record_error("?", "worker", type(exc).__name__, str(exc))
 
         api_pool = cf.ThreadPoolExecutor(max_workers=api_workers,
                                          thread_name_prefix="api")
@@ -10916,8 +10993,11 @@ class CareerPortalScanner:
                 futures.append(dom_pool.submit(crawl_target, i, row))
             _drain(futures)
         finally:
-            api_pool.shutdown(wait=True)
-            dom_pool.shutdown(wait=True)
+            # STOP FAST: cancel() only stops queued work; running companies
+            # unwind via ScanCancelled. shutdown(wait=False) avoids blocking
+            # here on stragglers, then cancel() the leftovers.
+            api_pool.shutdown(wait=False, cancel_futures=True)
+            dom_pool.shutdown(wait=False, cancel_futures=True)
 
         # FIX P0-15b: automatic DNS retry sweep. A transient resolver outage
         # is indistinguishable in the log from a genuinely dead host, and the
@@ -10938,7 +11018,7 @@ class CareerPortalScanner:
                 still_live = []
                 for r in retry_rows:
                     h = urlparse(r["careers_url"]).hostname or ""
-                    if _dns_resolves(h):
+                    if _dns_resolves(h, self.cancel_event, self.pause_event):
                         still_live.append(r)
                     else:
                         print(f"   confirmed unreachable: {r['name']} ({h})")
@@ -10948,12 +11028,22 @@ class CareerPortalScanner:
                         futs = [ex2.submit(crawl_target, i, r)
                                 for i, r in enumerate(still_live, 1)]
                         for fut in cf.as_completed(futs):
+                            # STOP FAST: a Stop during the retry sweep must not
+                            # wait on stragglers — cancel the queued retries
+                            # (crawl_target gates at entry anyway) and leave.
+                            if (self.cancel_event is not None
+                                    and self.cancel_event.is_set()):
+                                for _f in futs:
+                                    _f.cancel()
+                                break
                             try:
                                 wrote, quarantined, status = fut.result()
                                 totals["written"] += wrote
                                 totals["quarantined"] += quarantined
                                 totals[status] += 1
                                 totals["dns_recovered"] += 1 if wrote else 0
+                            except (ScanCancelled, cf.CancelledError):
+                                totals["cancelled"] += 1
                             except Exception as exc:
                                 totals["thread_errors"] += 1
                                 print(f"Retry worker error: {type(exc).__name__}: {exc}")

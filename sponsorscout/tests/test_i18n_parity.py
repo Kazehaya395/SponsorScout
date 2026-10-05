@@ -33,14 +33,34 @@ def _ui_keys() -> set:
             tree = ast.parse(path.read_text(encoding="utf-8"))
         except SyntaxError:  # pragma: no cover - defensive
             continue
+        # Module-level string constants passed to _() (the tools.py
+        # *_TOOLTIP / data_management.HINT_TEXT pattern: one const used by
+        # both __init__ and retranslate()).  Without resolving these the
+        # walker only sees literal _("…") calls and silently skips the
+        # longest strings in the app.
+        consts = {}
+        for node in tree.body:
+            if isinstance(node, ast.Assign):
+                target, value = node.targets[0], node.value
+            elif isinstance(node, ast.AnnAssign):
+                target, value = node.target, node.value
+            else:
+                continue
+            if (isinstance(target, ast.Name)
+                    and isinstance(value, ast.Constant)
+                    and isinstance(value.value, str)):
+                consts[target.id] = value.value
         for node in ast.walk(tree):
-            if (isinstance(node, ast.Call)
+            if not (isinstance(node, ast.Call)
                     and isinstance(node.func, ast.Name)
                     and node.func.id == "_"
-                    and node.args
-                    and isinstance(node.args[0], ast.Constant)
-                    and isinstance(node.args[0].value, str)):
-                keys.add(node.args[0].value)
+                    and node.args):
+                continue
+            arg = node.args[0]
+            if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                keys.add(arg.value)
+            elif isinstance(arg, ast.Name) and arg.id in consts:
+                keys.add(consts[arg.id])
     return keys
 
 
