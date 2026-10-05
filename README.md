@@ -72,6 +72,7 @@ entry; the bundled Chromium is used automatically.
 
 **Custom Scan - Custom job search portals selection**
 <img src="assets/custom_portal_selection.png" alt="SponsorScout Data Management tab: ATS portals and career portals seed editor with Add, Edit, Delete, Save to CSV, Reload and Reset to bundled defaults" width="860">
+
 ---
 
 ## ✨ What It Does
@@ -159,7 +160,7 @@ Your pipeline. Select a saved job to set its status and add notes.
 - **Freshness Check** — re-verify saved jobs against their live pages and mark
   dead listings as expired.
 
-<img src="assets/scanning_tool.png" alt="Tools tab: Scan Now and Custom Scan buttons, progress bar with live scan log, scan history and data-quality actions" width="780">
+<img src="assets/applications_dashboard.png" alt="Tools tab: Scan Now and Custom Scan buttons, progress bar with live scan log, scan history and data-quality actions" width="780">
 
 ### 5. Data Management
 Edit the company lists that get scanned (**ATS portals** and **Career
@@ -187,6 +188,8 @@ for.
 A custom scan runs the exact same pipeline as a full scan, so result quality is
 identical — only the scope and duration change. Use it to re-scan companies you
 just edited. Custom runs appear as `custom` in Scan History.
+
+<img src="assets/custom_portal_selection.png" alt="Data Management tab: ATS portals and career portals seed editor with Save to CSV, Reload and Reset actions" width="780">
 
 ### What a scan does
 1. **ATS boards** — companies with a known ATS are pulled through the official
@@ -538,7 +541,7 @@ aggiungere note.
 - **Verifica Aggiornamento** — riverifica i lavori salvati sulle pagine live e
   segna gli annunci non più disponibili come scaduti.
 
-<img src="assets/scanning_tool.png" alt="Scheda Strumenti: pulsanti Scansiona Ora e Scansione Personalizzata, barra di avanzamento con log, cronologia e azioni di qualità dati" width="780">
+<img src="assets/applications_dashboard.png" alt="Scheda Strumenti: pulsanti Scansiona Ora e Scansione Personalizzata, barra di avanzamento con log, cronologia e azioni di qualità dati" width="780">
 
 ### 5. Gestione Dati
 Modifica gli elenchi di aziende che vengono scansionati (**Portali ATS** e
@@ -568,6 +571,8 @@ Una scansione personalizzata usa esattamente la stessa pipeline di una scansione
 completa, quindi la qualità dei risultati è identica: cambiano solo ambito
 e durata. Usala per riscanare le aziende che hai appena modificato. Le
 esecuzioni personalizzate compaiono come `custom` nella Cronologia Scansioni.
+
+<img src="assets/custom_portal_selection.png" alt="Data Management tab: ATS portals and career portals seed editor with Save to CSV, Reload and Reset actions" width="780">
 
 ### Cosa fa una scansione
 1. **Bacheche ATS** — le aziende con un ATS noto vengono interrogate tramite
