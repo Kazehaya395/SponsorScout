@@ -15,7 +15,7 @@
   #define MyAppVersion "0.1.1"
 #endif
 #define MyAppPublisher "SponsorScout"
-#define MyAppURL       "https://github.com/Kazake95/SponsorScout"
+#define MyAppURL       "https://github.com/Kazehaya395/SponsorScout"
 #define MyAppExeName   "SponsorScout.exe"
 #define MyAppIcoName   "sponsorscout.ico"
 #define MyAppDataDirName "SponsorScout"

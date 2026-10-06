@@ -67,6 +67,16 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 Write-Host "[2/4] Building SponsorScout.exe with PyInstaller..." -ForegroundColor Cyan
+# A SponsorScout.exe left running from a previous dist\ (e.g. double-clicked
+# to test it) holds file locks inside $BuildDir, so the Remove-Item below dies
+# under $ErrorActionPreference='Stop' with a cryptic "in use by another
+# process" error. Close it first, with a message that says why.
+$Running = Get-Process -Name $AppName -ErrorAction SilentlyContinue
+if ($Running) {
+    Write-Host "Closing running $AppName process(es) so dist\$AppName can be rebuilt..." -ForegroundColor Yellow
+    $Running | Stop-Process -Force
+    Start-Sleep -Milliseconds 800
+}
 # Only remove our own PyInstaller output: dist/ also holds the .deb and .rpm
 # artifacts, which must survive so all three formats can be built side by side.
 if (Test-Path $BuildDir) {
