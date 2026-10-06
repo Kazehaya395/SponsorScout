@@ -3,6 +3,7 @@ import re
 import csv
 import time
 import socket
+import threading  # FIX P42: module-level, the title-rescue budget needs a lock
 import collections
 import unicodedata
 import urllib.parse
@@ -10,6 +11,7 @@ import urllib.request
 import json
 from urllib.parse import urljoin, urlparse, parse_qsl, urlencode, urlunparse
 from html import unescape  # FIX P0-30: JD HTML -> plain text
+from html.parser import HTMLParser
 try:
     from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
     PLAYWRIGHT_IMPORT_ERROR = None
@@ -119,7 +121,7 @@ const isBadScope = (el) => {
 // Expanded to match custom-hosted ATS directories like Catawiki's /o/ and Deliveroo's /role/
 // H1 (2026-09-13): Italian detail paths — /offerte* (Carrefour /offertedilavoro/<id>,
 // Action /offerte-di-lavoro/<slug>), /work-with-us/<slug> (Piazza), /carriere/<slug> (Yamamay).
-const jobUrlRe = /(\/job(s)?\/[^\/?#]+|\/career(s)?\/(?!disciplines?\/|departments?\/|teams?\/|locations?\/|offices?\/|categor(y|ies)\/|areas?\/|functions?\/)[^/?#]+\/[^\/?#]+|\/career(s)?\/(?!benefits?\b|belonging\b|culture\b|values\b|story\b|people\b|team(s)?\b|location(s)?\b|office(s)?\b|student(s)?\b|discipline(s)?\/?|department(s)?\/?|our-story\b|interview-tips\b|recruitment-process\b|about\b|about-us\b|compatibility\b|emerging-talent\b|home\b|feed\b|search\b|all-jobs\b|overview\b|life\b|life-at-|why-|how-we-hire\b|hiring-process\b|faq\b|diversity\b|inclusion\b|blog\b|news\b|event(s)?\b|program(s)?\b|internship(s)?\b)[^\/?#]{4,}|\/o\/[a-zA-Z0-9-]+|\/role\/[a-zA-Z0-9-]+|\/position|\/vacancy|\/vacancies|\/opening|\/role|\/requisition|\/posting|\/apply|\/stellenangebot|\/stelle|\/lavoro|\/posizioni|\/annuncio|\/offerta|\/offerte|\/work-with-us\/[^\\/?#]+|\/carriere\/[^\\/?#]+|\/opportunit|\/annunci\/|\/offre-de-emploi\/|\/ofertas\/|intervieweb|arca24|inrecruiting|altamiraweb|detail|jobid|job_id|gh_jid|reqid|requisition|posting|lever\.co|greenhouse\.io|personio|workable|smartrecruiters|teamtailor|ashby|workdayjobs|successfactors|phenompeople|eightfold|deel\.com\/job-boards)/i;
+const jobUrlRe = /(\/job(s)?\/[^\/?#]+|\/career(s)?\/(?!disciplines?\/|departments?\/|teams?\/|locations?\/|offices?\/|categor(y|ies)\/|areas?\/|functions?\/)[^/?#]+\/[^\/?#]+|\/career(s)?\/(?!benefits?\b|belonging\b|culture\b|values\b|story\b|people\b|team(s)?\b|location(s)?\b|office(s)?\b|student(s)?\b|discipline(s)?\/?|department(s)?\/?|our-story\b|interview-tips\b|recruitment-process\b|about\b|about-us\b|compatibility\b|emerging-talent\b|home\b|feed\b|search\b|all-jobs\b|overview\b|life\b|life-at-|why-|how-we-hire\b|hiring-process\b|faq\b|diversity\b|inclusion\b|blog\b|news\b|event(s)?\b|program(s)?\b|internship(s)?\b)[^\/?#]{4,}|\/o\/[a-zA-Z0-9-]+|\/role\/[a-zA-Z0-9-]+|\/(?:jobangebote|jobangebot|stellenangebote|stellenangebot|stellenanzeigen|stellenanzeige|stellen|job-offers|job-offer|offre|offres|offre-de-emploi|offre-d-emploi|offres-d-emploi|annonce|annonces|offerta-di-lavoro|offerte-di-lavoro|offerta|offerte|oferta-de-empleo|ofertas-de-empleo|oferta-de-trabajo|ofertas-de-trabajo|oferta-de-trabalho|ofertas-de-trabalho|emploi|emplois|vacature|vacatures|vaga|vagas|ofertas|puesto|posiciones?|posizione|posizioni|lavoro|praca|tyopaikka|tyomahdollisuus|stilling|stillinger|jobb|jobber|lediga-jobb|lediga-tjaenster|lediga-tjänster|werkenbij|werken-bij|karriere|carriere|carrières?|opportunit[aà])\/[^/?#]+|\/position|\/vacancy|\/vacancies|\/opening|\/role|\/requisition|\/posting|\/apply|\/stelle|\/work-with-us\/[^\/?#]+|intervieweb|arca24|inrecruiting|altamiraweb|detail|jobid|job_id|gh_jid|reqid|requisition|posting|lever\.co|greenhouse\.io|personio|workable|smartrecruiters|teamtailor|ashby|workdayjobs|successfactors|phenompeople|eightfold|deel\.com\/job-boards)/i;
 // FIXED: Uses leading slashes and word boundaries for path keywords (like /about, /press)
 // to prevent matching entire domain names like aboutyou.de or americanexpress.com!
 const badUrlRe = /(\/(privacy|cookie|terms|legal|about|contact|history|press|investor|culture|benefit|login|signup|help|blog|pricing|faq|values|diversity|inclusion|mission|story|leadership|impact|journey|how-we-hire|talent-community|talent-network|job-alert|subscribe|download|upload|notify)\b|facebook|linkedin|twitter|instagram|youtube|support\.google|play\.google|apps\.apple|mailto:|tel:)/i;
@@ -137,6 +139,10 @@ const currentClean = window.location.href
     .toLowerCase()
     .replace(/\/$/, '');
 const hasJobQuery = (href) => /[?&](job|jobid|job_id|jid|gh_jid|req|reqid|requisition|requisitionid|posting|postingid|id)=/i.test(href);
+// European employer boards often put the *listing* under /jobs/<localized-slug>
+// and the detail pages under /jobangebote/<slug>, /stellenangebote/<slug>, etc.
+// Never let the listing slug itself pass the generic /jobs/<slug> rule.
+const listingPathRe = /\/(?:jobs?|careers?)\/(?:all[-_]?jobs?|open[-_]?jobs?|open[-_]?positions?|current[-_]?openings?|jobangebote|jobangebot|offene[-_]?jobangebote|offene[-_]?stellen(?:angebote)?|stellenangebote|stellenanzeigen|vacancies|vacature(?:s)?|offres?(?:-d-emploi)?|offres-d-emploi|offerte(?:-di-lavoro)?|offerte-di-lavoro|posizioni-aperte|annunci(?:-di-lavoro)?|ofertas?(?:-de-empleo|-de-trabajo)?|empleos?|puestos?)(?:[/?#]|$)/i;
 const isSelfListingUrl = (href) => {
     const clean = href.split('#')[0].split('?')[0].toLowerCase().replace(/\/$/, '');
     if (/#job=/i.test(href)) return false;
@@ -147,7 +153,12 @@ const looksJobUrl = (href) => {
     if (!href || !String(href).startsWith('http')) return false;
     if (badUrlRe.test(href)) return false;
     if (isSelfListingUrl(href)) return false;
-    return jobUrlRe.test(href);
+    if (listingPathRe.test(href)) return false;
+    // Keep the DOM gate aligned with the Python validator: a detail page can
+    // be identified by its path vocabulary OR a job/requisition query id.
+    // Many European employer sites use URLs such as /view?job=12345 and
+    // /jobangebote/<slug>, neither of which belonged to the old path filter.
+    return jobUrlRe.test(href) || hasJobQuery(href);
 };
 // FIXED: Upgraded with a two-pass system that prefers line matches for roleWordRe.
 // This prevents picking up location headers or boilerplate as job titles from multiline cards (e.g. Deliveroo's 'Emilia-Romagna').
@@ -195,6 +206,8 @@ const titleFromScope = (scope) => {
         '[class*="posting-title" i]',
         '[class*="vacancy-title" i]',
         '[class*="role-title" i]',
+        '[itemprop="title" i]',
+        '[data-title]', '[data-job-title]', '[data-position-title]',
         '[class*="title" i]',
         'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
         'strong', 'b'
@@ -847,10 +860,14 @@ class ProductionScannerConfig:
         # real non-English job URL was quarantined as
         # "invalid_or_application_only_url" -- Decathlon Italia's
         # /it/annonce/<id>-<slug> is 167 such rows in one run.
-        r"(/(?:annonce|annunci|offerta|offerte|stelle|stellenangebot|"
-        r"stellenanzeige|vacature|vacatures|vaga|vagas|oferta|ofertas|"
-        r"empleo|emploi|offre|puesto|posizione|lavoro|praca|tyopaikka|"
-        r"stilling|tyomahdollisuus)/[^/?#]+|"
+        r"(/(?:annonce|annunci|offerta|offerte|offerta-di-lavoro|offerte-di-lavoro|"
+        r"jobangebote|jobangebot|job-offers|job-offer|stellenangebote|stellenangebot|stellenanzeigen|"
+        r"stellenanzeige|vacature|vacatures|vaga|vagas|oferta|ofertas|oferta-de-empleo|"
+        r"ofertas-de-empleo|oferta-de-trabajo|ofertas-de-trabajo|oferta-de-trabalho|"
+        r"ofertas-de-trabalho|empleo|emploi|emplois|offre|offre-de-emploi|offre-d-emploi|"
+        r"offres-d-emploi|puesto|posizione|posizioni|lavoro|praca|emprego|empregos|vacante|vacantes|tyopaikka|"
+        r"tyomahdollisuus|stilling|stillinger|jobb|jobber|lediga-jobb|lediga-tjaenster|lediga-tjänster|"
+        r"werkenbij|werken-bij|karriere|carriere)/[^/?#]+|"
         r"/job(s)?/[^/?#]+|/career(s)?/.*(job|position|opening|vacanc|role)|"
         r"/career(s)?/(?!disciplines?/|departments?/|teams?/|locations?/|"
         r"offices?/|categor(y|ies)/|areas?/|functions?/)[^/]+/[^/]+|"
@@ -1546,6 +1563,12 @@ class ProductionScannerConfig:
     # Optional detail-page scan (off by default; enable with --detail)
     ENABLE_DETAIL_SCAN = False
     DETAIL_SCAN_TIMEOUT_MS = 12000
+    # Browser detail visits are enrichment fallbacks, not a second listing crawl.
+    # Keep them deliberately small because the HTTP pass already reads most
+    # plain-HMTL detail pages in parallel.
+    DETAIL_BROWSER_TIMEOUT_MS = 8000
+    DETAIL_BROWSER_FALLBACK_PER_COMPANY = 12
+    DETAIL_BROWSER_HOST_FAILURES = 2
     DETAIL_SCAN_TIME_BUDGET_SEC = 480   # max seconds one company's detail scan may run (8 min)
     MAIN_HEARTBEAT_SEC = 30             # main thread prints how many companies are still running
     MAX_STALL_SEC = 600             # abort ONLY when NO page-level ACTIVITY anywhere for 10 min
@@ -2190,6 +2213,70 @@ _STATIC_ANCHOR_RE = re.compile(
     re.I | re.S)
 
 
+class _StaticAnchorParser(HTMLParser):
+    """Small, dependency-free anchor parser for server-rendered boards."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.items = []
+        self._anchor = None
+        self._tag_stack = []
+
+    def handle_starttag(self, tag, attrs):
+        tag = tag.lower()
+        if tag == "a" and self._anchor is None:
+            attrs_map = {str(k).lower(): (v or "") for k, v in attrs}
+            self._anchor = {"href": attrs_map.get("href", ""), "parts": []}
+        if self._anchor is not None:
+            self._tag_stack.append(tag)
+
+    def handle_startendtag(self, tag, attrs):
+        if tag.lower() != "a":
+            return
+        attrs_map = {str(k).lower(): (v or "") for k, v in attrs}
+        self.items.append((attrs_map.get("href", ""), ""))
+
+    def handle_endtag(self, tag):
+        tag = tag.lower()
+        if self._anchor is None:
+            return
+        # The anchor is complete when its own closing tag arrives.
+        if tag == "a":
+            self.items.append((self._anchor["href"], "".join(self._anchor["parts"])))
+            self._anchor = None
+            self._tag_stack = []
+            return
+        # Pop the most recent nested tag when possible.
+        for i in range(len(self._tag_stack) - 1, -1, -1):
+            if self._tag_stack[i] == tag:
+                del self._tag_stack[i:]
+                break
+
+    def handle_data(self, data):
+        if self._anchor is not None:
+            self._anchor["parts"].append(data)
+
+    def handle_entityref(self, name):
+        if self._anchor is not None:
+            self._anchor["parts"].append(unescape(f"&{name};"))
+
+    def handle_charref(self, name):
+        if self._anchor is not None:
+            self._anchor["parts"].append(unescape(f"&#{name};"))
+
+
+def _parse_static_anchors(html):
+    parser = _StaticAnchorParser()
+    try:
+        parser.feed(html or "")
+        parser.close()
+        if parser.items:
+            return parser.items
+    except Exception:
+        pass
+    return _STATIC_ANCHOR_RE.findall(html or "")
+
+
 def _static_strip_tags(fragment):
     """Inner HTML of an anchor -> visible text."""
     if not fragment:
@@ -2404,6 +2491,36 @@ _EMBEDDED_INDEX = {}
 _EMBEDDED_INDEX_MAX = 200
 
 
+def _static_accept_language(seed_url):
+    """Local-language-first Accept-Language for the raw HTTP fast path."""
+    host = (urlparse(seed_url or "").hostname or "").lower()
+    path = (urlparse(seed_url or "").path or "").lower()
+    pairs = []
+    if re.search(r"(?:^|[./_-])(it)(?:[-_][a-z]{2})?(?:[./_-]|$)", path + "/" + host):
+        pairs = ["it-IT", "it", "en-US", "en"]
+    elif re.search(r"(?:^|[./_-])(de)(?:[-_][a-z]{2})?(?:[./_-]|$)", path + "/" + host):
+        pairs = ["de-DE", "de", "en-US", "en"]
+    elif re.search(r"(?:^|[./_-])(nl)(?:[-_][a-z]{2})?(?:[./_-]|$)", path + "/" + host):
+        pairs = ["nl-NL", "nl", "en-US", "en"]
+    elif re.search(r"(?:^|[./_-])(fr)(?:[-_][a-z]{2})?(?:[./_-]|$)", path + "/" + host):
+        pairs = ["fr-FR", "fr", "en-US", "en"]
+    elif host.endswith(".it"):
+        pairs = ["it-IT", "it", "en-US", "en"]
+    elif host.endswith((".de", ".at", ".ch")):
+        pairs = ["de-DE", "de", "en-US", "en"]
+    elif host.endswith((".nl", ".be")):
+        pairs = ["nl-NL", "nl", "fr-BE", "fr", "en-US", "en"]
+    elif host.endswith(".fr"):
+        pairs = ["fr-FR", "fr", "en-US", "en"]
+    else:
+        pairs = ["en-US", "en", "de", "it", "fr", "nl"]
+    weights = []
+    for i, lang in enumerate(pairs[:6]):
+        q = max(0.55, 1.0 - i * 0.08)
+        weights.append(lang if i == 0 else f"{lang};q={q:.2f}")
+    return ",".join(weights)
+
+
 def fetch_static_jobs(seed_url, timeout_sec=15, min_jobs=None,
                       url_validator=None, title_validator=None):
     """Try to harvest postings from the raw HTML, with no browser.
@@ -2428,7 +2545,7 @@ def fetch_static_jobs(seed_url, timeout_sec=15, min_jobs=None,
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             # Ask for the local language too: Italian/German boards often
             # serve localised markup, and the titles must survive.
-            "Accept-Language": "en-US,en;q=0.9,it;q=0.8,de;q=0.8,nl;q=0.7,fr;q=0.7,es;q=0.7",
+            "Accept-Language": _static_accept_language(seed_url),
         })
         with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
             ctype = (resp.headers.get("Content-Type") or "").lower()
@@ -2470,7 +2587,7 @@ def fetch_static_jobs(seed_url, timeout_sec=15, min_jobs=None,
 
     jobs = []
     seen = set()
-    for href, inner in _STATIC_ANCHOR_RE.findall(html):
+    for href, inner in _parse_static_anchors(html):
         href = unescape(href.strip())
         if not href or href.lower().startswith(("javascript:", "mailto:", "tel:")):
             continue
@@ -2498,6 +2615,224 @@ def fetch_static_jobs(seed_url, timeout_sec=15, min_jobs=None,
         return [], (f"static: only {len(jobs)} job link(s) "
                     f"(<{min_jobs}); using browser")
     return jobs, f"static HTML: {len(jobs)}"
+
+
+# ── FIX P37 (2026-10-06): a COMPANY NAME is not a town ────────────────────
+# _town_from_address() reads "<Town> , Via della Tollegna 1". On Oracle Cloud
+# HCM boards the line is "Unipol Assicurazioni S.p.A , Via Stalingrado 45",
+# so the EMPLOYER was captured as the town and written to Job Location with
+# Location Source=address, which _location_confidence rates **high**. Run
+# 20261006T211320 published 28 such rows -- "Unipol Assicurazioni S.p.A",
+# "Unipol Rental S.p.A", "SIAT", "UNA Italian Hospitality" and even
+# "ANDAMENTO UniSalute" (a heading meaning "UniSalute TREND") -- every one
+# of them confidently wrong and yielding no country.
+#
+# The value cannot simply be pushed through _sanitize_job_location(): that
+# gate rejects any place the gazetteer does not list, and this extractor
+# exists precisely to recover Cittaducale, Spilamberto, Vicolungo and
+# Serravalle Scrivia. So the ORGANISATION shapes are named instead.
+_ORG_LEGAL_FORM_RE = re.compile(
+    r"(?i)(?:^|[\s,.])(?:s\.?p\.?a|s\.?r\.?l|s\.?n\.?c|s\.?a\.?s|"
+    r"gmbh|mbh|ag|kg|ohg|e\.?v|ug|gbr|b\.?v|n\.?v|v\.?o\.?f|"
+    r"ltd|limited|plc|llp|llc|inc|corp|co\.|&\s*co|"
+    r"s\.?a|s\.?l|s\.?a\.?s\.?u|sarl|sas|sasu|eurl|"
+    r"oy|ab|a\/s|aps|as|nv|zrt|kft|sp\.?\s*z\s*o\.?o|d\.?o\.?o"
+    r")(?:[\s,.]|$)")
+#: Corporate / editorial nouns that never name a place on their own.
+_ORG_WORD_RE = re.compile(
+    r"(?i)\b(?:assicurazion\w+|rental|holding\w*|group|gruppo|hospitality|"
+    r"bank\w*|banca|insurance|consulting|solutions?|services?|servizi|"
+    r"technolog\w+|systems?|partners?|ventures?|capital|finance|finanz\w+|"
+    r"industr\w+|logistic\w*|retail|energia|energy|immobiliare|"
+    r"andamento|risultati|bilancio|fatturato|utile|ricavi|"
+    r"trend|results?|revenue|overview|careers?|carriere)\b")
+
+# ── FIX P38 (2026-10-06): ATS furniture published as vacancies ────────────
+# Run 20261006T211320 accepted 8 rows that are not jobs: "Recupero Password"
+# (.../app.php), "[email protected]" (/cdn-cgi/l/email-protection), plus
+# "Realizzato da SuccessFactors" and "Sistema di tracking del candidato di
+# Teamtailor" -- footer credits pointing at the ATS VENDOR'S OWN marketing
+# site rather than the employer. A vendor root domain with no tenant in the
+# path can never be a specific vacancy.
+_ATS_VENDOR_HOME_RE = re.compile(
+    r"(?i)^(?:www\.)?(?:successfactors|teamtailor|greenhouse|lever|workable|"
+    r"recruitee|personio|smartrecruiters|bamboohr|jobvite|icims|taleo|"
+    r"workday|myworkday|ashbyhq|breezy|softgarden|heyjobs|factorialhr|"
+    r"intervieweb|altamirahrm|allibo|oraclecloud|avature|eightfold)"
+    r"\.(?:com|io|co|it|de|net|org)$")
+#: Session / utility endpoints every ATS ships.
+_SITE_UTILITY_PATH_RE = re.compile(
+    r"(?i)(?:^|/)(?:app\.php|index\.php|login\.php|default\.aspx|"
+    r"recupero[-_]?password|password[-_]?(?:reset|recovery|dimenticata)|"
+    r"cdn-cgi/l/email-protection|cdn-cgi/)(?:/|$|\?)")
+
+
+def is_ats_furniture_url(url):
+    """True for ATS vendor home pages and session/utility endpoints."""
+    try:
+        parts = urlparse(url or "")
+    except Exception:
+        return False
+    host = (parts.hostname or "").lower()
+    path = parts.path or ""
+    if _SITE_UTILITY_PATH_RE.search(path):
+        return True
+    if _ATS_VENDOR_HOME_RE.match(host) and len(
+            [p for p in path.split("/") if p]) == 0:
+        return True
+    return False
+
+# ── FIX P31/P32/P33 (2026-10-06): link shapes the URL validator misread ────
+# All three were found on Austrian seeds that reported 0 or junk rows while
+# the portal plainly listed jobs.
+
+#: P31 -- an employer whose careers page is hosted by a third-party ATS on a
+#: DIFFERENT domain. journiapp.com/sk/careers links out to
+#: careers.kula.ai/journi/35169; JOB_URL_PATTERN has no token for
+#: "/<tenant>/<id>", so all 6 of Journi's jobs were rejected and the company
+#: reported EMPTY. Matching on the HOST is what makes "/journi/35169"
+#: unambiguous -- these domains serve nothing but job detail pages.
+_ATS_JOB_HOST_RE = re.compile(
+    r"(?:^|\.)(?:"
+    r"kula\.ai|join\.com|recruitee\.com|teamtailor\.com|workable\.com|"
+    r"lever\.co|greenhouse\.io|ashbyhq\.com|smartrecruiters\.com|"
+    r"personio\.de|jobs\.personio\.com|bamboohr\.com|breezy\.hr|"
+    r"jobvite\.com|softgarden\.io|heyjobs\.co|factorialhr\.com|"
+    r"applytojob\.com|careers-page\.com|homerun\.co|pinpointhq\.com|"
+    r"hibob\.com|rippling\.com|polymer\.co|jazzhr\.com|workizard\.com|"
+    r"myworkdayjobs\.com|icims\.com|taleo\.net|successfactors\.com|"
+    r"avature\.net|eightfold\.ai|phenompeople\.com|oraclecloud\.com"
+    r")$", re.I)
+
+#: A host that exists to serve job pages: careers.x.com, jobs.x.com, ...
+_JOB_SUBDOMAIN_RE = re.compile(
+    r"^(?:careers?|jobs?|apply|recruiting|recruitment|vacancies|hiring|work)\.",
+    re.I)
+
+#: An opaque record id: 35169, 44bdf359cd980a79973ba9119532279e, a UUID.
+_OPAQUE_ID_SEG_RE = re.compile(
+    r"^(?:[0-9]{3,}|[0-9a-f]{8,}|[0-9a-f-]{20,}|[A-Za-z0-9_-]*\d[A-Za-z0-9_-]{5,})$",
+    re.I)
+
+#: P32 -- aggregators that hide the employer behind a redirector.
+#: englishjobsearch.at lists 15 real jobs, every one of them behind
+#: /clickout/<hash> or /clickout_alt/<hash>, with the title in the anchor
+#: text. No path token matched, so the seed reported 0 jobs written.
+_REDIRECT_JOB_PATH_RE = re.compile(
+    r"/(?:clickout|clickout_alt|click|out|goto|go|redirect|redir|jump|"
+    r"track|tracking|visit|away|link|apply-redirect|r)/"
+    r"([A-Za-z0-9][A-Za-z0-9_-]{5,})/?$", re.I)
+
+#: P33 -- a department / function / place CHIP sitting under /jobs/.
+#: jobsinvienna.com's static HTML holds NO job-detail links at all, only
+#: /jobs/Sales-and-Sales-Related, /jobs/Marketing, /jobs/IT, /jobs/AT-Vienna,
+#: /jobs/PROFESSIONAL-SCIENTIFIC-AND-TECHNICAL-ACTIVITIES. Every one passed
+#: JOB_URL_PATTERN (which accepts /jobs/<anything>) and the old
+#: CATEGORY_PATH_INDICATORS only caught the /jobs/categories/<x> shape, so a
+#: run wrote 13 chips as if they were jobs -- and then timed out trying to
+#: open a category page as a job detail.
+_DEPT_WORDS = (
+    r"sales|marketing|it|ict|tech|technology|technologies|telekommunikation|"
+    r"finance|financial|accounting|banking|banken|versicherungen|insurance|"
+    r"hr|human|resources|personal|recruiting|legal|compliance|audit|"
+    r"administration|admin|office|operations|logistics|supply|chain|"
+    r"procurement|purchasing|production|manufacturing|engineering|"
+    r"construction|design|creative|media|communications|communication|"
+    r"public|relations|press|customer|support|service|services|helpdesk|"
+    r"research|development|science|scientific|healthcare|medical|health|"
+    r"pharma|nursing|education|teaching|training|hospitality|tourism|travel|"
+    r"retail|consulting|management|quality|regulatory|affairs|security|"
+    r"data|analytics|product|project|business|general|other|various|"
+    r"professional|technical|activities|and|或|und|et|e|y|of|the|for|amp"
+)
+_DEPT_SEGMENT_RE = re.compile(
+    r"^(?:" + _DEPT_WORDS + r")(?:[-_+%20 &]+(?:" + _DEPT_WORDS + r"))*$", re.I)
+#: "AT-Vienna", "DE-Berlin" -- a country/city facet chip.
+_GEO_FACET_SEG_RE = re.compile(r"^[A-Z]{2}[-_][A-Za-z][A-Za-z-]{2,}$")
+#: A word that only ever appears in a ROLE, never in a department chip. It is
+#: the escape hatch for boards that publish Title-Cased job slugs with no id
+#: (/jobs/Senior-Software-Engineer must stay a job).
+_ROLE_WORD_RE = re.compile(
+    r"\b(?:engineer|developer|programmer|manager|analyst|scientist|architect|"
+    r"designer|consultant|specialist|advisor|officer|director|head|lead|chief|"
+    r"president|principal|senior|junior|graduate|intern|trainee|apprentice|"
+    r"associate|assistant|coordinator|administrator|executive|representative|"
+    r"agent|recruiter|accountant|controller|auditor|counsel|lawyer|paralegal|"
+    r"technician|mechanic|electrician|operator|driver|chef|cook|waiter|nurse|"
+    r"doctor|physician|pharmacist|teacher|tutor|professor|researcher|editor|"
+    r"writer|copywriter|translator|planner|buyer|cashier|clerk|secretary|"
+    r"receptionist|supervisor|foreman|warehouse|picker|packer|installer|"
+    r"welder|plumber|carpenter|painter|cleaner|guard|stylist|therapist|"
+    r"addetto|impiegato|operaio|responsabile|tecnico|commesso|venditore|"
+    r"mitarbeiter|leiter|berater|techniker|verkaeufer|ingenieur|praktikant)\b",
+    re.I)
+
+
+def _url_last_segment(url):
+    try:
+        path = urlparse(url).path.rstrip("/")
+    except Exception:
+        return ""
+    return path.rsplit("/", 1)[-1] if path else ""
+
+
+def is_ats_detail_url(url):
+    """P31: a job detail page on a third-party ATS / dedicated careers host."""
+    try:
+        host = (urlparse(url).hostname or "").lower()
+    except Exception:
+        return False
+    if not host:
+        return False
+    if not (_ATS_JOB_HOST_RE.search(host) or _JOB_SUBDOMAIN_RE.search(host)):
+        return False
+    segs = [x for x in urlparse(url).path.split("/") if x]
+    # Needs a tenant AND an opaque record id, so the board's own landing page
+    # (careers.kula.ai/journi) is still not mistaken for a job.
+    return len(segs) >= 2 and bool(_OPAQUE_ID_SEG_RE.match(segs[-1]))
+
+
+def is_redirector_job_url(url):
+    """P32: an aggregator clickout that stands in for a job detail page."""
+    try:
+        return bool(_REDIRECT_JOB_PATH_RE.search(urlparse(url).path))
+    except Exception:
+        return False
+
+
+def is_category_facet_url(url):
+    """P33: /jobs/<Department>, /jobs/<COUNTRY-City> and friends."""
+    seg = _url_last_segment(url)
+    if not seg or len(seg) > 90:
+        return False
+    try:
+        segs = [x for x in urlparse(url).path.split("/") if x]
+    except Exception:
+        return False
+    if len(segs) < 2 or segs[-2].lower() not in (
+            "job", "jobs", "career", "careers", "vacancy", "vacancies",
+            "offerte", "stellenangebote", "empleo", "emploi"):
+        return False
+    if any(ch.isdigit() for ch in seg):
+        # A real slug almost always carries the requisition id.
+        return bool(_GEO_FACET_SEG_RE.match(seg))
+    if _GEO_FACET_SEG_RE.match(seg):
+        return True
+    if seg.isupper() and len(seg) > 3:
+        # PROFESSIONAL-SCIENTIFIC-AND-TECHNICAL-ACTIVITIES
+        return True
+    if _DEPT_SEGMENT_RE.match(seg):
+        return True
+    # Structural fallback, so the fix does not depend on a vocabulary that can
+    # never be complete ("Sales-and-Sales-Related",
+    # "Banken-Finanz-Versicherungen"). A facet chip is Title-Cased, carries no
+    # requisition id and names no role; a real slug does the opposite.
+    words = [w for w in re.split(r"[-_+ ]+", seg) if w]
+    if (1 <= len(words) <= 6
+            and any(w[:1].isupper() for w in words)
+            and not _ROLE_WORD_RE.search(seg.replace("-", " "))):
+        return True
+    return False
 
 
 # ── FIX P27 (2026-10-05): one workload classifier, shared by both scanners ──
@@ -3451,6 +3786,16 @@ def sniff_provider(text, base_url=""):
         site = m.group("site")
         if site and site.lower() not in ("wday", "en-us"):
             return "workday", f"{host}|{tenant}|{site}", ""
+    # DigitalRecruiters-hosted career portals are common in France/Belgium.
+    # Cegedim is a known example: /en/annonces is a direct listing and the
+    # detail pages sit below /en/annonce/<id>-<slug>. Prefer the API adapter
+    # over DOM scraping when the vendor fingerprint is present.
+    if re.search(r"digitalrecruiters|bankess", blob, re.I) and re.search(
+            r"/(?:[a-z]{2}/)?annonces?(?:[/?#\"'\s]|$)", blob, re.I):
+        return "digitalrecruiters", urlparse(base_url).netloc, ""
+    if re.search(r"careers\.cegedim\.com", blob, re.I) and re.search(
+            r"/(?:en|fr)/annonces?(?:[/?#\"'\s]|$)", blob, re.I):
+        return "digitalrecruiters", "careers.cegedim.com", ""
     for provider, patterns in _SNIFF_PATTERNS:
         for pat in patterns:
             hit = re.search(pat, blob, re.I)
@@ -3526,6 +3871,11 @@ class CareerPortalScanner:
                  only_companies=None, max_company_time_sec=None, pause_event=None):
         self.input_csv = input_csv
         self.output_csv = output_csv
+        # FIX P42: per-run budget for detail-page title rescues. process_job
+        # runs under a thread pool, so the counter needs its own lock.
+        self._title_rescue_used = 0
+        self._title_rescue_by_company = {}
+        self._title_rescue_lock = threading.Lock()
         # Host-adaptive company-level concurrency.  Each worker drives its own
         # Chromium context (~150-400 MB resident), so the previous fixed 3 could
         # exhaust an 8 GB / 2-core machine and freeze the desktop.  None means
@@ -5052,14 +5402,16 @@ class CareerPortalScanner:
         # Italian
         "offerte di lavoro", "tutte le offerte", "le nostre offerte",
         "posizioni aperte", "lavora con noi", "candidatura spontanea",
+        "candidati", "candidatura", "invia candidatura", "cerca lavoro",
         "cerca lavoro", "ricerca lavoro", "opportunita di lavoro",
         "opportunità di lavoro", "carriere",
         # Dutch
         "vacatures", "alle vacatures", "werken bij", "open sollicitatie",
-        "bekijk alle vacatures", "vacature",
+        "bekijk alle vacatures", "vacature", "solliciteer", "sollicitatie",
         # French
         "emplois", "nos offres", "toutes les offres", "offres d'emploi",
         "offre d'emploi", "candidature spontanee", "candidature spontanée",
+        "postuler", "postulez",
         "carrieres", "carrières", "nos metiers", "nos métiers",
         # Spanish / Portuguese
         "ofertas de empleo", "todas las ofertas", "trabaja con nosotros",
@@ -5218,7 +5570,7 @@ class CareerPortalScanner:
                 return False
         if re.match(
             r"^(load|view|see|show|browse|explore|find|search|open|close|toggle|"
-            r"upload|submit|download|share|print|email|save|apply|candidati|candidarsi|scopri|leggi|invia|vedi)\b", low  # H2: Italian CTA verbs
+            r"upload|submit|download|share|print|email|save|apply|bewerben|bewerbung|candidati|candidarsi|postuler|postulez|solliciteer|sollicitatie|scopri|leggi|invia|vedi)\b", low  # multilingual CTA verbs
         ) and len(t.split()) <= 6:
             return False
         # Batch M phase 1: pool/button phrases ported from the ATS
@@ -5245,10 +5597,222 @@ class CareerPortalScanner:
             return False
         return True
 
+    # ── Locale-aware career crawling ───────────────────────────────────────
+    # Career portals are not reliably English just because the company has an
+    # English corporate site. In the seed this matters especially for Germany,
+    # Austria, Italy, Netherlands, France and Belgium. The previous browser
+    # context was hard-coded to en-US, which can make a local-only portal render
+    # an empty/default shell, redirect to a generic page, or hide the local job
+    # list behind a language switcher.
+    _COUNTRY_LOCALE_PREFERENCES = {
+        "germany": ("de-DE", "de", "en-US", "en"),
+        "austria": ("de-AT", "de", "en-US", "en"),
+        "switzerland": ("de-CH", "de", "fr-CH", "it-CH", "en"),
+        "italy": ("it-IT", "it", "en-US", "en"),
+        "netherlands": ("nl-NL", "nl", "en-US", "en"),
+        "belgium": ("nl-BE", "nl", "fr-BE", "fr", "en"),
+        "france": ("fr-FR", "fr", "en-US", "en"),
+        "spain": ("es-ES", "es", "en-US", "en"),
+        "portugal": ("pt-PT", "pt", "en-US", "en"),
+        "poland": ("pl-PL", "pl", "en-US", "en"),
+        "finland": ("fi-FI", "fi", "sv-FI", "en"),
+        "sweden": ("sv-SE", "sv", "en-US", "en"),
+        "denmark": ("da-DK", "da", "en-US", "en"),
+        "norway": ("nb-NO", "nb", "en-US", "en"),
+        "estonia": ("et-EE", "et", "en"),
+        "lithuania": ("lt-LT", "lt", "en"),
+        "ireland": ("en-IE", "en"),
+        "united kingdom": ("en-GB", "en-US", "en"),
+    }
+    _LANG_TO_LOCALE = {
+        "de": "de-DE", "it": "it-IT", "nl": "nl-NL", "fr": "fr-FR",
+        "es": "es-ES", "pt": "pt-PT", "pl": "pl-PL", "fi": "fi-FI",
+        "sv": "sv-SE", "da": "da-DK", "nb": "nb-NO", "no": "nb-NO",
+        "et": "et-EE", "lt": "lt-LT", "en": "en-US",
+    }
+
+    def _preferred_browser_locales(self, target_row, seed_url):
+        """Return (locale, Accept-Language) with local-language-first policy.
+
+        URL locale wins over the seed country because `/it/`, `/de-DE/`, etc.
+        are stronger evidence than a company's target-country metadata. If no
+        locale is encoded in the URL, target_country selects a sensible local
+        preference list, while English remains an explicit fallback.
+        """
+        url = str(seed_url or "")
+        path = (urlparse(url).path or "").lower()
+        host = (urlparse(url).hostname or "").lower()
+        candidates = []
+        # Locale path/subdomain: /de/, /de-de/, /it_IT/, jobs.fr.example.com.
+        for raw in re.findall(r"(?:^|[/_\-.])([a-z]{2})(?:[-_]([a-z]{2}))?(?=[/_\-.]|$)", path + "/" + host):
+            lang, region = raw
+            if lang in self._LANG_TO_LOCALE:
+                candidates.append(f"{lang}-{region.upper()}" if region else self._LANG_TO_LOCALE[lang])
+        target = str((target_row or {}).get("target_country") or "").strip().casefold()
+        candidates.extend(self._COUNTRY_LOCALE_PREFERENCES.get(target, ("en-US", "en")))
+        # Preserve order while removing duplicates.
+        ordered = []
+        for x in candidates:
+            if x and x not in ordered:
+                ordered.append(x)
+        locale = ordered[0] if ordered else "en-US"
+        weights = []
+        for i, lang in enumerate(ordered[:6]):
+            q = max(0.55, 1.0 - i * 0.08)
+            weights.append(lang if i == 0 else f"{lang};q={q:.2f}")
+        return locale, ",".join(weights)
+
+    _DIRECT_LISTING_PATH_RE = re.compile(
+        r"/(?:"
+        r"jobs?|joboffers?|"
+        r"vacatures?|vacancies?|"
+        r"stellen(?:angebote|anzeigen)?|jobangebote?|"
+        r"offres?(?:[-_](?:d[-_])?emploi)?|emplois?|"
+        r"annonces?|"
+        r"offerte?(?:[-_](?:di[-_])?lavoro)?|"
+        r"posizioni(?:[-_]aperte)?|annunci?(?:[-_]di[-_]lavoro)?|"
+        r"offertas?|ofertas?[-_]de[-_](?:empleo|trabajo)|"
+        r"vagas?|empregos?|"
+        r"werk(?:en[-_]bij)?|werken[-_]bij|"
+        r"lediga[-_](?:jobb|tjaenster|tjänster)|"
+        r"avoimet[-_]tyopaikat|oferty[-_]pracy|praca"
+        r")(?:/|$)", re.I)
+    _DIRECT_LISTING_SUBPATH_RE = re.compile(
+        r"/(?:jobs?|careers?)/(?:all[-_]?jobs?|open[-_]?jobs?|open[-_]?positions?|"
+        r"current[-_]?openings?|jobangebote?|offene[-_]?jobangebote|"
+        r"offene[-_]stellen(?:angebote)?|stellenangebote|stellenanzeigen|"
+        r"vacatures?|vacancies?|offres?|offerte(?:[-_]di[-_]lavoro)?|"
+        r"posizioni[-_]aperte|annunci?(?:[-_]di[-_]lavoro)?|ofertas?|empleos?|puestos?)(?:/|$)", re.I)
+
+    @classmethod
+    def _is_direct_listing_seed_url(cls, seed_url):
+        """Whether the seed itself is intended to be a listing, not a landing page.
+
+        This is a crawl-strategy signal, not a job URL validator. It tells the
+        browser not to click search/landing CTAs on a page whose URL already
+        denotes a job board/list. Ambiguous roots such as AMS / are deliberately
+        left as landing pages.
+        """
+        parsed = urlparse(str(seed_url or ""))
+        path = (parsed.path or "").rstrip("/") or "/"
+        low = path.casefold()
+        if cls._DIRECT_LISTING_SUBPATH_RE.search(low):
+            return True
+        if cls._DIRECT_LISTING_PATH_RE.search(low):
+            return True
+        if re.search(r"/(?:find[-_]job|jobsuche|jobsearch|search[-_]jobs)(?:/|$)", low, re.I):
+            return True
+        # Fragment-only job listing (e.g. /careers/#jobs) is a direct listing
+        # only when the fragment explicitly names the job collection.
+        fragment = (parsed.fragment or "").casefold()
+        if fragment in {"jobs", "job", "vacancies", "positions", "openings", "jobs-list", "job-list"}:
+            return True
+        return False
+
+    @staticmethod
+    def _direct_listing_pagination_state(target):
+        """Return visible, structural pagination signals without scrolling/clicking."""
+        js = r"""() => {
+            const visible = el => {
+                try { const r=el.getBoundingClientRect(), s=getComputedStyle(el);
+                    return r.width>0 && r.height>0 && s.display!=='none' && s.visibility!=='hidden' && s.opacity!=='0'; }
+                catch(e) { return false; }
+            };
+            const text = el => String(el?.innerText || el?.textContent || '').replace(/\s+/g,' ').trim();
+            const roots = Array.from(document.querySelectorAll('nav, [class*="pagination" i], [aria-label*="pagination" i], [role="navigation"]'));
+            let hasNext=false, hasLoadMore=false, hasPager=false;
+            for (const root of roots) {
+                if (!visible(root)) continue;
+                for (const el of root.querySelectorAll('a,button')) {
+                    if (!visible(el)) continue;
+                    const t=text(el).toLowerCase();
+                    const al=String(el.getAttribute('aria-label') || '').toLowerCase();
+                    const blob=(t+' '+al).trim();
+                    if (/(^|\b)(next|suivant|suivante|volgende|volgend|volgende pagina|weiter|nächste|nächster|prossimo|successiva|sucesivo|siguiente|seguinte|nästa|næste|next page)(\b|$)/i.test(blob)) hasNext=true;
+                    if (/(load more|show more|more jobs|more vacancies|mehr laden|weitere|mehr anzeigen|weitere stellen|più offerte|carica altro|mostra altro|voir plus|plus d'offres|meer vacatures|toon meer|meer laden|cargar más|más ofertas|mostrar más|mostrar mais|ver mais|więcej|pokaż więcej|visa fler|vis flere|näytä lisää)/i.test(blob)) hasLoadMore=true;
+                    if (/^\d{1,3}$/.test(t) && Number(t)>1) hasPager=true;
+                }
+            }
+            return {hasNext,hasLoadMore,hasPager};
+        }"""
+        try:
+            out = target.evaluate(js) or {}
+            return {k: bool(out.get(k)) for k in ("hasNext","hasLoadMore","hasPager")}
+        except Exception:
+            return {"hasNext": False, "hasLoadMore": False, "hasPager": False}
+
+    @staticmethod
+    def _direct_listing_anchor_rows(target):
+        """Extract repeated same-host job anchors without card-scope rejection.
+
+        List containers intentionally contain many job links. The normal anchor
+        extractor rejects such containers because their shared context is unsafe
+        for metadata attribution. This extractor only needs the anchor itself, so
+        it is safe for direct listing pages and is the important path for
+        WordPress/Elementor/localized employer boards like 3 Banken IT.
+        """
+        js = r"""() => {
+            const clean = s => String(s || '').replace(/\s+/g,' ').trim();
+            const visible = el => { try { const r=el.getBoundingClientRect(), s=getComputedStyle(el);
+                return r.width>0 && r.height>0 && s.display!=='none' && s.visibility!=='hidden' && s.opacity!=='0'; } catch(e){return false;} };
+            const hrefLooks = href => {
+                if (!href || !/^https?:/i.test(href)) return false;
+                const u = new URL(href, location.href);
+                const p = u.pathname.toLowerCase();
+                if (/(privacy|cookie|terms|legal|contact|about|blog|news|login|signup)/i.test(p)) return false;
+                if (/[?&](job|jobid|job_id|jid|gh_jid|req|reqid|requisition|posting|postingid|id)=/i.test(u.search)) return true;
+                return /(\/(?:jobangebote?|stellenangebote?|stellenanzeigen?|stelle|vacanc(?:y|ies)|opening|position|requisition|posting|annonce|offre?s?|offert(?:a|e)(?:-di-lavoro)?|posizion[ei]|annunci?|lavoro|empleo?s?|puesto?s?|oferta?s?|vag[ae]s?|werk(?:en-bij)?|vacatures?|job[s]?|role|recruit|jobsuche|find-job)\/[^/?#]+)/i.test(p)
+                    || /\/(?:job|role|requisition|posting)\/[A-Za-z0-9_-]{2,}(?:/|$)/i.test(p);
+            };
+            const generic = /^(apply(?: now| here| online)?|view(?: job| role| position| details)?|details?|read more|learn more|more info|next|previous|back|home|jobs?|careers?|search|filter|sort|select|close|open|load more|show more|candidati(?: ora)?|bewerben|mehr anzeigen|scopri di più|leggi l'annuncio|postuler|solliciteer|toon meer)$/i;
+            const out=[]; const seen=new Set();
+            for (const a of document.querySelectorAll('a[href]')) {
+                if (!visible(a)) continue;
+                const href = a.href;
+                if (!hrefLooks(href)) continue;
+                const u = new URL(href, location.href);
+                if (u.origin !== location.origin) continue;
+                const title = clean(a.innerText || a.textContent || a.getAttribute('aria-label') || a.getAttribute('title') || '');
+                if (title.length < 3 || title.length > 220 || generic.test(title)) continue;
+                if (seen.has(href.toLowerCase())) continue;
+                seen.add(href.toLowerCase());
+                out.push({job_title:title, job_url:u.href, card_context:'', location_hint:'', extraction_method:'direct_listing_anchor'});
+            }
+            return out;
+        }"""
+        try:
+            return target.evaluate(js) or []
+        except Exception:
+            return []
+
+    @staticmethod
+    def _local_job_signal_re():
+        """Strong job-board vocabulary used only as semantic evidence.
+
+        This is deliberately broader than roleWordRe. A title does not need to
+        contain an English role noun: `Sachbearbeiter`, `Koch`, `Addetto...`,
+        `Responsable...`, `Medewerker...` are valid titles. The terms below are
+        navigation/employment signals, not title requirements.
+        """
+        return re.compile(
+            r"(?i)\b(?:bewerben|bewerbung|jetzt bewerben|stellenangebot|"
+            r"stellenangebote|stellenanzeige|stellenanzeigen|jobangebot|jobangebote|"
+            r"vollzeit|teilzeit|unbefristet|befristet|berufserfahrung|"
+            r"candidati|candidatura|candidarsi|offerta di lavoro|offerte di lavoro|"
+            r"posizione aperta|posizioni aperte|tempo pieno|tempo parziale|"
+            r"postuler|postulez|offre d'emploi|offres d'emploi|cdi|cdd|temps plein|"
+            r"temps partiel|solliciteer|sollicitatie|vacature|vacatures|fulltime|"
+            r"parttime|werken bij|oferta de empleo|ofertas de empleo|vagas|"
+            r"ofertas de trabalho|lediga jobb|lediga tjänster|avoimet työpaikat|"
+            r"oferty pracy|praca)\b"
+        )
+
     def is_valid_job_url(self, url):
         if not url or not url.startswith("http"):
             return False
         if _ASSET_URL_RE.search(url) or _is_download_url(url):
+            return False
+        if is_ats_furniture_url(url):  # FIX P38
             return False
         if re.search(r"/(?:applicationmethods|apply|application)(?:/|$)", urlparse(url).path, re.I):
             # J4: boards whose DETAIL pages live under apply-paths (UniCredit
@@ -5260,12 +5824,39 @@ class CareerPortalScanner:
             return False
         if "#job=" in url.lower():
             return True
+        # FIX P33: a department / function / geography CHIP under /jobs/.
+        # Checked BEFORE the accept rules, because /jobs/<anything> matches
+        # JOB_URL_PATTERN and would otherwise be written as a real job.
+        if is_category_facet_url(url):
+            return False
         if self.config.CATEGORY_PATH_INDICATORS.search(url):
+            return False
+        # FIX P31: the careers list is hosted by an ATS on another domain
+        # (careers.kula.ai/journi/35169). FIX P32: an aggregator's
+        # /clickout/<hash> redirector IS the job link.
+        if is_ats_detail_url(url) or is_redirector_job_url(url):
+            return True
+        # Listing pages can themselves contain a slug that looks like a
+        # /jobs/<slug> detail URL. This is especially common on localized
+        # European employer sites, e.g. /jobs/offene-jobangebote/ (3 Banken IT).
+        if re.search(
+            r"/(?:jobs?|careers?)/(?:all[-_]?jobs?|open[-_]?jobs?|"
+            r"open[-_]?positions?|current[-_]?openings?|jobangebote|jobangebot|"
+            r"offene[-_]?jobangebote|offene[-_]?stellen(?:angebote)?|"
+            r"stellenangebote|stellenanzeigen|vacancies|vacature(?:s)?|"
+            r"offres?(?:-d-emploi)?|offres-d-emploi|offerte(?:-di-lavoro)?|"
+            r"offerte-di-lavoro|posizioni-aperte|annunci(?:-di-lavoro)?|"
+            r"ofertas?(?:-de-empleo|-de-trabajo)?|empleos?|puestos?)(?:[/?#]|$)",
+            url,
+            re.IGNORECASE,
+        ):
             return False
         clean_path = urlparse(url).path.rstrip("/").lower()
         if clean_path.endswith((
             "/jobs", "/careers", "/career", "/vacancies",
-            "/openings", "/positions", "/roles", "/search"
+            "/openings", "/positions", "/roles", "/search",
+            "/jobangebote", "/jobangebot", "/stellenangebote",
+            "/stellenanzeigen", "/job-offers", "/job-offer"
         )):
             if not self.has_job_identifier_query(url):
                 return False
@@ -6308,7 +6899,7 @@ class CareerPortalScanner:
                      r"boulevard|calle|carrer|rua|stra[sß]e|strasse|weg|allee|"
                      r"platz|laan|straat|street|road|avenida")
 
-    def _town_from_address(self, text):
+    def _town_from_address(self, text, company=""):
         """Pull the town out of a street address the gazetteer does not know.
 
         Handles "<Town>, Via della Tollegna 1" and "Via X 1, <Town>" plus the
@@ -6332,6 +6923,13 @@ class CareerPortalScanner:
             return None
         cand = re.sub(r"\s+", " ", m.group(1)).strip(" ,.-")
         if not cand or len(cand) < 3 or len(cand.split()) > 3:
+            return None
+        # FIX P37: the text in front of a street is often the EMPLOYER.
+        if _ORG_LEGAL_FORM_RE.search(cand) or _ORG_WORD_RE.search(cand):
+            return None
+        # ... and so is the company whose page this is.
+        _cowords = {w for w in re.findall(r"[A-Za-zÀ-ÿ]{3,}", str(company or ""))}
+        if _cowords and {w for w in re.findall(r"[A-Za-zÀ-ÿ]{3,}", cand)} & _cowords:
             return None
         low = cand.lower()
         if self.config.ROLE_WORD_PATTERN.search(cand):
@@ -7513,10 +8111,143 @@ class CareerPortalScanner:
             job.pop("_sr_detail", None)
         return jobs, f"smartrecruiters API: {len(jobs)} ({fetched} with JD text)"
 
+    def _fetch_jobsinnetwork_jobs(self, target_row):
+        """FIX P34 (2026-10-06): read a JobsinNetwork board from its own API.
+
+        jobsinvienna.com -- and every sibling board (jobsinamsterdam,
+        jobsinberlin, jobsinbrussels, ...) -- renders its job list entirely
+        client-side. The served HTML carries NO job-detail links at all: the
+        only /jobs/ hrefs are department chips (/jobs/Marketing,
+        /jobs/Sales-and-Sales-Related). A run therefore wrote 13 chips as
+        jobs and reached none of the real listings.
+
+        The page hands us everything needed in a `globalVariables` block::
+
+            apiUrl: 'https://search-api.jobsinnetwork.services',
+            boardCountry: 'AT', boardCity: 'Vienna', locale: 'en',
+
+        and that API is open and unauthenticated::
+
+            GET /api/jobs?location.countryCode=AT&locations.city=Vienna
+                         &language=en&page=1
+            -> hydra:member[] with title, company.name, location.city,
+               remote_type, employment_type, view_url and the FULL
+               description.
+
+        Because the config is read from the page, no seed URL changes and the
+        adapter works for any board in the network. The description means
+        these rows arrive with JD text, so sponsorship detection can run
+        without a per-job detail visit.
+        """
+        seed_url = (target_row.get("careers_url") or "").strip()
+        if not seed_url:
+            return [], "jobsinnetwork: no seed url"
+        headers = {
+            "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                           "AppleWebKit/537.36 (KHTML, like Gecko) "
+                           "Chrome/126.0.0.0 Safari/537.36"),
+            "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+        }
+        shell = self._http_fetch_with_retry(seed_url, headers)
+        if isinstance(shell, bytes):
+            shell = shell.decode("utf-8", "replace")
+
+        def _gv(key, default=""):
+            m = re.search(key + r"\s*:\s*'([^']*)'", shell)
+            return m.group(1).strip() if m else default
+
+        api = _gv("apiUrl") or "https://search-api.jobsinnetwork.services"
+        country = _gv("boardCountry")
+        city = _gv("boardCity")
+        locale = _gv("locale", "en")
+        if not (country or city):
+            return [], "jobsinnetwork: board config not found on page"
+
+        params = []
+        if country:
+            params.append(("location.countryCode", country))
+        if city:
+            params.append(("locations.city", city))
+        # Only English-language ads: this network aggregates German feeds too
+        # (5,960 Vienna rows in all languages vs 339 in English).
+        if locale:
+            params.append(("language", locale))
+
+        try:
+            per_company = int(os.environ.get(
+                "SPONSORSCOUT_JOBSINNETWORK_MAX", "600"))
+        except (TypeError, ValueError):
+            per_company = 600
+        api_headers = {
+            "User-Agent": headers["User-Agent"],
+            "Accept": "application/ld+json",
+            "Origin": f"https://{urlparse(seed_url).netloc}",
+            "Referer": seed_url,
+        }
+        jobs, page, total = [], 1, None
+        while len(jobs) < per_company and page <= 60:
+            qs = urlencode(params + [("page", str(page))])
+            raw = self._http_fetch_with_retry(f"{api}/api/jobs?{qs}",
+                                              api_headers)
+            data = json.loads(raw)
+            members = data.get("hydra:member") or data.get("member") or []
+            if total is None:
+                total = data.get("hydra:totalItems") or data.get("totalItems")
+            if not members:
+                break
+            for it in members:
+                title = (it.get("title") or "").strip()
+                url = (it.get("view_url") or it.get("url") or "").strip()
+                if not title or not url:
+                    continue
+                loc = it.get("location") or {}
+                # The feed mixes "Austria", "Wien" and a bare lowercase ISO
+                # code ("at") in the same field; a 2-letter code must be
+                # upper-cased or country_from_location() cannot resolve it.
+                _country = (loc.get("country") or "").strip()
+                if len(_country) == 2 and _country.isalpha():
+                    _country = _country.upper()
+                place = ", ".join(x for x in (
+                    (loc.get("city") or "").strip(), _country) if x)
+                if not place and city:
+                    place = ", ".join(x for x in (city, country) if x)
+                company = ((it.get("company") or {}).get("name") or "").strip()
+                ctx = " | ".join(x for x in (
+                    company,
+                    str(it.get("employment_type") or ""),
+                    str(it.get("work_hours") or ""),
+                    ("remote" if str(it.get("remote_type") or "").lower()
+                     not in ("", "no", "none") else ""),
+                ) if x)
+                jobs.append({
+                    "job_title": title,
+                    "job_url": url,
+                    "location_hint": place,
+                    "card_context": ctx[:800],
+                    "jd_text": _jd_plain(it.get("description") or "")[:20000],
+                    "extraction_method": "jobsinnetwork_api",
+                })
+            page += 1
+        with_text = sum(1 for j in jobs if j["jd_text"])
+        return jobs, (f"jobsinnetwork API: {len(jobs)} of {total} "
+                      f"({with_text} with JD text)")
+
     def _fetch_provider_jobs(self, target_row):
         """Provider APIs first. Returns (jobs, diagnostic)."""
         provider = (target_row.get("provider") or "auto").lower()
         slug = (target_row.get("board_slug") or "").strip()
+        # FIX P34: a JobsinNetwork board serves no job links in its HTML, so
+        # it must go through the API or it yields nothing usable. Detected by
+        # host so `provider=auto` seeds are covered without a seed edit.
+        _host = urlparse((target_row.get("careers_url") or "")).netloc.lower()
+        if provider == "jobsinnetwork" or re.match(
+                r"^(?:www\.)?jobsin[a-z]+\.com$", _host):
+            try:
+                return self._fetch_jobsinnetwork_jobs(target_row)
+            except Exception as exc:
+                return [], (f"jobsinnetwork API failed: "
+                            f"{type(exc).__name__}: {exc}")
         if provider in ("pam", "digitalrecruiters"):
             # Batch N phase 2a: custom adapters with own fetch/filter logic.
             try:
@@ -7641,6 +8372,13 @@ class CareerPortalScanner:
             self._extract_semantic_cards,
             self._extract_anchor_sweep,
         ]
+        # Direct-list seeds get a card-scope-independent anchor pass. The
+        # ordinary anchor sweep correctly rejects shared list containers, but
+        # that would also reject every posting on a simple server-rendered
+        # listing such as 3 Banken IT. Anchor-only extraction is safe here
+        # because we intentionally do not borrow list-container metadata.
+        if self._is_direct_listing_seed_url(getattr(self, "_current_seed_url", "")):
+            extractors.insert(0, self._direct_listing_anchor_rows)
         for extractor in extractors:
             try:
                 rows = extractor(target)
@@ -7840,8 +8578,11 @@ class CareerPortalScanner:
             const add = (title, url, ctx, loc) => {
                 title = String(title || '').trim();
                 url = String(url || '').trim();
-                if (!title || title.length < 4 || title.length > 150) return;
-                if (!roleRe.test(title)) return;
+                if (!title || title.length < 3 || title.length > 200) return;
+                // Do not require an English role word here. This extractor is
+                // already guarded by structural job/posting keys below, so a
+                // local title such as "Sachbearbeiter", "Koch" or "Addetto"
+                // must be allowed through to the shared Python title validator.
                 if (!url) {
                     const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').substring(0, 70);
                     url = window.location.href.split('?')[0].split('#')[0] + '#job=' + slug;
@@ -7965,9 +8706,15 @@ class CareerPortalScanner:
                 const title = titleFromScope(card);
                 const loc = locationFromScope(card);
                 if (!title) return;
-                if (!jobUrl && roleWordRe.test(title)) {
-                    const hasContextSignal = loc || /(full[- ]?time|part[- ]?time|intern|remote|hybrid|onsite|on-site)/i.test(fullText);
-                    if (hasContextSignal) jobUrl = synthJobUrl(title, loc);
+                if (!jobUrl) {
+                    const explicitJobText = /\b(apply|apply now|bewerben|bewerbung|jetzt bewerben|candidati|candidatura|candidarsi|postuler|postulez|solliciteer|sollicitatie|jobangebot|jobangebote|stellenangebot|stellenangebote|vacature|vacatures|offerte di lavoro|offres d'emploi|oferta de empleo|ofertas de empleo|werken bij|praca|oferty pracy)\b/i.test(fullText);
+                    const hasEmploymentSignal = /(full[- ]?time|part[- ]?time|fulltime|parttime|intern|trainee|werkstudent|praktikum|remote|hybrid|onsite|on-site|vollzeit|teilzeit|unbefristet|befristet|tempo pieno|tempo parziale|temps plein|temps partiel|cdi|cdd|vast|tijdelijk)/i.test(fullText);
+                    // Synthetic URLs are only safe when the DOM itself exposes
+                    // job semantics. The old rule accepted any role-word
+                    // inside an <article>, turning news content into fake jobs.
+                    if ((hasJobAttr || explicitJobText) && (loc || hasEmploymentSignal)) {
+                        jobUrl = synthJobUrl(title, loc);
+                    }
                 }
                 if (!jobUrl) return;
                 const key = (title + '|' + jobUrl + '|' + loc).toLowerCase();
@@ -8090,15 +8837,26 @@ class CareerPortalScanner:
                 if (text.length < 15 || text.length > 2500) return;
                 const title = titleFromScope(card);
                 if (!title) return;
-                if (!roleWordRe.test(title)) return;
                 if (genericTextRe.test(title) || uiTextRe.test(title)) return;
                 const loc = locationFromScope(card);
-                const contextSignal =
-                    loc ||
-                    /(full[- ]?time|part[- ]?time|intern|remote|hybrid|onsite|on-site|department|team|office)/i.test(text);
-                if (!contextSignal) return;
                 let jobUrl = pickJobUrl(card);
-                if (!jobUrl) jobUrl = synthJobUrl(title, loc);
+                if (!jobUrl) {
+                    const attrs = cleanText([
+                        getClassName(card), card.id || '',
+                        card.getAttribute?.('data-job-id') || '',
+                        card.getAttribute?.('data-jobid') || '',
+                        card.getAttribute?.('data-posting-id') || '',
+                        card.getAttribute?.('data-requisition-id') || '',
+                        card.getAttribute?.('data-testid') || '',
+                        card.getAttribute?.('data-qa') || '',
+                        card.getAttribute?.('data-automation') || ''
+                    ].join(' '));
+                    const explicitJobText = /\b(apply|apply now|bewerben|bewerbung|jetzt bewerben|candidati|candidatura|candidarsi|postuler|postulez|solliciteer|sollicitatie|jobangebot|jobangebote|stellenangebot|stellenangebote|vacature|vacatures|offerte di lavoro|offres d'emploi|oferta de empleo|ofertas de empleo|werken bij|praca|oferty pracy)\b/i.test(text);
+                    const hasJobAttr = /(job|position|posting|opening|vacancy|role|requisition|stelle|offerta|offre|vacature)/i.test(attrs);
+                    const hasEmploymentSignal = /(full[- ]?time|part[- ]?time|fulltime|parttime|intern|trainee|werkstudent|praktikum|vollzeit|teilzeit|unbefristet|befristet|remote|hybrid|onsite|on-site|tempo pieno|tempo parziale|temps plein|temps partiel|cdi|cdd|vast|tijdelijk)/i.test(text);
+                    if (!(hasJobAttr || explicitJobText) || !(loc || hasEmploymentSignal)) return;
+                    jobUrl = synthJobUrl(title, loc);
+                }
                 const key = (title + '|' + jobUrl + '|' + loc).toLowerCase();
                 if (seen.has(key)) return;
                 seen.add(key);
@@ -8186,8 +8944,11 @@ class CareerPortalScanner:
                     /carica altri/i, /carica ancora/i, /mostra altri/i,
                     /mostra di pi[ùu]/i, /vedi altri/i, /altre offerte/i,
                     /altri risultati/i, /altre posizioni/i, /visualizza altri/i,
-                    /weitere laden/i, /mehr anzeigen/i, /ver m[áa]s/i,
-                    /cargar m[áa]s/i, /voir plus/i, /afficher plus/i
+                    /weitere laden/i, /mehr anzeigen/i, /mehr jobs/i, /weitere stellen/i,
+                    /ver m[áa]s/i, /cargar m[áa]s/i, /voir plus/i, /afficher plus/i,
+                    /plus d'offres/i, /plus de postes/i, /meer vacatures/i, /meer resultaten/i,
+                    /bekijk meer/i, /meer laden/i, /carica pi[ùu]/i, /mostra altro/i,
+                    /więcej ofert/i, /pokaż więcej/i, /näytä lisää/i, /visa fler/i, /vis flere/i
                 ];
                 for (const el of querySelectorAllDeep('button, a')) {
                     if (!isVisible(el) || isBadScope(el)) continue;
@@ -8318,7 +9079,13 @@ class CareerPortalScanner:
                 // "successivo". Without these the crawl stops at page 1.
                 /successiv[ao]/i, /avanti/i, /prossim[ao]/i, /pagina seguente/i,
                 /seguente/i, /pi[ùu] recenti/i, /nächste/i, /naechste/i,
-                /p[áa]gina siguiente/i, /page suivante/i
+                /p[áa]gina siguiente/i, /page suivante/i,
+                /nächste seite/i, /vorherige/i, /zur nächsten/i, /weiter/i,
+                /pagina successiva/i, /pagina seguente/i, /pagina suivante/i,
+                /volgende pagina/i, /volgende/i, /suivant/i, /suivante/i,
+                /siguiente página/i, /seguinte/i, /seguinte página/i,
+                /następna/i, /następnej/i, /nast[eė]j/i, /seuraava/i,
+                /nästa/i, /næste/i
             ];
             // 1. Structured pagination scopes (including paginators like mat-paginator)
             const paginationScopes = querySelectorAllDeep([
@@ -8550,8 +9317,23 @@ class CareerPortalScanner:
                             loc2, name)
                         rec["Location Source"] = src2
                     else:
-                        rec["Job Location"] = "Unknown"
-                        rec["Location Source"] = "none"
+                        # FIX P41 (2026-10-06): P17 revokes anything derived
+                        # from a SHARED context blob, but "Raw Location" is
+                        # the row's OWN captured string and was never part of
+                        # the shared text. Amazon Italia rows went out with
+                        # Job Location=Unknown while still carrying
+                        # Raw Location="Milan, ITA" in the same CSV row.
+                        # Re-read it before giving up -- no network.
+                        _raw_loc = self.extract_location(
+                            rec.get("Raw Location") or "")
+                        _raw_loc = ("Unknown" if _raw_loc == "Not Specified"
+                                    else self._sanitize_job_location(_raw_loc, name))
+                        if _raw_loc != "Unknown":
+                            rec["Job Location"] = _raw_loc
+                            rec["Location Source"] = "card"
+                        else:
+                            rec["Job Location"] = "Unknown"
+                            rec["Location Source"] = "none"
                     rec["Location Confidence"] = self._location_confidence(
                         rec.get("Job Location"), rec.get("Location Source"))
                     if (_policy == "job_location"
@@ -8561,6 +9343,12 @@ class CareerPortalScanner:
                         rec["_scope_pending"] = True
                         rec["_scope_context"] = ""
                         rec["Scope Confidence"] = "pending_location"
+                    elif (rec.get("Job Location") == "Unknown"
+                            and url.startswith("http")
+                            and "#job=" not in url.lower()):
+                        # FIX P35: context was revoked, so this row lost its
+                        # location too -- recover it without re-scoping.
+                        rec["_loc_pending"] = True
                 touched += 1
         diagnostics.append(
             f"shared card context: {len(shared)} blob(s) reused across "
@@ -8585,11 +9373,19 @@ class CareerPortalScanner:
         import concurrent.futures as _cf
         pending = [rec for rec in company_jobs.values()
                    if rec.get("_scope_pending")]
-        if not pending:
+        # FIX P35: rows that need a LOCATION but not a verdict. They ride the
+        # same fetch, under their own budget so they can never starve the
+        # scope queue, and they are resolved last.
+        loc_only = [rec for rec in company_jobs.values()
+                    if rec.get("_loc_pending") and not rec.get("_scope_pending")]
+        if not pending and not loc_only:
             return
         budget = min(len(pending), max(0, int(
             os.environ.get("SPONSORSCOUT_SCOPE_RESOLVE_MAX") or 400)))
         pending = pending[:budget]
+        loc_budget = min(len(loc_only), max(0, int(
+            os.environ.get("SPONSORSCOUT_LOC_RESOLVE_MAX") or 400)))
+        pending = pending + loc_only[:loc_budget]
         workers = recommended_workers("http")
 
         def _resolve(rec):
@@ -8616,9 +9412,24 @@ class CareerPortalScanner:
                     rec["Location Confidence"] = self._location_confidence(
                         loc, rec.get("Location Source"))
                     recovered += 1
+                    # FIX P35: a seed_url row was accepted on the seed's word
+                    # alone. Now that the job's OWN location has been read, it
+                    # can be confirmed. Context and URL are deliberately NOT
+                    # passed: the upgrade to "verified" must rest on the job's
+                    # location and nothing else. A mismatch is left at
+                    # unverified_seed_url -- never quarantined, because under
+                    # seed_url the seed, not the location, decides membership.
+                    if (rec.get("_loc_pending")
+                            and not rec.get("_scope_pending")
+                            and rec.get("Scope Confidence") == "unverified_seed_url"):
+                        _tc = (target_row.get("target_country") or "").strip()
+                        if (_tc and _tc.casefold() != "global"
+                                and self._scope_country_match(_tc, loc, "", "")):
+                            rec["Scope Confidence"] = "verified"
 
         dropped = 0
         for rec in list(company_jobs.values()):
+            rec.pop("_loc_pending", None)  # FIX P35: never re-judged, never retried
             if not rec.get("_scope_pending"):
                 continue
             rec.pop("_scope_pending", None)
@@ -8641,15 +9452,17 @@ class CareerPortalScanner:
             stats["rejected_scope"] += 1
             dropped += 1
         diagnostics.append(
-            f"scope re-check: {len(pending)} unproven row(s) fetched, "
+            f"scope re-check: {len(pending)} unproven row(s) fetched "
+            f"({loc_budget} for location only, P35), "
             f"{recovered} location(s) recovered, {dropped} quarantined")
 
-    def _detail_enrich_one(self, page, url, company_jobs) -> str:
+    def _detail_enrich_one(self, page, url, company_jobs, browser_timeout_ms=None) -> str:
         """Enrich one row from its detail page.
         Returns "ok" / "network_fail" / "other_fail" / "skipped" so the
         caller can run the host circuit-breaker and one retry pass."""
         try:
-            page.goto(url,wait_until="domcontentloaded",timeout=self.config.DETAIL_SCAN_TIMEOUT_MS)
+            _timeout = int(browser_timeout_ms or self.config.DETAIL_SCAN_TIMEOUT_MS)
+            page.goto(url,wait_until="domcontentloaded",timeout=_timeout)
             page.wait_for_timeout(500)
             # NOTE: raw string — the JS below contains regex/string escapes
             # (\s, \n). In a non-raw Python literal \n would be turned into a
@@ -8898,6 +9711,7 @@ class CareerPortalScanner:
         ordered.sort(key=lambda _p: self._detail_priority(_p[1]))
         _cap=self.config.MAX_DETAIL_SCAN_PER_COMPANY
         urls=[u for u, _ in ordered[:_cap]]
+        _browser_cap = max(0, int(getattr(self.config, "DETAIL_BROWSER_FALLBACK_PER_COMPANY", 12)))
         # FIX P0-51 (S-10): say so out loud. A row whose JD was never
         # fetched reports Experience/Sponsor as Unknown, which looked
         # identical to "the extractor failed". It is a budget decision and
@@ -8930,6 +9744,7 @@ class CareerPortalScanner:
         host_netfails: dict = {}
         tripped_hosts: set = set()
         failed_network_urls: list = []
+        browser_attempts = 0
         for url_i,url in enumerate(urls,1):
             if check_control(self.cancel_event, self.pause_event):
                 print(f"   CANCELLED: stopping detail scan for {name}")
@@ -8946,30 +9761,40 @@ class CareerPortalScanner:
                 continue
             if _is_download_url(url):
                 continue
+            if browser_attempts >= _browser_cap:
+                break
             if not _take_detail_budget():
                 break
-            outcome = self._detail_enrich_one(page, url, company_jobs)
+            browser_attempts += 1
+            outcome = self._detail_enrich_one(page, url, company_jobs, browser_timeout_ms=getattr(self.config, "DETAIL_BROWSER_TIMEOUT_MS", self.config.DETAIL_SCAN_TIMEOUT_MS))
             if outcome == "ok":
                 enriched += 1
                 host_netfails.pop(host, None)
             elif outcome == "network_fail":
                 failed_network_urls.append(url)
                 host_netfails[host] = host_netfails.get(host, 0) + 1
-                if host_netfails[host] >= 5:
+                if host_netfails[host] >= getattr(self.config, "DETAIL_BROWSER_HOST_FAILURES", 2):
                     tripped_hosts.add(host)
                     print(f"   -> {name}: host {host} unreachable ({host_netfails[host]} network failures) - skipping remaining detail URLs")
         # One retry pass over transient network failures (DNS/timeouts often
         # clear); hosts that already tripped the breaker stay skipped.
         for url in failed_network_urls:
+            if browser_attempts >= _browser_cap:
+                break
             host = urlparse(url).netloc.lower()
             if host in tripped_hosts:
                 continue
             if not _take_detail_budget():
                 break
-            if self._detail_enrich_one(page, url, company_jobs) == "ok":
+            browser_attempts += 1
+            if self._detail_enrich_one(page, url, company_jobs, browser_timeout_ms=getattr(self.config, "DETAIL_BROWSER_TIMEOUT_MS", self.config.DETAIL_SCAN_TIMEOUT_MS)) == "ok":
                 enriched += 1
         if enriched:
             print(f"   -> {name}: detail-enriched {enriched} rows")
+        if ordered and _browser_cap == 0:
+            print(f"   -> {name}: browser detail fallback disabled; HTTP detail only")
+        elif browser_attempts >= _browser_cap and len(failed_network_urls) + len(urls) > _browser_cap:
+            print(f"   -> {name}: browser detail fallback capped at {_browser_cap} visit(s)")
 
     def _extract_ld_location_from_html(self, html):
         """Parse JobPosting JSON-LD location out of raw HTML (fast, no browser)."""
@@ -9004,6 +9829,163 @@ class CareerPortalScanner:
                 ])).strip()
                 if loc_str:
                     return loc_str
+        return ""
+
+    def _title_from_detail_page(self, url, company=""):
+        """FIX P42 (2026-10-06): read a job's real title off its own page.
+
+        amazon.jobs cards expose only "Updated: 10/2/2026" as their anchor
+        text, and the URL is /jobs/10559108 with no slug, so both the card
+        and the J2 slug rescue produce a title that
+        `is_valid_job_title` rightly refuses -- 22 genuine Italian Amazon
+        jobs were quarantined in run 20261006T211320 as
+        invalid_generic_or_department_title while carrying perfectly good
+        locations ("Rome, RM, ITA", "Milan, ITA").
+
+        The page itself states it plainly (`<h1>Business Affairs
+        Executive</h1>`, 43 KB, no browser). One cheap static GET is spent
+        per rescued row, under a per-run budget, and the recovered text must
+        still satisfy the SAME title validator -- this widens what can be
+        read, never what counts as a valid title.
+        """
+        if not url or not url.startswith("http"):
+            return ""
+        # Two budgets. The global one bounds the run; the per-company one
+        # stops a single junk-heavy board from spending the whole budget and
+        # from serialising hundreds of fetches inside one crawl_target
+        # (these run sequentially within a company). Worst case per company
+        # is 40 x 8 s, well inside MAX_COMPANY_TIME_SEC.
+        cap = max(0, int(os.environ.get("SPONSORSCOUT_TITLE_RESCUE_MAX") or 200))
+        per_co = max(0, int(
+            os.environ.get("SPONSORSCOUT_TITLE_RESCUE_PER_COMPANY") or 40))
+        key = (company or "").casefold()
+        with self._title_rescue_lock:
+            if self._title_rescue_used >= cap:
+                return ""
+            if self._title_rescue_by_company.get(key, 0) >= per_co:
+                return ""
+            self._title_rescue_used += 1
+            self._title_rescue_by_company[key] = (
+                self._title_rescue_by_company.get(key, 0) + 1)
+        try:
+            req = urllib.request.Request(url, headers={
+                "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                               "AppleWebKit/537.36 Chrome/126.0.0.0 Safari/537.36"),
+                "Accept": "text/html,application/xhtml+xml,*/*",
+            })
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                html_text = resp.read(400000).decode("utf-8", "replace")
+        except Exception:
+            return ""
+        cands = []
+        m = re.search(r"(?is)<h1[^>]*>(.*?)</h1>", html_text)
+        if m:
+            cands.append(m.group(1))
+        m = re.search(r"(?is)<title[^>]*>(.*?)</title>", html_text)
+        if m:
+            # "Business Affairs Executive  - Job ID: 10559108 | Amazon.jobs"
+            head = re.split(r"\s*(?:\||\u2013|\u2014)\s*", unescape(m.group(1)))[0]
+            cands.append(re.sub(r"(?i)\s*-\s*job\s*id\s*:.*$", "", head))
+        for cand in cands:
+            text = re.sub(r"\s+", " ", unescape(
+                re.sub(r"(?s)<[^>]+>", " ", cand))).strip()
+            if not text or len(text) > 160:
+                continue
+            cleaned = self.clean_job_title(text)
+            if cleaned and self.is_valid_job_title(cleaned, company):
+                return cleaned
+        return ""
+
+    def _location_in_target_country(self, text, target_row):
+        """FIX P39 (2026-10-06): keep a multi-country posting's TARGET site.
+
+        Bending Spoons advertises one role in several offices:
+
+            "Milan (Italy), London (UK), Madrid (Spain), or Warsaw (Poland)"
+
+        The collapse to a single value picked the LAST entry -- Job Location
+        was written as "Poland", "UK" or (once the word "or" appeared)
+        "Unknown" -- and the row was then quarantined as outside Italy. In
+        run 20261006T211320 that cost 40 rows at the single most
+        sponsorship-relevant employer in the Italian seed, every one of which
+        names Milan explicitly.
+
+        When a posting offers several COUNTRIES and one of them is the seed's
+        target, that is the site the seed is asking about, so it is the one
+        reported. Returns "" for anything that is not genuinely
+        multi-country, so single-site strings ("Milan, MI, ITA") and
+        same-country lists (handled by _multisite_same_country) are
+        untouched.
+        """
+        target = (target_row.get("target_country") or "").strip()
+        if not target or target.casefold() == "global":
+            return ""
+        raw = re.sub(r"\s+", " ", str(text or "")).strip()
+        if not raw or len(raw) > 300:
+            return ""
+        # Only the explicit "City (Country)" list form. A bare comma split
+        # would tear "Milan, MI, ITA" into pieces and lose its country.
+        pairs = re.findall(
+            r"([A-ZÀ-Þ][\w'’\-\. ]{1,30}?)\s*\(([^)]{2,30})\)", raw)
+        if len(pairs) < 2:
+            return ""
+        parsed, countries = [], set()
+        for city, country in pairs:
+            got = self.extract_location(
+                f"{city.strip(' ,')}, {country.strip()}")
+            if got == "Not Specified":
+                continue
+            parsed.append(got)
+            name = ""
+            if country_from_location is not None:
+                try:
+                    name = (country_from_location(got) or "").strip()
+                except Exception:
+                    name = ""
+            name = name or (self._supplementary_country(got) or "")
+            if name:
+                countries.add(name.casefold())
+        # Two or more DISTINCT countries is what makes this a choice of
+        # sites rather than one place written out in full.
+        if len(countries) < 2:
+            return ""
+        for got in parsed:
+            if self._scope_country_match(target, got, "", ""):
+                return got
+        return ""
+
+    def _location_from_title_text(self, title):
+        """FIX P40 (2026-10-06): the branch named inside a store job's title.
+
+        Italian retail and restaurant chains identify the shop in the title
+        and nowhere else -- "RESPONSABILE DI SALA - ROSSOPOMODORO ROMA
+        CENTRO". The card carries no location field, so the row fell back to
+        the seed host ("Italy"), which is not proof, and was quarantined:
+        27 Rossopomodoro and 4 Oniverse rows in run 20261006T211320. Their
+        detail pages cannot help either -- joblink.allibo.com answers with a
+        2 KB JavaScript shell.
+
+        Every 1-3 word window of the title is offered to extract_location,
+        which validates against the gazetteer and rejects role words, and the
+        longest accepted place wins. The place is reported as it is FOUND,
+        never filtered to the target country: "INTIMISSIMI Mannheim" must
+        resolve to Mannheim so the scope rules can correctly reject it.
+        """
+        text = re.sub(r"[|/]", " ", str(title or ""))
+        tokens = [w for w in re.split(r"[\s,\-–—]+", text) if w]
+        if not tokens or len(tokens) > 24:
+            return ""
+        for size in (3, 2, 1):
+            best = ""
+            for i in range(len(tokens) - size + 1):
+                window = " ".join(tokens[i:i + size]).strip("()[].,:;")
+                if len(window) < 3:
+                    continue
+                got = self.extract_location(window)
+                if got != "Not Specified" and len(got) > len(best):
+                    best = got
+            if best:
+                return best
         return ""
 
     def _label_location(self, html):
@@ -10233,7 +11215,13 @@ class CareerPortalScanner:
                 # below instead of double-counting.
                 if not self.is_valid_job_url(clean_url):
                     stats["rejected_url"] += 1
-                    quarantine_job(raw_title, raw_url, raw_location, "invalid_or_application_only_url", method)
+                    # FIX P33: name the department/facet chips separately so a
+                    # board that lists only chips is visible in the quarantine
+                    # file instead of hiding among genuine bad URLs.
+                    _why = ("category_or_department_link"
+                            if is_category_facet_url(clean_url)
+                            else "invalid_or_application_only_url")
+                    quarantine_job(raw_title, raw_url, raw_location, _why, method)
                     return False
                 if self.is_self_listing_url(clean_url, seed_url):
                     stats["rejected_url"] += 1
@@ -10248,6 +11236,13 @@ class CareerPortalScanner:
                         clean_title = rescued
                         method = f"{method}+slug_title"
                     else:
+                        # FIX P42: the card never showed the title; the job's
+                        # own page does. ONE fetch, budgeted.
+                        rescued = self._title_from_detail_page(clean_url, name)
+                        if rescued:
+                            clean_title = rescued
+                            method = f"{method}+detail_title"
+                    if not self.is_valid_job_title(clean_title, name):
                         stats["rejected_title"] += 1
                         quarantine_job(raw_title, raw_url, raw_location, "invalid_generic_or_department_title", method)
                         return False
@@ -10268,6 +11263,11 @@ class CareerPortalScanner:
                 out_location = "Unknown" if location == "Not Specified" else location
                 # FIX P0-49 (S-09/S-04): one gate in front of every writer.
                 out_location = self._sanitize_job_location(out_location, name)
+                # FIX P39: one role offered in several countries -- report the
+                # seed's own country rather than whichever came last.
+                _multi = self._location_in_target_country(raw_location, target_row)
+                if _multi:
+                    out_location, loc_source = _multi, "multi_target"
                 # FIX P0-38: P0-11 used COMPANY_HEADQUARTERS as a last-resort
                 # fill for Job Location. That fabricated a location the job
                 # posting never stated, and because the UI derives Country
@@ -10287,8 +11287,15 @@ class CareerPortalScanner:
                     if _tp != "Unknown":
                         out_location, loc_source = _tp, "title"
                 if out_location == "Unknown":
-                    _town = (self._town_from_address(raw_location)
-                             or self._town_from_address(combined_context))
+                    # FIX P40: store jobs name the branch in the title and
+                    # nowhere else. Tried BEFORE the host fallback so a real
+                    # place always beats a guessed country.
+                    _tt = self._location_from_title_text(raw_title)
+                    if _tt:
+                        out_location, loc_source = _tt, "title"
+                if out_location == "Unknown":
+                    _town = (self._town_from_address(raw_location, name)
+                             or self._town_from_address(combined_context, name))
                     _site_c = self._country_from_site(
                         clean_url, target_row.get("careers_url"))
                     if _town and _site_c:
@@ -10382,6 +11389,24 @@ class CareerPortalScanner:
                                 "Extraction Method": method})
                     quarantine.append(rec); stats["quarantined"] += 1
                     return False
+                # ── FIX P35 (2026-10-06): location recovery was tied to SCOPE ──
+                # The deferred detail fetch above is the only thing that ever
+                # calls _detail_location_from_url() for a list row, and it only
+                # ran under scope_policy=job_location. LOOP is seed_url /
+                # Austria, so its rows were accepted on the seed URL and NOTHING
+                # ever fetched their detail page: all 16 were written with Job
+                # Location=Unknown, Location Source=none, Country=Unknown, even
+                # though the JD page states "Location  Salzburg - Vienna" in a
+                # label/value strip that FIX P14 already parses correctly.
+                #
+                # How a row was SCOPED and whether its location is KNOWN are two
+                # different questions. Any accepted row with a real URL and no
+                # proven location now earns the same cheap fetch -- but on a
+                # separate flag, because these rows must never be re-judged:
+                # _scope_pending rows are quarantined when they stay unproven,
+                # and reusing it here would have deleted the very 16 rows this
+                # fix exists to populate.
+                _loc_pending = (not _scope_pending) and _unproven and _real_url
                 cid = self.canonical_job_id(
                     f"{name}|{target_row.get('target_country','Global')}", clean_url,
                     clean_title, out_location, provider,
@@ -10418,6 +11443,8 @@ class CareerPortalScanner:
                 if _scope_pending:
                     rec["_scope_pending"] = True
                     rec["_scope_context"] = combined_context[:500]
+                elif _loc_pending:
+                    rec["_loc_pending"] = True  # FIX P35: location only
                 # FIX P17: remember WHICH blob this row's attributes came
                 # from. A long blob reused by several jobs is a page/list
                 # text, not a card, and _strip_shared_card_context() undoes
@@ -10554,6 +11581,8 @@ class CareerPortalScanner:
                             "browser bundle; dev builds need `playwright "
                             "install chromium`)"
                         )
+                    _crawl_locale, _crawl_accept_language = self._preferred_browser_locales(target_row, seed_url)
+                    diagnostics.append(f"browser locale: {_crawl_locale}; Accept-Language: {_crawl_accept_language}")
                     with sync_playwright() as pw:
                         browser = pw.chromium.launch(
                             headless=True,
@@ -10563,8 +11592,9 @@ class CareerPortalScanner:
                             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126 Safari/537.36",
                             # FIX P0-29 (restored from _org): a smaller viewport
                             # rasterises less on every page of every company.
-                            viewport={"width": 1280, "height": 800}, locale="en-US",
-                            extra_http_headers={"Accept-Language": "en-US,en;q=0.9"},
+                            viewport={"width": 1280, "height": 800},
+                            locale=self._preferred_browser_locales(target_row, seed_url)[0],
+                            extra_http_headers={"Accept-Language": self._preferred_browser_locales(target_row, seed_url)[1]},
                         )
                         # FIX P0-29 (restored from _org): drop images, media,
                         # fonts and ~28 analytics/chat/CMP hosts for the WHOLE
@@ -10609,7 +11639,18 @@ class CareerPortalScanner:
                         target = self.check_iframes(page) or page
                         size = self.try_increase_page_size(page, target)
                         if size: diagnostics.append(f"page size increased to {size}")
+                        self._current_seed_url = seed_url
+                        _direct_listing_seed = self._is_direct_listing_seed_url(seed_url)
+                        if _direct_listing_seed:
+                            diagnostics.append("seed classified as direct job listing; search/landing reroute disabled")
                         current = self.extract_visible_jobs(target)
+                        if _direct_listing_seed and not current:
+                            # Run the scope-independent direct-listing extractor
+                            # before any landing/search recovery. This is the
+                            # critical path for plain WordPress/Elementor lists.
+                            current = self._direct_listing_anchor_rows(target)
+                            if current:
+                                diagnostics.append(f"direct-listing anchors: {len(current)}")
                         if not current:
                             # FIX P0-17: a late-injected consent overlay is a
                             # common cause of "page loaded but zero jobs".
@@ -10621,7 +11662,7 @@ class CareerPortalScanner:
                                     current = self.extract_visible_jobs(target)
                             except Exception:
                                 pass
-                        if not current:
+                        if not current and not _direct_listing_seed:
                             changed = self.handle_landing_page_redirect(page, seed_url) or self.trigger_search_if_present(page)
                             if changed:
                                 page.wait_for_timeout(1500)
@@ -10644,13 +11685,22 @@ class CareerPortalScanner:
                                     f"skipping scroll/pagination")
                                 raise _DeadEndBoard()
                         for job in current: process_job(job)
-                        self.aggressive_infinite_scroll(page, target)
-                        self.click_load_more_repeatedly(page, target)
+                        _direct_pager = self._direct_listing_pagination_state(target) if _direct_listing_seed else {"hasNext": True, "hasLoadMore": True, "hasPager": True}
+                        _needs_direct_pagination = bool(_direct_pager.get("hasNext") or _direct_pager.get("hasLoadMore") or _direct_pager.get("hasPager"))
+                        if _direct_listing_seed:
+                            if _direct_pager.get("hasLoadMore"):
+                                self.click_load_more_repeatedly(page, target)
+                            elif not _needs_direct_pagination:
+                                diagnostics.append("direct listing complete: no pagination/load-more control detected")
+                        else:
+                            self.aggressive_infinite_scroll(page, target)
+                            self.click_load_more_repeatedly(page, target)
 
                         prev_total = -1; empty_pages = 0; low_yield = 0
                         repeat_pages = 0
                         seed_params = parse_qsl(urlparse(seed_url).query)
-                        for page_num in range(1, self.config.MAX_PAGINATION_PAGES + 1):
+                        _page_limit = self.config.MAX_PAGINATION_PAGES if (not _direct_listing_seed or _needs_direct_pagination) else 0
+                        for page_num in range(1, _page_limit + 1):
                             # Pause/Stop must take effect between pages. Before
                             # this gate the only exit from the pagination loop
                             # was MAX_COMPANY_TIME_SEC (15 min), so pressing Stop
@@ -10677,8 +11727,11 @@ class CareerPortalScanner:
                                     f"{len(company_jobs)} rows kept")
                                 break
                             target = self.check_iframes(page) or page
-                            self.progressive_scroll_and_wait(page, target)
+                            if not _direct_listing_seed:
+                                self.progressive_scroll_and_wait(page, target)
                             batch = self.extract_visible_jobs(target)
+                            if _direct_listing_seed and not batch:
+                                batch = self._direct_listing_anchor_rows(target)
                             if not batch:
                                 batch = self._reextract_after_reload(
                                     page, target, page_num, diagnostics)
@@ -10822,6 +11875,7 @@ class CareerPortalScanner:
                 diagnostics.append(
                     f"scope re-check failed: {type(_rexc).__name__}: {_rexc}")
                 for _cid, _rec in list(company_jobs.items()):
+                    _rec.pop("_loc_pending", None)  # FIX P35: not a scope flag
                     if _rec.pop("_scope_pending", None):
                         _rec.pop("_scope_context", None)
                         company_jobs.pop(_cid, None)

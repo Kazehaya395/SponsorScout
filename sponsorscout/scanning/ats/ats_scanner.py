@@ -31,7 +31,7 @@ import time
 import unicodedata
 from collections import Counter
 from html import unescape
-from urllib.parse import urlparse, urljoin, unquote
+from urllib.parse import urlparse, parse_qsl, urlencode, urlunparse, urljoin, unquote
 from urllib.request import Request, urlopen
 
 try:
@@ -45,12 +45,7 @@ except ModuleNotFoundError as _pw_exc:
 
 # Desktop UI Stop/Pause. Imported, not reimplemented, so both scanners obey
 # the same control protocol.
-from sponsorscout.scanning.common import (
-    ScanCancelled,
-    check_cancelled,
-    check_control,
-    sleep_interruptible,
-)
+from sponsorscout.scanning.common import check_control
 
 # Real-time logging: flush prints during long runs.
 import builtins as _builtins
@@ -95,11 +90,7 @@ def _log_file_path() -> str:
         return "ats_scraper_errors.log"
 
 logging.basicConfig(
-    # BUGFIX 2026-10-05: was a hard-coded "ats_scraper_errors.log" (CWD) while
-    # _log_file_path() above documents + computes the per-user scan-output
-    # path. A packaged Windows build under Program Files is not writable, so
-    # the old path failed/scattered stray files. Use the helper's path.
-    filename=_log_file_path(),
+    filename="ats_scraper_errors.log",
     level=logging.WARNING,
     format="%(asctime)s %(levelname)s %(message)s",
 )
@@ -1549,6 +1540,25 @@ def _is_country_token(tok: str) -> bool:
     return t in _COUNTRY_TAIL_CACHE["names"]
 
 
+# ── FIX P36 (2026-10-06): a work-mode qualifier is not a location ─────────
+# Greenhouse publishes multi-site roles as a pipe list whose FIRST segment
+# is a hiring-policy label, not a place:
+#
+#   "Remote-Friendly (Travel-Required) | San Francisco, CA | Seattle, WA"
+#
+# format_location() split on "|" and then took parts[0] unconditionally, so
+# the city in the very next segment was thrown away and the row was written
+# with Job Location=Unknown. An audit of 638 Greenhouse rows (DocuSign +
+# Anthropic) found 25 such rows -- 3.9% -- every one of which the API had
+# supplied a perfectly good location for.
+#
+# Only the qualifier FORMS are skipped. A bare "Remote" still wins over a
+# later city, because a posting that leads with "Remote" really is
+# remote-first; that behaviour is unchanged.
+_WORKMODE_QUALIFIER_RE = re.compile(
+    r"(?i)^(?:remote[\s\-]?friendly|hybrid[\s\-]?friendly|office[\s\-]?based"
+    r"|flexible|travel[\s\-]?required)(?:\s*\([^)]*\))?$")
+
 def _location_confidence(location, loc_source):
     """How much a Job Location can be trusted (FIX W2-8, shared rule).
 
@@ -1642,15 +1652,10 @@ class ATSScanner:
 
     def _fetch(self, url, method="GET", body=None, timeout=None):
         """Fetch a URL with transient-error retry + exponential backoff.
-
-        Returns decoded text. Raises on definitive 404/410 (no retry).
-        Backoff sleeps are interruptible: a desktop Stop pressed mid-retry
-        aborts within ~0.25 s instead of sleeping through the delay.
-        """
+        Returns decoded text. Raises on definitive 404/410 (no retry)."""
         timeout = timeout or HTTP_TIMEOUT_SEC
         last_exc = None
         for attempt in range(1, HTTP_RETRIES + 1):
-            check_cancelled(self.cancel_event)
             try:
                 data = json.dumps(body).encode() if body is not None else None
                 req = Request(url, data=data, method=method, headers={
@@ -1674,10 +1679,7 @@ class ATSScanner:
                 else:
                     last_exc = exc
             if attempt < HTTP_RETRIES:
-                if not sleep_interruptible(
-                        HTTP_BACKOFF_BASE_SEC * (2 ** (attempt - 1)),
-                        self.cancel_event, self.pause_event):
-                    raise ScanCancelled()
+                time.sleep(HTTP_BACKOFF_BASE_SEC * (2 ** (attempt - 1)))
         raise last_exc
 
     def _get_json(self, url):
@@ -2440,7 +2442,10 @@ class ATSScanner:
             return ("Remote" if "remote" in remote_hint else "Unknown")
         # Collapse multi-line / pipe-separated location lists to the first value
         parts = [clean(p) for p in re.split(r"[;\n|]+", location) if clean(p)]
-        location = parts[0] if parts else ""
+        # FIX P36: skip leading work-mode qualifiers so the real place, which
+        # sits in a later segment, is the one that is read.
+        _places = [p for p in parts if not _WORKMODE_QUALIFIER_RE.match(p)]
+        location = (_places[0] if _places else (parts[0] if parts else ""))
         if not location:
             return ("Remote" if "remote" in remote_hint else "Unknown")
         low = location.lower()
@@ -3517,10 +3522,6 @@ class ATSScanner:
         limit = 20  # Workday API rejects limit > 20 (HTTP 400)
         total = None
         while True:
-            # STOP FAST (your screenshot hung here on Autodesk): without this
-            # gate a Stop pressed mid-board waits for every remaining page +
-            # up to 150 detail GETs before the outer loop even sees it.
-            check_cancelled(self.cancel_event)
             data = self._post_json(api, {
                 "appliedFacets": {}, "limit": limit, "offset": offset,
                 "searchText": "",
@@ -3532,9 +3533,6 @@ class ATSScanner:
             if not jobs:
                 break
             for job in jobs:
-                # Same fast-stop gate per posting: the detail GET below is a
-                # blocking network call, so check again before each one.
-                check_cancelled(self.cancel_event)
                 title = job.get("title", "")
                 ext = job.get("externalPath", "")
                 # FIX W1-1b: the public URL is /<site><externalPath>; without
@@ -3584,8 +3582,6 @@ class ATSScanner:
 
     def browser_fallback(self, target):
         """Last-resort DOM scrape for ATS types without a public API."""
-        # STOP FAST: never launch Chromium for a run the user already stopped.
-        check_cancelled(self.cancel_event)
         if sync_playwright is None:
             logging.error(
                 "Playwright required for %s (%s)",
@@ -3604,10 +3600,7 @@ class ATSScanner:
                 ctx = browser.new_context(viewport={"width": 1280, "height": 800})
                 install_page_resource_blocking(ctx)
                 page = ctx.new_page()
-                # The goto below blocks up to 35 s — gate before paying it.
-                check_cancelled(self.cancel_event)
                 page.goto(target["url"], wait_until="domcontentloaded", timeout=35000)
-                check_cancelled(self.cancel_event)
                 page.wait_for_timeout(2500)
                 jobs = page.evaluate(
                     """
@@ -3627,8 +3620,6 @@ class ATSScanner:
                     """
                 )
                 browser.close()
-        except ScanCancelled:
-            raise  # Stop is not a browser failure — let the run loop end.
         except Exception as exc:
             logging.exception("Browser fallback failed for %s", target["url"])
             self._record_error(target.get("name", "?"), "browser_fallback",
@@ -3956,9 +3947,6 @@ class ATSScanner:
             err_type = err_msg = ""
             try:
                 result = self.scan_target(target)
-            except ScanCancelled:
-                print(f"   CANCELLED: stopped during target [{idx}] {target.get('name', '?')}")
-                break
             except Exception as exc:
                 result = []
                 err_type, err_msg = type(exc).__name__, str(exc)
