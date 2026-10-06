@@ -1,0 +1,128 @@
+SPONSORSCOUT - CLEANUP & HOUSEKEEPING CHEAT SHEET
+==================================================
+Personal scratch file. It is git-ignored (.gitignore lists "cleanup.txt"), so
+nothing in here is ever committed. Run everything from the project root; all
+paths are relative to it.
+
+0. ORIENTATION
+--------------
+Set-ExecutionPolicy -Scope Process Bypass
+venv\Scripts\Activate.ps1            (PowerShell; if blocked, first run
+                                     Set-ExecutionPolicy -Scope Process Bypass)
+venv\Scripts\python.exe -m sponsorscout.main                    # run the GUI
+venv\Scripts\python.exe -m pytest sponsorscout\tests -q         # full suite
+python -m sponsorscout.main                                      # GUI on Linux
+
+1. BUILD ARTEFACT + CACHE WIPE   (safe: all of it is regenerated)
+-----------------------------------------------------------------
+WINDOWS (PowerShell):
+Remove-Item -Recurse -Force build,dist,.pytest_cache,.mypy_cache,.ruff_cache,.eggs,htmlcov -EA SilentlyContinue
+Get-ChildItem sponsorscout,tools -Recurse -Directory -Filter __pycache__ -EA SilentlyContinue | Remove-Item -Recurse -Force -EA SilentlyContinue
+Get-ChildItem sponsorscout,tools -Recurse -File -Include *.pyc,*.pyo,.coverage -EA SilentlyContinue | Remove-Item -Force -EA SilentlyContinue
+Get-Item -Path "$env:AppData\SponsorScout" | Remove-Item -Recurse -Force
+Write-Host "artefact cleanup complete"
+
+LINUX (bash):
+find . -type d \( -name "__pycache__" -o -name ".pytest_cache" -o -name ".mypy_cache" -o -name ".ruff_cache" -o -name "build" -o -name "dist" -o -name "*.egg-info" -o -name ".eggs" -o -name "htmlcov" \) -not -path "./venv/*" -prune -exec rm -rf {} + 2>/dev/null
+find . -type f \( -name "*.pyc" -o -name "*.pyo" -o -name ".coverage" \) -not -path "./venv/*" -delete 2>/dev/null
+rm -rf ~/.sponsorscout
+echo "artefact cleanup complete"
+
+!! NEVER put "*.spec" in those delete globs. SponsorScout.spec is a TRACKED
+   source file (the PyInstaller config). An older copy of this file did, which
+   silently deletes it and breaks build_exe.ps1 / build_deb.sh until it comes
+   back from git.
+
+Scratch files (my one-off probes; never committed):
+Remove-Item tmp_*.py, tmp_*.txt -EA SilentlyContinue     # Windows
+rm -f tmp_*.py tmp_*.txt                                 # Linux
+
+2. CODEBASE CLEANUP (dead code) - the routine
+----------------------------------------------
+The scanner does the scanning, you make the judgement calls. No tool deletes
+for you: tools/find_dead_code.py is read-only by design.
+
+STEP 1 - baseline BEFORE touching anything, so you can prove nothing broke:
+  venv\Scripts\python.exe -m pytest sponsorscout\tests -q
+  Note the numbers (e.g. "196 passed, 4 skipped"); the suite takes ~70 s. On
+  Windows run it detached so the shell does not cut it off:
+    Start-Process venv\Scripts\python.exe -ArgumentList '-m pytest sponsorscout\tests -q' -RedirectStandardOutput tmp_pytest.txt -RedirectStandardError tmp_pytest_err.txt -NoNewWindow
+  then read tmp_pytest.txt when it finishes.
+
+STEP 2 - report (read-only, ~4 s):
+  venv\Scripts\python.exe tools\find_dead_code.py
+    exit 0 = nothing to clean, exit 1 = findings to review
+    --imports | --i18n   run a single pass
+    --no-allowlist       also report the deliberate keepers
+  It reports: unused imports (skipping __future__, __all__ re-exports and
+  "# noqa" side-effect imports), module-level defs referenced nowhere in the
+  package or the docs, and i18n EN keys that occur nowhere outside i18n.py.
+  It stays quiet on purpose about keys translated indirectly (_(HEADERS[i]))
+  and about untranslated VALUE strings (filter options, cell values) - those
+  are correct by design (CODEBASE.md section 7).
+
+STEP 3 - decide, then delete:
+  delete  private helpers, debris, functions a newer one replaced, i18n keys
+          nobody calls;
+  keep    public API of a documented module (core/, db/, application/): add the
+          name to tools/find_dead_code.allow with a one-line reason instead of
+          deleting it, so the next run stays clean;
+  never   a side-effect import (main.py: `import sponsorscout.paths  # noqa:
+          F401`), the __all__ re-exports in ui/tabs/__init__.py, or anything
+          under extra_for_dev_purpose(do not delete)/.
+
+STEP 4 - import smoke test (catches a symbol that is still imported elsewhere):
+  venv\Scripts\python.exe -c "import sponsorscout.main, sponsorscout.ui.tabs.search, sponsorscout.ui.tabs.tools, sponsorscout.i18n, sponsorscout.scanning.pipeline; print('imports ok')"
+
+STEP 5 - re-verify (all three must pass):
+  venv\Scripts\python.exe -m pytest sponsorscout\tests -q   # same count as STEP 1
+  venv\Scripts\python.exe tools\find_dead_code.py           # exit 0
+  tests/test_i18n_parity.py runs inside the suite and fails if a _() key has
+  no Italian entry or if the EN/IT key sets drift apart.
+
+STEP 6 - docs, only when the cleanup touched something documented:
+  * removed a symbol named in CODEBASE.md / README.md -> update that mention;
+  * changed user-visible behaviour -> README, in BOTH English and Italian;
+  * added a tool -> CODEBASE.md (layout tree, module reference, dev workflow);
+  * nothing user-visible changed -> the README needs no edit.
+
+3. FULL APP RESET (destructive: it deletes your local database)
+--------------------------------------------------------------
+Run this only when you really want to lose the SQLite database, saved CV,
+prompts, seed edits and scan logs. The default location is
+%APPDATA%\SponsorScout (Windows) or ~/.sponsorscout (Linux).
+  Remove-Item -Recurse -Force "$env:APPDATA\SponsorScout"     # Windows
+  rm -rf ~/.sponsorscout                                       # Linux
+  (paths come from sponsorscout/paths.py: SPONSORSCOUT_DATA_DIR /
+   SPONSORSCOUT_DB_PATH override them - CODEBASE.md section 6)
+
+4. NEVER DELETE
+---------------
+  .git/                                    version history
+  venv/  .venv/  my_venv/                  active environments (all ignored)
+  SponsorScout.spec, installer.iss,        release pipeline
+    build_exe.ps1, build_deb.sh, build_rpm.sh
+  sponsorscout/data/seeds/*                bundled seed defaults
+                                           (MANIFEST.in / package data)
+  assets/*.png                             README screenshots
+  extra_for_dev_purpose(do not delete)/    legacy scanner reference
+  anything under %APPDATA%\SponsorScout or ~/.sponsorscout, unless you have
+  read section 3 above
+
+5. GIT IDENTITY (only needed on a fresh clone)
+----------------------------------------------
+  git config --global user.name  "user"
+  git config --global user.email "user@gmail.com"
+	 
+  git add .
+  git commit -m "final commit"
+  git push origin main
+
+
+6. PACKAGING
+------------
+  powershell -ExecutionPolicy Bypass -File build_exe.ps1   # -> dist\...setup.exe
+  ./build_deb.sh                                          # -> dist\...deb
+  ./build_rpm.sh                                          # -> dist\...rpm
+  All three bundle Playwright Chromium into the package.
+
