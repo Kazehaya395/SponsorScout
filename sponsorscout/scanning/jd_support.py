@@ -416,7 +416,16 @@ class JDSupportDetector:
             "pos": re.compile(r"\b(offriamo|offre|offrono|forniamo|fornisce|supportiamo|"
                               r"supportare|supporta|aiutiamo|copriamo|copre|paghiamo|"
                               r"rimborsiamo|rimborsa|garantiamo|garantisce|garantito|"
-                              r"mettiamo a disposizione|previsto|previsti|prevede|"
+                              # FIX P47 (2026-10-07): the masculine forms were
+                              # listed but not the FEMININE ones, and the two
+                              # nouns that matter most in Italian are both
+                              # feminine -- "la sponsorizzazione", "l'assistenza".
+                              # So "E prevista la sponsorizzazione del visto di
+                              # lavoro" matched the visa CONCEPT but found no
+                              # positive verb and scored Unknown 0.20, while the
+                              # masculine "e previsto il supporto" scored Yes 0.90.
+                              # A gender agreement, not a missing phrase.
+                              r"mettiamo a disposizione|previsto|previsti|prevista|previste|prevede|"
                               r"include|incluso|inclusa|disponibile|ricevere|ricevono)\b", re.I),
             "neg": re.compile(r"\b(non|nessun|nessuna|senza|purtroppo|non possiamo|non è possibile|"
                               r"non disponibile|non offre|non forniamo)\b", re.I),

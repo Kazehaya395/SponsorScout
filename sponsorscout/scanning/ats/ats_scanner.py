@@ -2130,6 +2130,21 @@ class ATSScanner:
         "zeltweg": "Austria", "zilina": "Slovakia", "zlin": "Czech Republic",
         "zoetermeer": "Netherlands", "zuerich": "Switzerland", "zug": "Switzerland",
         "zuid-holland": "Netherlands", "zwickau": "Germany",
+        # FIX P51 (2026-10-07): Dutch PROVINCES. Workday writes the
+        # province, not the city ("NLD---North-Holland---Haarlem"), so
+        # run 20261007T201018 shipped "North Holland" / "North Brabant"
+        # with no country and demoted 3 MSD rows to unverified_seed_url.
+        # "Limburg" is deliberately absent: it is a province of BOTH the
+        # Netherlands and Belgium and would be a guess.
+        "north holland": "Netherlands", "noord-holland": "Netherlands",
+        "noord holland": "Netherlands",
+        "south holland": "Netherlands", "zuid holland": "Netherlands",
+        "north brabant": "Netherlands", "noord-brabant": "Netherlands",
+        "noord brabant": "Netherlands",
+        "gelderland": "Netherlands", "overijssel": "Netherlands",
+        "flevoland": "Netherlands", "drenthe": "Netherlands",
+        "friesland": "Netherlands", "fryslan": "Netherlands",
+        "zeeland": "Netherlands",
     }
     # Country names in their own language (and the common exonyms).
     _W3_COUNTRY_ALIASES = {
@@ -2165,6 +2180,25 @@ class ATSScanner:
         "turkey": "Turkey", "turkiye": "Turkey", "ungarn": "Hungary",
         "united kingdom": "United Kingdom", "united states": "United States",
         "vereinigte staaten": "United States", "verenigd koninkrijk": "United Kingdom",
+        # FIX P54 (2026-10-07): a location string that NAMES its country
+        # must always yield that country. Run 20261007T215944 shipped
+        # "Baku, Azerbaijan", "Asuncion, Paraguay" and "Dar ES Salaam,
+        # Tanzania" with NO country resolved, because the alias table was
+        # built for Europe. Aggregators (Jaabz, VanHack, Visa Sponsor
+        # Jobs) post worldwide, and several of these are major
+        # sponsorship-source countries. Names only -- no cities, nothing
+        # ambiguous. "Jamaica" is deliberately omitted: it is also a
+        # neighbourhood of Queens, New York, and the comma-split in
+        # _supplementary_country would turn "Jamaica, NY" into a country.
+        "azerbaijan": "Azerbaijan", "armenia": "Armenia",
+        "kazakhstan": "Kazakhstan", "uzbekistan": "Uzbekistan",
+        "mongolia": "Mongolia", "montenegro": "Montenegro",
+        "paraguay": "Paraguay", "bolivia": "Bolivia",
+        "costa rica": "Costa Rica", "panama": "Panama",
+        "guatemala": "Guatemala", "trinidad and tobago": "Trinidad and Tobago",
+        "tanzania": "Tanzania", "oman": "Oman",
+        "bangladesh": "Bangladesh", "pakistan": "Pakistan",
+        "sri lanka": "Sri Lanka", "nepal": "Nepal",
         "viro": "Estonia",
     }
     # Multi-country / non-place markers: legitimate to display, never proof
@@ -2215,17 +2249,27 @@ class ATSScanner:
             return ""
         parts = [v] + [p.strip() for p in re.split(r"[,/|;()\[\]]+|\s+-\s+", v)
                        if p.strip()]
-        for part in parts:
-            n = self._w3_norm(part)
-            if not n or n in self._W3_REGION_MARKERS:
-                continue
-            hit = self._W3_COUNTRY_ALIASES.get(n) or self._W3_CITY_COUNTRY.get(n)
-            if hit:
-                return hit
-            n2 = re.sub(r"^\d{4,6}\s+", "", n)
-            hit = self._W3_COUNTRY_ALIASES.get(n2) or self._W3_CITY_COUNTRY.get(n2)
-            if hit:
-                return hit
+        # FIX P54b (2026-10-07): an explicitly NAMED country outranks a city
+        # that merely shares its name with one. The single left-to-right pass
+        # returned United States for "San Jose, Costa Rica", because San Jose
+        # (California) is in the city table and was reached first. Two passes:
+        # every part is tested against the country names before any of them is
+        # tested against the city table.
+        for table in (self._W3_COUNTRY_ALIASES, self._W3_CITY_COUNTRY):
+            # Rightmost first for the country pass (FIX P54b): the country is
+            # conventionally the last element of an address.
+            for part in (reversed(parts)
+                         if table is self._W3_COUNTRY_ALIASES else parts):
+                n = self._w3_norm(part)
+                if not n or n in self._W3_REGION_MARKERS:
+                    continue
+                hit = table.get(n)
+                if hit:
+                    return hit
+                n2 = re.sub(r"^\d{4,6}\s+", "", n)
+                hit = table.get(n2)
+                if hit:
+                    return hit
         return ""
 
     def _resolve_country(self, value):
@@ -2874,6 +2918,58 @@ class ATSScanner:
                 or not re.match(r"^[A-ZÀ-ÖØ-Þ]", cand)):
             return None
         return cand
+
+    #: FIX P49 (2026-10-07): Workday encodes the posting's country as an
+    #: ISO-3166 alpha-3 segment in the job URL --
+    #: "/job/NLD---North-Holland---Haarlem/...". The scanner read only the
+    #: display string, so in run 20261007T201018 four MSD rows carried a bare
+    #: Dutch province with no country and seven Wolters Kluwer rows at
+    #: NLD---Alphen-Aan-Den-Rijn (their Dutch HQ) were quarantined as
+    #: outside-target because the display string was "Multiple Locations".
+    #: Only codes whose country the gazetteer already names are listed, so
+    #: this never invents a country.
+    _ISO3_TO_COUNTRY = {
+        "AUT": "Austria", "AUS": "Australia", "BEL": "Belgium",
+        "BGR": "Bulgaria", "BRA": "Brazil", "CAN": "Canada",
+        "CHE": "Switzerland", "CHN": "China", "CZE": "Czech Republic",
+        "DEU": "Germany", "DNK": "Denmark", "ESP": "Spain", "EST": "Estonia",
+        "FIN": "Finland", "FRA": "France", "GBR": "United Kingdom",
+        "GRC": "Greece", "HRV": "Croatia", "HUN": "Hungary", "IND": "India",
+        "IRL": "Ireland", "ISR": "Israel", "ITA": "Italy", "JPN": "Japan",
+        "KOR": "South Korea", "LTU": "Lithuania", "LUX": "Luxembourg",
+        "LVA": "Latvia", "MEX": "Mexico", "MLT": "Malta", "NLD": "Netherlands",
+        "NOR": "Norway", "NZL": "New Zealand", "POL": "Poland",
+        "PRT": "Portugal", "ROU": "Romania", "SGP": "Singapore",
+        "SVK": "Slovakia", "SVN": "Slovenia", "SWE": "Sweden",
+        "TUR": "Turkey", "USA": "United States", "ZAF": "South Africa",
+        "ARE": "United Arab Emirates", "SAU": "Saudi Arabia",
+    }
+    #: "/job/<SEGMENT>/" where SEGMENT is "NLD---North-Holland---Haarlem".
+    _WORKDAY_URL_LOC_RE = re.compile(
+        r"/job/([A-Z]{3})---([^/?#]+)")
+
+    def _workday_url_location(self, *urls):
+        """(place, country) encoded in a Workday job URL, else ("", "").
+
+        FIX P49. Returns the country only for a code the table names, and the
+        place with the alpha-3 stripped off. Never guesses.
+        """
+        for u in urls:
+            if not u:
+                continue
+            m = self._WORKDAY_URL_LOC_RE.search(str(u))
+            if not m:
+                continue
+            country = self._ISO3_TO_COUNTRY.get(m.group(1).upper())
+            if not country:
+                continue
+            parts = [p.replace("-", " ").strip()
+                     for p in m.group(2).split("---") if p.strip()]
+            # Workday orders segments broad -> narrow (region, then site).
+            # The first is the one the board itself displays.
+            place = parts[0] if parts else ""
+            return place, country
+        return "", ""
 
     def _country_from_site(self, *urls):
         """Country implied by the host a posting is served from."""

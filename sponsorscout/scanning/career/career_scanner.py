@@ -2647,6 +2647,14 @@ _ORG_WORD_RE = re.compile(
     r"andamento|risultati|bilancio|fatturato|utile|ricavi|"
     r"trend|results?|revenue|overview|careers?|carriere)\b")
 
+#: FIX P42b: titles that belong to a CAREER SITE rather than to a vacancy.
+_PAGE_FURNITURE_TITLE_RE = re.compile(
+    r"(?i)\b(?:external\s+career\s+site|career\s+site|careers?\s+(?:home|page|portal)"
+    r"|job\s+search|search\s+jobs?|job\s+listing|all\s+jobs?|current\s+(?:openings?|vacancies)"
+    r"|lavora\s+con\s+noi|offerte\s+di\s+lavoro|posizioni\s+aperte"
+    r"|stellenangebote|karriere(?:seite|portal)?|vacatures|offres\s+d'emploi"
+    r"|page\s+not\s+found|access\s+denied|sign\s+in|log\s+in)\b")
+
 # ── FIX P38 (2026-10-06): ATS furniture published as vacancies ────────────
 # Run 20261006T211320 accepted 8 rows that are not jobs: "Recupero Password"
 # (.../app.php), "[email protected]" (/cdn-cgi/l/email-protection), plus
@@ -2661,10 +2669,20 @@ _ATS_VENDOR_HOME_RE = re.compile(
     r"intervieweb|altamirahrm|allibo|oraclecloud|avature|eightfold)"
     r"\.(?:com|io|co|it|de|net|org)$")
 #: Session / utility endpoints every ATS ships.
+#
+# REGRESSION FIX (run 20261006T225923): the first version of this pattern
+# ended each alternative with (?:/|$|\?), so "index.php" matched in the
+# MIDDLE of a path. ferrerocareers.com routes through PHP path-info --
+# /int/index.php/en/jobs/warehouse -- and 56 genuine Ferrero vacancies were
+# rejected as site furniture. A script name is only an endpoint when it is
+# the LAST segment; anything after it is a route, not a utility page.
+_SITE_UTILITY_FILE_RE = re.compile(
+    r"(?i)(?:^|/)(?:app|index|login|signin|logout|default|error|search)"
+    r"\.(?:php|aspx?|jsp|cgi)(?:$|\?|#)")
 _SITE_UTILITY_PATH_RE = re.compile(
-    r"(?i)(?:^|/)(?:app\.php|index\.php|login\.php|default\.aspx|"
-    r"recupero[-_]?password|password[-_]?(?:reset|recovery|dimenticata)|"
-    r"cdn-cgi/l/email-protection|cdn-cgi/)(?:/|$|\?)")
+    r"(?i)(?:^|/)(?:recupero[-_]?password|"
+    r"password[-_]?(?:reset|recovery|dimenticata)|"
+    r"cdn-cgi/)")
 
 
 def is_ats_furniture_url(url):
@@ -2675,7 +2693,7 @@ def is_ats_furniture_url(url):
         return False
     host = (parts.hostname or "").lower()
     path = parts.path or ""
-    if _SITE_UTILITY_PATH_RE.search(path):
+    if _SITE_UTILITY_FILE_RE.search(path) or _SITE_UTILITY_PATH_RE.search(path):
         return True
     if _ATS_VENDOR_HOME_RE.match(host) and len(
             [p for p in path.split("/") if p]) == 0:
@@ -6166,6 +6184,21 @@ class CareerPortalScanner:
         "zeltweg": "Austria", "zilina": "Slovakia", "zlin": "Czech Republic",
         "zoetermeer": "Netherlands", "zuerich": "Switzerland", "zug": "Switzerland",
         "zuid-holland": "Netherlands", "zwickau": "Germany",
+        # FIX P51 (2026-10-07): Dutch PROVINCES. Workday writes the
+        # province, not the city ("NLD---North-Holland---Haarlem"), so
+        # run 20261007T201018 shipped "North Holland" / "North Brabant"
+        # with no country and demoted 3 MSD rows to unverified_seed_url.
+        # "Limburg" is deliberately absent: it is a province of BOTH the
+        # Netherlands and Belgium and would be a guess.
+        "north holland": "Netherlands", "noord-holland": "Netherlands",
+        "noord holland": "Netherlands",
+        "south holland": "Netherlands", "zuid holland": "Netherlands",
+        "north brabant": "Netherlands", "noord-brabant": "Netherlands",
+        "noord brabant": "Netherlands",
+        "gelderland": "Netherlands", "overijssel": "Netherlands",
+        "flevoland": "Netherlands", "drenthe": "Netherlands",
+        "friesland": "Netherlands", "fryslan": "Netherlands",
+        "zeeland": "Netherlands",
     }
     # Country names in their own language (and the common exonyms).
     _W3_COUNTRY_ALIASES = {
@@ -6201,6 +6234,25 @@ class CareerPortalScanner:
         "turkey": "Turkey", "turkiye": "Turkey", "ungarn": "Hungary",
         "united kingdom": "United Kingdom", "united states": "United States",
         "vereinigte staaten": "United States", "verenigd koninkrijk": "United Kingdom",
+        # FIX P54 (2026-10-07): a location string that NAMES its country
+        # must always yield that country. Run 20261007T215944 shipped
+        # "Baku, Azerbaijan", "Asuncion, Paraguay" and "Dar ES Salaam,
+        # Tanzania" with NO country resolved, because the alias table was
+        # built for Europe. Aggregators (Jaabz, VanHack, Visa Sponsor
+        # Jobs) post worldwide, and several of these are major
+        # sponsorship-source countries. Names only -- no cities, nothing
+        # ambiguous. "Jamaica" is deliberately omitted: it is also a
+        # neighbourhood of Queens, New York, and the comma-split in
+        # _supplementary_country would turn "Jamaica, NY" into a country.
+        "azerbaijan": "Azerbaijan", "armenia": "Armenia",
+        "kazakhstan": "Kazakhstan", "uzbekistan": "Uzbekistan",
+        "mongolia": "Mongolia", "montenegro": "Montenegro",
+        "paraguay": "Paraguay", "bolivia": "Bolivia",
+        "costa rica": "Costa Rica", "panama": "Panama",
+        "guatemala": "Guatemala", "trinidad and tobago": "Trinidad and Tobago",
+        "tanzania": "Tanzania", "oman": "Oman",
+        "bangladesh": "Bangladesh", "pakistan": "Pakistan",
+        "sri lanka": "Sri Lanka", "nepal": "Nepal",
         "viro": "Estonia",
     }
     # Multi-country / non-place markers: legitimate to display, never proof
@@ -6251,17 +6303,27 @@ class CareerPortalScanner:
             return ""
         parts = [v] + [p.strip() for p in re.split(r"[,/|;()\[\]]+|\s+-\s+", v)
                        if p.strip()]
-        for part in parts:
-            n = self._w3_norm(part)
-            if not n or n in self._W3_REGION_MARKERS:
-                continue
-            hit = self._W3_COUNTRY_ALIASES.get(n) or self._W3_CITY_COUNTRY.get(n)
-            if hit:
-                return hit
-            n2 = re.sub(r"^\d{4,6}\s+", "", n)
-            hit = self._W3_COUNTRY_ALIASES.get(n2) or self._W3_CITY_COUNTRY.get(n2)
-            if hit:
-                return hit
+        # FIX P54b (2026-10-07): an explicitly NAMED country outranks a city
+        # that merely shares its name with one. The single left-to-right pass
+        # returned United States for "San Jose, Costa Rica", because San Jose
+        # (California) is in the city table and was reached first. Two passes:
+        # every part is tested against the country names before any of them is
+        # tested against the city table.
+        for table in (self._W3_COUNTRY_ALIASES, self._W3_CITY_COUNTRY):
+            # Rightmost first for the country pass (FIX P54b): the country is
+            # conventionally the last element of an address.
+            for part in (reversed(parts)
+                         if table is self._W3_COUNTRY_ALIASES else parts):
+                n = self._w3_norm(part)
+                if not n or n in self._W3_REGION_MARKERS:
+                    continue
+                hit = table.get(n)
+                if hit:
+                    return hit
+                n2 = re.sub(r"^\d{4,6}\s+", "", n)
+                hit = table.get(n2)
+                if hit:
+                    return hit
         return ""
 
     def _resolve_country(self, value):
@@ -6927,6 +6989,13 @@ class CareerPortalScanner:
         # FIX P37: the text in front of a street is often the EMPLOYER.
         if _ORG_LEGAL_FORM_RE.search(cand) or _ORG_WORD_RE.search(cand):
             return None
+        # P37b (run 20261006T225923): "SIAT" survived the two rules above --
+        # a bare acronym carries no legal form and no corporate noun. Real
+        # town names are written in title case ("Bologna", "Serravalle
+        # Scrivia", "Cittaducale"); an all-capitals token is an initialism,
+        # not a place.
+        if not re.search(r"[a-zà-öø-ÿ]", cand):
+            return None
         # ... and so is the company whose page this is.
         _cowords = {w for w in re.findall(r"[A-Za-zÀ-ÿ]{3,}", str(company or ""))}
         if _cowords and {w for w in re.findall(r"[A-Za-zÀ-ÿ]{3,}", cand)} & _cowords:
@@ -6935,6 +7004,9 @@ class CareerPortalScanner:
         if self.config.ROLE_WORD_PATTERN.search(cand):
             return None
         if low in self._junk_town_words():
+            return None
+        # P37c: "The Delivery Station", "In Amazon" -- prose, not a place.
+        if low.split()[0] in self._FUNCTION_FIRST_WORDS:
             return None
         if not re.match(r"^[A-ZÀ-ÖØ-Þ]", cand):
             return None
@@ -6946,7 +7018,27 @@ class CareerPortalScanner:
                 "ora", "sede", "indirizzo", "filiale", "negozio", "store",
                 "adresse", "standort", "location", "address", "apply", "now",
                 "reference", "job", "jobs", "contratto", "tempo", "full",
-                "part", "time", "stelle", "azienda"}
+                "part", "time", "stelle", "azienda",
+                # P37c (run 20261007T174338): Amazon published "Operations"
+                # (x3) and "Our" as Job Location, source=address, confidence
+                # HIGH -- prose that happened to sit in front of a street.
+                # These are whole-candidate matches, so a real town is never
+                # touched.
+                "operations", "operation", "our", "your", "their", "the",
+                "team", "teams", "department", "division", "warehouse",
+                "office", "offices", "headquarters", "customer", "customers",
+                "service", "services", "support", "delivery", "station",
+                "network", "area", "region", "site", "centre", "center",
+                "plant", "hub", "campus", "building", "floor", "unit"}
+
+    #: Leading words that mark prose rather than a place name.
+    _FUNCTION_FIRST_WORDS = frozenset({
+        "the", "our", "your", "their", "its", "his", "her", "a", "an",
+        "in", "at", "on", "to", "of", "for", "from", "with", "by",
+        "il", "lo", "la", "i", "gli", "le", "un", "uno", "una", "del",
+        "della", "dei", "delle", "nel", "nella", "presso",
+        "der", "die", "das", "den", "dem", "ein", "eine", "bei", "im",
+        "de", "het", "een", "les", "des", "du", "el", "los", "las"})
 
     #: ccTLDs that are sold as vanity domains and say nothing about location.
     _VANITY_TLDS = frozenset({
@@ -6954,6 +7046,92 @@ class CareerPortalScanner:
         "im", "je", "sh", "st", "vc", "nu", "bz", "cx", "mu", "ms", "tk",
         "ml", "ga", "cf", "gq", "am", "fo", "ag", "sc", "la", "ki", "mn",
     })
+
+    #: FIX P49 (2026-10-07): Workday encodes the posting's country as an
+    #: ISO-3166 alpha-3 segment in the job URL --
+    #: "/job/NLD---North-Holland---Haarlem/...". The scanner read only the
+    #: display string, so in run 20261007T201018 four MSD rows carried a bare
+    #: Dutch province with no country and seven Wolters Kluwer rows at
+    #: NLD---Alphen-Aan-Den-Rijn (their Dutch HQ) were quarantined as
+    #: outside-target because the display string was "Multiple Locations".
+    #: Only codes whose country the gazetteer already names are listed, so
+    #: this never invents a country.
+    _ISO3_TO_COUNTRY = {
+        "AUT": "Austria", "AUS": "Australia", "BEL": "Belgium",
+        "BGR": "Bulgaria", "BRA": "Brazil", "CAN": "Canada",
+        "CHE": "Switzerland", "CHN": "China", "CZE": "Czech Republic",
+        "DEU": "Germany", "DNK": "Denmark", "ESP": "Spain", "EST": "Estonia",
+        "FIN": "Finland", "FRA": "France", "GBR": "United Kingdom",
+        "GRC": "Greece", "HRV": "Croatia", "HUN": "Hungary", "IND": "India",
+        "IRL": "Ireland", "ISR": "Israel", "ITA": "Italy", "JPN": "Japan",
+        "KOR": "South Korea", "LTU": "Lithuania", "LUX": "Luxembourg",
+        "LVA": "Latvia", "MEX": "Mexico", "MLT": "Malta", "NLD": "Netherlands",
+        "NOR": "Norway", "NZL": "New Zealand", "POL": "Poland",
+        "PRT": "Portugal", "ROU": "Romania", "SGP": "Singapore",
+        "SVK": "Slovakia", "SVN": "Slovenia", "SWE": "Sweden",
+        "TUR": "Turkey", "USA": "United States", "ZAF": "South Africa",
+        "ARE": "United Arab Emirates", "SAU": "Saudi Arabia",
+    }
+    #: "/job/<SEGMENT>/" where SEGMENT is "NLD---North-Holland---Haarlem".
+    _WORKDAY_URL_LOC_RE = re.compile(
+        r"/job/([A-Z]{3})---([^/?#]+)")
+
+    def _workday_url_location(self, *urls):
+        """(place, country) encoded in a Workday job URL, else ("", "").
+
+        FIX P49. Returns the country only for a code the table names, and the
+        place with the alpha-3 stripped off. Never guesses.
+        """
+        for u in urls:
+            if not u:
+                continue
+            m = self._WORKDAY_URL_LOC_RE.search(str(u))
+            if not m:
+                continue
+            country = self._ISO3_TO_COUNTRY.get(m.group(1).upper())
+            if not country:
+                continue
+            parts = [p.replace("-", " ").strip()
+                     for p in m.group(2).split("---") if p.strip()]
+            # Workday orders segments broad -> narrow (region, then site).
+            # The first is the one the board itself displays.
+            place = parts[0] if parts else ""
+            return place, country
+        return "", ""
+
+    #: FIX P55 (2026-10-07): a "#job=<slug>" anchor is a fragment, so it is
+    #: the SAME document as the listing page -- _detail_location_from_url
+    #: refuses to fetch it (rightly: there is nothing new to fetch). That
+    #: makes the slug the only place the location can ever come from, and it
+    #: was never read. Run 20261007T215944 shipped four FxPro rows as Unknown
+    #: whose own URL ends "--cyprus-ypsonas-hybrid".
+    _URL_FRAGMENT_JOB_RE = re.compile(r"#job=([^&]+)", re.I)
+
+    def _location_from_url_fragment(self, url):
+        """Location named inside a '#job=' slug, else ''. FIX P55."""
+        m = self._URL_FRAGMENT_JOB_RE.search(str(url or ""))
+        if not m:
+            return ""
+        try:
+            slug = urllib.parse.unquote(m.group(1))
+        except Exception:
+            slug = m.group(1)
+        # The trailing chunk after "--" is the location/qualifier tail that
+        # these boards append; fall back to the whole slug when absent.
+        tail = slug.split("--")[-1] if "--" in slug else slug
+        text = re.sub(r"[-_+]+", " ", tail).strip()
+        if not text:
+            return ""
+        # Reuse P40's window scan: every 1-3 word window through
+        # extract_location, longest wins. Same parser, same gazetteer.
+        got = self._location_from_title_text(text) or ""
+        # P0-12 keeps work mode OUT of Job Location: "--remote" is a work
+        # mode, not a place, and classify_work_mode already reads it.
+        if got and self._norm(got) in {
+                "remote", "hybrid", "onsite", "on site", "office",
+                "work from home", "wfh", "anywhere"}:
+            return ""
+        return got
 
     def _country_from_site(self, *urls):
         """Country implied by the host a posting is served from.
@@ -7113,6 +7291,11 @@ class CareerPortalScanner:
             url_loc = self.extract_location_from_url(clean_url)
             if url_loc and self._norm(url_loc) not in {"global", "worldwide", "united"}:
                 location, source = url_loc, "url"
+        # FIX P55: the "#job=" slug, for rows the detail fetch can never reach.
+        if location == "Not Specified" and clean_url and "#job=" in clean_url.lower():
+            _frag = self._location_from_url_fragment(clean_url)
+            if _frag and self._norm(_frag) not in {"global", "worldwide", "united"}:
+                location, source = _frag, "url"
         if location == "Not Specified":
             reg = self.extract_country_or_region(context_text, end_of_string=False)
             if reg and self._norm(reg) not in {"global", "worldwide", "united"}:
@@ -9393,13 +9576,76 @@ class CareerPortalScanner:
             if not url.startswith("http") or "#job=" in url.lower():
                 return rec, None
             try:
-                return rec, self._detail_location_from_url(url)
+                # FIX P53: HTTP only in the pool -- see _browser_sweep below.
+                return rec, self._detail_location_from_url(
+                    url, allow_browser=False)
             except Exception:
                 return rec, None
 
+        def _browser_sweep(unresolved):
+            """One shared headless browser for the rows HTTP could not read.
+
+            FIX P53 (2026-10-07). _detail_location_from_url falls back to a
+            browser when the static parse fails, and with browser_page=None
+            it launches a BRAND NEW Chromium per call. Inside this 24-thread
+            pool that meant up to one browser per row: Stafide spent
+            1300.2 s (21.7 min, 47% of run 20261007T201018) here for 109
+            rows. Same rows, same parser, same results -- one browser,
+            serially, under its own budget.
+            """
+            out = {}
+            if not unresolved:
+                return out
+            cap = max(0, int(os.environ.get(
+                "SPONSORSCOUT_SCOPE_BROWSER_MAX") or 150))
+            unresolved = unresolved[:cap]
+            if not unresolved:
+                return out
+            _pw = _bro = _pg = None
+            try:
+                from playwright.sync_api import sync_playwright as _sp
+                _pw = _sp().start()
+                _bro = _pw.chromium.launch(headless=True, args=BROWSER_ARGS)
+                _pg = _bro.new_page()
+                install_page_resource_blocking(_pg)
+                _deadline = time.monotonic() + max(30, int(os.environ.get(
+                    "SPONSORSCOUT_SCOPE_BROWSER_BUDGET") or 240))
+                for rec in unresolved:
+                    if check_control(self.cancel_event, self.pause_event):
+                        break
+                    if time.monotonic() > _deadline:
+                        break
+                    try:
+                        out[id(rec)] = self._detail_location_from_url(
+                            rec.get("Job URL") or "", browser_page=_pg)
+                    except Exception:
+                        continue
+            except Exception:
+                return out
+            finally:
+                for _c in (getattr(_pg, "close", None),
+                           getattr(_bro, "close", None),
+                           getattr(_pw, "stop", None)):
+                    try:
+                        if _c:
+                            _c()
+                    except Exception:
+                        pass
+            return out
+
         recovered = 0
+        _static_done, _needs_browser = [], []
         with _cf.ThreadPoolExecutor(max_workers=workers) as ex:
             for rec, res in ex.map(_resolve, pending):
+                if res:
+                    _static_done.append((rec, res))
+                else:
+                    _needs_browser.append(rec)
+        _swept = _browser_sweep(_needs_browser)
+        _results = _static_done + [(r, _swept.get(id(r)))
+                                   for r in _needs_browser]
+        if _results:
+            for rec, res in _results:
                 if check_control(self.cancel_event, self.pause_event):
                     break
                 if not res:
@@ -9407,8 +9653,13 @@ class CareerPortalScanner:
                 loc = self._sanitize_job_location(
                     res[0], rec.get("Company Name") or "")
                 if loc and loc != "Unknown":
+                    # FIX P44: a recovered town gets its country named, the
+                    # same way the inline path does it.
+                    loc, _rsrc = self._append_country_if_missing(
+                        loc, res[1] or "detail",
+                        rec.get("Job URL"), target_row.get("careers_url"))
                     rec["Job Location"] = loc
-                    rec["Location Source"] = res[1] or "detail"
+                    rec["Location Source"] = _rsrc
                     rec["Location Confidence"] = self._location_confidence(
                         loc, rec.get("Location Source"))
                     recovered += 1
@@ -9426,6 +9677,56 @@ class CareerPortalScanner:
                         if (_tc and _tc.casefold() != "global"
                                 and self._scope_country_match(_tc, loc, "", "")):
                             rec["Scope Confidence"] = "verified"
+                    # FIX P43 (same rule, applied to rows that were already
+                    # verified before their real location was read).
+                    elif (rec.get("_loc_pending")
+                            and not rec.get("_scope_pending")
+                            and rec.get("Scope Confidence") == "verified"):
+                        _tc = (target_row.get("target_country") or "").strip()
+                        _oc = self._country_of_location(loc)
+                        if (_tc and _tc.casefold() != "global" and _oc
+                                and not self._scope_country_match(_tc, _oc, "", "")):
+                            rec["Scope Confidence"] = "unverified_seed_url"
+
+        # FIX P49 (2026-10-07): a row the fetch could not read may still
+        # state its country in its own Workday URL
+        # ("/job/NLD---Alphen-Aan-Den-Rijn/..."). Seven real Wolters Kluwer
+        # jobs at the company's Dutch HQ were quarantined in run
+        # 20261007T201018 for want of exactly this. The place is the
+        # employer's own data, so it is reported at face value -- but it is
+        # applied ONLY to rows that still have nothing, so it can never
+        # overwrite a location that was actually read.
+        _wd_fixed = 0
+        for rec in pending:
+            _cur = (rec.get("Job Location") or "").strip()
+            if _cur and _cur not in ("Unknown", _MULTI_LOCATION_LABEL):
+                continue
+            _place, _country = self._workday_url_location(rec.get("Job URL"))
+            if not _country:
+                continue
+            _place = self._sanitize_job_location(
+                _place, rec.get("Company Name") or "") if _place else ""
+            _loc = (f"{_place}, {_country}"
+                    if _place and _place != "Unknown" else _country)
+            rec["Job Location"] = _loc
+            rec["Location Source"] = "url"
+            rec["Location Confidence"] = self._location_confidence(
+                _loc, "url")
+            _wd_fixed += 1
+            # P43's rule, unchanged: the job's own country decides.
+            _tc = (target_row.get("target_country") or "").strip()
+            if _tc and _tc.casefold() != "global":
+                _match = self._scope_country_match(_tc, _country, "", "")
+                if rec.get("_scope_pending"):
+                    pass  # the verdict loop below re-tests it properly
+                elif rec.get("Scope Confidence") in (
+                        "verified", "unverified_seed_url"):
+                    rec["Scope Confidence"] = ("verified" if _match
+                                               else "unverified_seed_url")
+        if _wd_fixed:
+            diagnostics.append(
+                f"P49: {_wd_fixed} row(s) located from the ISO country code "
+                f"in their Workday URL")
 
         dropped = 0
         for rec in list(company_jobs.values()):
@@ -9891,10 +10192,101 @@ class CareerPortalScanner:
                 re.sub(r"(?s)<[^>]+>", " ", cand))).strip()
             if not text or len(text) > 160:
                 continue
+            # P42b (run 20261007T174338): the <h1>/<title> of an ATS landing
+            # page is the SITE's name, not a vacancy -- Gruppo UNA published
+            # "UNIPOL_External Career Site" as a job. is_valid_job_title has
+            # no reason to refuse it, so the page-furniture shapes are named
+            # here, where the text's origin is known.
+            if _PAGE_FURNITURE_TITLE_RE.search(text):
+                continue
             cleaned = self.clean_job_title(text)
             if cleaned and self.is_valid_job_title(cleaned, company):
                 return cleaned
         return ""
+
+    def _explicit_country_name(self, location):
+        """The RIGHTMOST explicitly named country in a string, else "".
+
+        FIX P54b (2026-10-07). "San Jose, Costa Rica" resolved to the United
+        States: San Jose (California) is a known city and was matched before
+        anything read the words "Costa Rica". A country the string NAMES
+        outranks a city that merely shares a name with one, and the
+        convention everywhere is that the country comes last -- so the
+        rightmost match wins ("Georgia, United States" -> United States,
+        "Tbilisi, Georgia" -> Georgia).
+        """
+        v = self._w3_strip_location_noise(location)
+        if not v:
+            return ""
+        parts = [p.strip() for p in re.split(r"[,/|;()\[\]]+|\s+-\s+", v)
+                 if p.strip()]
+        for part in reversed(parts):
+            n = self._w3_norm(part)
+            if not n or n in self._W3_REGION_MARKERS:
+                continue
+            hit = self._W3_COUNTRY_ALIASES.get(n)
+            if hit:
+                return hit
+        return ""
+
+    def _country_of_location(self, location):
+        """The country a location string resolves to, or "" (FIX P43)."""
+        loc = (location or "").strip()
+        if not loc or loc.lower() in ("unknown", "not specified"):
+            return ""
+        # FIX P54b: an explicitly named country wins over a city lookup.
+        _named = self._explicit_country_name(loc)
+        if _named:
+            return _named
+        if country_from_location is not None:
+            try:
+                got = (country_from_location(loc) or "").strip()
+                if got:
+                    return got
+            except Exception:
+                pass
+        return (self._supplementary_country(loc) or "").strip()
+
+    def _append_country_if_missing(self, location, source, *urls):
+        """FIX P44 (2026-10-07): name the country on a RECOVERED location.
+
+        process_job runs this step inline, but a location recovered later by
+        _resolve_deferred_scope (P35) bypassed it, so a town the gazetteer
+        does not list was written bare. Run 20261007T174338 shipped
+        "Lissone", "Seriate" and "Corsico" -- all real Leroy Merlin stores in
+        Lombardy, served from a .it host -- with a correct town and NO
+        country, which leaves them Unknown in the dashboard.
+
+        Mirrors the inline rules, including P29: a string that already names
+        its country in another language is only re-labelled, never appended
+        to. A country taken from the host is marked "+site", which
+        _location_confidence deliberately demotes to `low`.
+        """
+        loc = (location or "").strip()
+        if not loc or loc.lower() in ("unknown", "not specified"):
+            return loc, source
+        if country_from_location is not None:
+            try:
+                if (country_from_location(loc) or "").strip():
+                    return loc, source
+            except Exception:
+                pass
+        if self._w3_has_country(loc):
+            return loc, f"{source}+gazetteer"
+        gaz = (self._supplementary_country(loc) or "").strip()
+        if gaz:
+            return f"{loc}, {gaz}", f"{source}+gazetteer"
+        # FIX P49: a Workday job URL states the country outright as an
+        # ISO-3166 alpha-3 segment. That is the employer's own data, not a
+        # guess from the web host, so it outranks _country_from_site and is
+        # NOT demoted to `low`.
+        _wd_place, _wd_country = self._workday_url_location(*urls)
+        if _wd_country:
+            return f"{loc}, {_wd_country}", f"{source}+url"
+        site = (self._country_from_site(*urls) or "").strip()
+        if site:
+            return f"{loc}, {site}", f"{source}+site"
+        return loc, source
 
     def _location_in_target_country(self, text, target_row):
         """FIX P39 (2026-10-06): keep a multi-country posting's TARGET site.
@@ -10035,7 +10427,8 @@ class CareerPortalScanner:
             return raw
         return ""
 
-    def _detail_location_from_url(self, url, timeout_ms=20000, browser_page=None):
+    def _detail_location_from_url(self, url, timeout_ms=20000, browser_page=None,
+                                  allow_browser=True):
         """Extract location from ONE job detail page.
         1st pass: plain HTTP + JSON-LD parse (fast — no browser)
         2nd pass: an existing caller-owned browser page when supplied;
@@ -10072,6 +10465,11 @@ class CareerPortalScanner:
             pass
 
         # ── Slow pass: headless browser (JS-rendered pages only) ──
+        # FIX P53 (2026-10-07): the caller can forbid the browser. The bulk
+        # resolver used to let every row in a 24-thread pool launch its OWN
+        # headless Chromium; Stafide's 109 rows cost 1300 s that way.
+        if not allow_browser:
+            return None
         own_browser = None
         try:
             pg = None
@@ -11374,7 +11772,14 @@ class CareerPortalScanner:
                 _policy_now = (target_row.get("scope_policy") or "global").lower()
                 _real_url = (clean_url.startswith("http")
                              and "#job=" not in clean_url.lower())
+                # FIX P50 (2026-10-07): "Multiple Locations" is Workday's
+                # placeholder for a posting with several sites, not a place.
+                # It was being scope-tested as though it were one, so all 18
+                # such rows in run 20261007T201018 failed the gate -- six of
+                # them Wolters Kluwer jobs whose URL says NLD. Treat it as
+                # unproven so it earns the same deferred fetch as a blank.
                 _unproven = (out_location == "Unknown"
+                             or out_location == _MULTI_LOCATION_LABEL
                              or self._location_is_site_derived(loc_source))
                 _scope_pending = False
                 if _policy_now == "job_location" and _unproven and _real_url:
@@ -11424,6 +11829,21 @@ class CareerPortalScanner:
                                    if self._scope_country_match(_tc, out_location,
                                                                 combined_context, clean_url)
                                    else "unverified_seed_url")
+                    # FIX P43 (2026-10-07): under seed_url the verdict may be
+                    # taken from the surrounding context and the URL, and an
+                    # Italy-scoped seed page says "Italy" all over itself. In
+                    # run 20261007T174338 that marked an Amazon role whose own
+                    # location reads "India" as **verified** for Italy, and
+                    # accepted 8 rows sited in India, the UAE and Malta.
+                    # Membership under seed_url still belongs to the seed, so
+                    # the row is NOT dropped -- but a job that states its own
+                    # country cannot be called verified against a different
+                    # one. The JD's location overrules the page around it.
+                    _own_country = self._country_of_location(out_location)
+                    if (_own_country
+                            and not self._scope_country_match(
+                                _tc, _own_country, "", "")):
+                        _scope_conf = "unverified_seed_url"
                 elif _policy == "job_location" and _tc.casefold() != "global":
                     _scope_conf = "verified"
                 else:
@@ -11775,10 +12195,23 @@ class CareerPortalScanner:
                                     page_num, total)
                                 break
                         else:
-                            self._log_pagination_stop(
-                                diagnostics,
-                                f"page cap reached ({self.config.MAX_PAGINATION_PAGES})",
-                                self.config.MAX_PAGINATION_PAGES, len(company_jobs))
+                            # FIX P45 (2026-10-07): a direct listing with no
+                            # pager sets _page_limit = 0, so range(1, 1) is
+                            # EMPTY -- and a for/else runs its else clause
+                            # when the loop ends without break, empty
+                            # included. Every such company logged the
+                            # self-contradicting pair "no pagination/
+                            # load-more control detected" AND "page cap
+                            # reached (250) after page 250" (Coolblue,
+                            # McDonald's, Elior, Stafide, Orange Quarter).
+                            # No pages were ever walked; only the message was
+                            # wrong. Say nothing when there was no loop.
+                            if _page_limit:
+                                self._log_pagination_stop(
+                                    diagnostics,
+                                    f"page cap reached ({self.config.MAX_PAGINATION_PAGES})",
+                                    self.config.MAX_PAGINATION_PAGES,
+                                    len(company_jobs))
 
                         company_jobs = self._dedupe_records(company_jobs)
                         self._resolve_deferred_scope(
