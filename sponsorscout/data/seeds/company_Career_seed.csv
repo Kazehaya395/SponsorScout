@@ -64,7 +64,7 @@ Slack,https://salesforce.wd12.myworkdayjobs.com/en-US/Slack,auto,,direct_employe
 Square,https://block.xyz/careers/jobs?businessUnits[]=square,auto,,direct_employer,Ireland,job_location,Unknown,,,,added 2026-09 batch; scores unset
 VMware,https://careers.vmware.com/,auto,,direct_employer,Ireland,job_location,Unknown,,,,added 2026-09 batch; scores unset
 Workday,https://workday.wd5.myworkdayjobs.com/Workday/?source=Careers_Website,auto,,direct_employer,Ireland,job_location,Unknown,,,,added 2026-09 batch; scores unset
-# ----- ITALY (38) -----,,,,,,,,,,,
+# ----- ITALY (39) -----,,,,,,,,,,,
 Action Italia Post,https://it.action.jobs/offerte-di-lavoro/negozio,auto,,direct_employer,Italy,seed_url,Retail/Discount,10,45,10,user-added sub-URL (344 jobs live); extractor fix H1 in this patch
 Amazon Italia,https://www.amazon.jobs/content/en/locations/italy,auto,,direct_employer,Italy,seed_url,Logistics/E-commerce,30,75,75,
 Artsana Group,https://www.artsana.com/hr-careers/,auto,,direct_employer,Italy,seed_url,Retail/Baby,5,35,10,Italy batch 2026-09-13 (Chicco/Prenatal)
@@ -90,8 +90,8 @@ NH Hotel Group Italy,https://euamcareers.minorhotels.com/search/?createNewAlert=
 Nova Coop,https://novacoop.intervieweb.it/it/career,auto,,direct_employer,Italy,seed_url,Retail/Supermarket,5,30,10,Italy batch 2026-09-13; seed v2 2026-09-13: kept user URL edit
 Oniverse,https://careers.oniverse.it/en-US/home,auto,,direct_employer,Italy,job_location,Retail,10,50,20,
 OVS,https://careers-ovsgroup.ovs.it/jobs.php?source=direct,auto,,direct_employer,Italy,seed_url,Retail,5,40,15,
-Pam Panorama,https://lavoraconnoi.gruppopam.it/negozi/regioni/lazio,pam,region:Lazio,direct_employer,Italy,seed_url,Retail/Supermarket,20,60,60,Batch N: pam API adapter (25 Lazio jobs live 2026-09-12)
-Pam Panorama,https://lavoraconnoi.gruppopam.it/sede,pam,sede,direct_employer,Italy,seed_url,Retail/Supermarket,20,60,60,Batch N: pam API adapter (2 HQ jobs live 2026-09-12)
+Pam Panorama lazio,https://lavoraconnoi.gruppopam.it/negozi/regioni/lazio,pam,region:Lazio,direct_employer,Italy,seed_url,Retail/Supermarket,20,60,60,Batch N: pam API adapter (25 Lazio jobs live 2026-09-12)
+Pam Panorama  sede,https://lavoraconnoi.gruppopam.it/sede,pam,sede,direct_employer,Italy,seed_url,Retail/Supermarket,20,60,60,Batch N: pam API adapter (2 HQ jobs live 2026-09-12)
 Penny Italia,https://pennyitalia.intervieweb.it/it/career,auto,,direct_employer,Italy,seed_url,Retail/Supermarket,5,35,10,Italy batch 2026-09-13; seed v2 2026-09-13: IntervieWEB board (landing was empty)
 Piazza Italia,https://www.piazzaitalia.it/it-it/work-with-us,auto,,direct_employer,Italy,seed_url,Retail/Fashion,5,35,10,Italy batch 2026-09-13
 Primark Italia,"https://careers.primark.com/en/search-jobs?acm=81158,8817920,36805,81645,8337600,53117,79935,37065,81644,37012,81636,82479,36845,80191,79747,8856320,79655&alrpm=ALL&ascf=[%7B%22key%22:%22ALL%22,%22value%22:%22%22%7D]",auto,,direct_employer,Italy,job_location,Retail/Fashion,10,45,10,Italy batch 2026-09-13; seed v2 2026-09-13: kept user URL edit
@@ -103,6 +103,7 @@ Unicoop Firenze,https://www.coopfirenze.it/lavora-con-noi/consulta-le-posizioni-
 Unieuro Negozi,https://unieurospa.com/people/lavora-con-noi/opportunita-in-negozio/,auto,,direct_employer,Italy,seed_url,Retail/Electronics,5,35,10,Italy batch 2026-09-13 (85 assunzioni)
 Unieuro Sede,https://unieurospa.com/people/lavora-con-noi/opportunita-in-sede/,auto,,direct_employer,Italy,seed_url,Retail/HQ,10,50,30,Italy batch 2026-09-13
 Yamamay,https://corporate.yamamay.com/it/carriere/lavora-con-noi,auto,,direct_employer,Italy,seed_url,Retail/Fashion,5,40,10,Italy batch 2026-09-13
+Ikea Italia,https://jobs.ikea.com/en/search-jobs?k=&l=&orgIds=22908,auto,,direct_employer,Italy,job_location,Retail/Furniture,25,70,60,
 # ----- LITHUANIA (1) -----,,,,,,,,,,,
 Work in Lithuania,https://jobs.workinlithuania.com/?sort=-created_at,auto,,recruiter,Lithuania,seed_url,Government/Relocation,85,90,35,national relocation portal
 # ----- NETHERLANDS (20) -----,,,,,,,,,,,
@@ -165,8 +166,6 @@ Tesco,https://careers.tesco.com/en_GB/careers/SearchJobs/analyst?,auto,,direct_e
 Unilever,https://www.unilever.co.uk/careers/,auto,,direct_employer,United Kingdom,job_location,Unknown,,,,added 2026-09 batch; scores unset
 Vodafone,https://jobs.vodafone.com/careers?domain=vodafone.com&start=0&pid=563018697855696&sort_by=timestamp,auto,,direct_employer,United Kingdom,seed_url,Unknown,,,,added 2026-09 batch; scores unset
 womenintech,https://jobs.womenintech.co.uk/,auto,,recruiter,United Kingdom,seed_url,Unknown,,,,added 2026-09 batch; scores unset
-# ----- EUROPE / regional (1) -----,,,,,,,,,,,
-Ikea Italia,https://jobs.ikea.com/en/search-jobs?k=&l=&orgIds=22908,auto,,direct_employer,Europe,job_location,Retail/Furniture,25,70,60,
 # ===== GLOBAL (146) - no single target country; split by HQ country =====,,,,,,,,,,,
 # --- GLOBAL / AUSTRALIA (1) ---,,,,,,,,,,,
 Visa Sponsor Jobs,https://visasponsor.jobs/jobs?keywords=,auto,,recruiter,Global,global,Job Aggregator/Visa,95,95,40,aggregator: visa-sponsorship listings

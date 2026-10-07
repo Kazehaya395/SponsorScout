@@ -869,6 +869,15 @@ class ProductionScannerConfig:
         r"tyomahdollisuus|stilling|stillinger|jobb|jobber|lediga-jobb|lediga-tjaenster|lediga-tjänster|"
         r"werkenbij|werken-bij|karriere|carriere)/[^/?#]+|"
         r"/job(s)?/[^/?#]+|/career(s)?/.*(job|position|opening|vacanc|role)|"
+        # FIX P56 (2026-10-07): Phenom-built career sites (Dyson) put the
+        # detail page under /job-description/<slug>/<req-id>/. The old
+        # vocabulary had /job/ and /jobs/ -- both need a SLASH after the
+        # token -- so "job-description" never matched and every one of
+        # Dyson's 20 static job links was dropped as a non-job URL.
+        # ("job-details" already slipped through on the bare "detail"
+        # token further down; "job-description" has no such luck.)
+        r"/job[-_]?(?:description|descriptions|posting|postings|"
+        r"opening|openings|advert|adverts)/[^/?#]+|"
         r"/career(s)?/(?!disciplines?/|departments?/|teams?/|locations?/|"
         r"offices?/|categor(y|ies)/|areas?/|functions?/)[^/]+/[^/]+|"
         # FIX P0-1: single-segment detail paths. /jobs/<slug> was allowed but
@@ -1612,8 +1621,14 @@ class ProductionScannerConfig:
     # Run 20261003T233023 spent 5h32m on 208 of 370 companies, effectively
     # serial, and 58 of those minutes went to 97 companies that produced
     # nothing at all.  These three knobs bound that.
+    # WAVE 8i (2026-10-07): raised 180 -> 300 on the evidence of the four
+    # 2026-10-07 runs. The budget tripped exactly TWICE in 100 company-scans,
+    # both times on Amazon Italia, which was still cut off while producing
+    # rows (134 and 135). Nothing else came near it -- the next slowest LIST
+    # phase finished well inside 180s -- so the extra 120s is spent on the one
+    # board that demonstrably needs it and costs every other company nothing.
     LIST_TIME_BUDGET_SEC = max(30, int(          # per-company LIST phase
-        os.environ.get("SPONSORSCOUT_LIST_BUDGET") or 180))
+        os.environ.get("SPONSORSCOUT_LIST_BUDGET") or 300))
     DEAD_END_ABORT_SEC = max(10, int(            # give up on a dead board
         os.environ.get("SPONSORSCOUT_DEAD_END_SEC") or 45))
     REPEAT_PAGE_RATIO = 0.10      # <=10% new rows on a page == a repeat page
@@ -2277,6 +2292,76 @@ def _parse_static_anchors(html):
     return _STATIC_ANCHOR_RE.findall(html or "")
 
 
+# ── FIX P57 (2026-10-07): "More details" is not a job title ───────────────
+# Accessible career sites give every card's link a screen-reader label
+# instead of the title: Dyson emits <a>More details about Data Analyst</a>
+# and a bare <a>More details</a> for the same role. Both sail past
+# is_valid_job_title, so P56 would have written rows literally titled
+# "More details". Recover the real title from the label's own "about X"
+# tail, and fall back to the URL slug when the label carries nothing.
+_BOILERPLATE_ANCHOR_RES = (
+    re.compile(r"^\s*(?:more\s+)?details?\s+(?:about|on|for)\s+(?P<t>.+?)\s*$", re.I),
+    re.compile(r"^\s*(?:read|learn|find\s+out)\s+more\s+(?:about|on)\s+(?P<t>.+?)\s*$", re.I),
+    re.compile(r"^\s*(?:view|see|open)\s+(?:the\s+)?(?:job|role|position|vacancy|details?)"
+               r"\s+(?:about|for|of)\s+(?P<t>.+?)\s*$", re.I),
+)
+_BOILERPLATE_ANCHOR_BARE = re.compile(
+    r"^\s*(?:(?:more\s+)?details?|read\s+more|learn\s+more|view\s+(?:job|role|details?|"
+    r"position|vacancy|more)|see\s+(?:job|role|details?|more)|apply(?:\s+now)?|"
+    r"job\s+details?|more)\s*$", re.I)
+# A requisition id (JR38601, R-10422, 2024-1183) is never the title.
+_SLUG_ID_SEGMENT_RE = re.compile(r"^(?:[a-z]{0,3}[-_]?\d{3,}[a-z0-9-]*|\d{4}-\d+)$", re.I)
+
+
+def _title_from_url_slug(url):
+    """Last human-readable path segment of a detail URL -> a title."""
+    try:
+        path = urlparse(url).path
+    except Exception:
+        return ""
+    segs = [seg for seg in path.split("/") if seg.strip()]
+    for seg in reversed(segs):
+        if _SLUG_ID_SEGMENT_RE.match(seg):
+            continue
+        if seg.lower() in _SLUG_STOP_SEGMENTS:
+            continue
+        if "." in seg:          # index.html and friends
+            continue
+        words = re.sub(r"[-_+]+", " ", urllib.parse.unquote(seg)).strip()
+        # A slug has to look like words, not like a hash.
+        if len(words) < 3 or not re.search(r"[a-z]{3}", words, re.I):
+            continue
+        if len(words.split()) > 14:
+            continue
+        return re.sub(r"\s+", " ", words).strip()
+    return ""
+
+
+_SLUG_STOP_SEGMENTS = {
+    "job", "jobs", "career", "careers", "job-description", "jobdescription",
+    "job-details", "jobdetails", "job-detail", "jobdetail", "vacancy",
+    "vacancies", "vacature", "vacatures", "position", "positions", "role",
+    "roles", "opening", "openings", "posting", "postings", "en", "en-gb",
+    "en-us", "it", "nl", "de", "fr", "es", "search-results", "apply",
+}
+
+
+def _recover_anchor_title(title, url):
+    """Boilerplate link label -> the real job title (or "" to reject)."""
+    if not title:
+        return ""
+    for rx in _BOILERPLATE_ANCHOR_RES:
+        mm = rx.match(title)
+        if mm:
+            inner = (mm.group("t") or "").strip(" -–—:|")
+            if inner and not _BOILERPLATE_ANCHOR_BARE.match(inner):
+                return inner
+            return _title_from_url_slug(url)
+    if _BOILERPLATE_ANCHOR_BARE.match(title):
+        return _title_from_url_slug(url)
+    return title
+
+
 def _static_strip_tags(fragment):
     """Inner HTML of an anchor -> visible text."""
     if not fragment:
@@ -2598,6 +2683,10 @@ def fetch_static_jobs(seed_url, timeout_sec=15, min_jobs=None,
         if not title:
             continue
         if url_validator is not None and not url_validator(absolute):
+            continue
+        # FIX P57: the anchor text may be a screen-reader label, not a title.
+        title = _recover_anchor_title(title, absolute)
+        if not title:
             continue
         if title_validator is not None and not title_validator(title):
             continue
@@ -3469,6 +3558,9 @@ _LABEL_LOC_WORDS = (
     r"citt[aà]|stadt|ville|city|office|b[üu]ro"
 )
 _LABEL_LOC_TAGS = r"span|dt|dd|th|td|div|p|strong|b|em|h[1-6]|label|li"
+# FIX P58: guard against echoing the label back as the value.
+_LABEL_ONLY_VALUE_RE = re.compile(
+    r"^\s*(?:" + _LABEL_LOC_WORDS + r")\s*[:\-]?\s*$", re.I)
 _LABEL_LOC_PATTERNS = (
     # <span>Location</span> <span>Salzburg - Vienna</span>   (also dt/dd, th/td)
     re.compile(
@@ -10097,6 +10189,41 @@ class CareerPortalScanner:
         elif browser_attempts >= _browser_cap and len(failed_network_urls) + len(urls) > _browser_cap:
             print(f"   -> {name}: browser detail fallback capped at {_browser_cap} visit(s)")
 
+    def _extract_microdata_location_from_html(self, html):
+        """schema.org MICRODATA location (itemprop=), not ld+json.
+
+        FIX P58 (2026-10-07): Phenom-built sites (Dyson) publish the location
+        as W3C microdata, and wrap BOTH halves of the label/value pair in
+        extra spans:
+
+            <dt>Location<span aria-hidden="true">:</span></dt>
+            <dd itemprop="jobLocation" itemscope
+                itemtype="http://schema.org/Place">
+              <span itemprop="address">Singapore - Technology Centre</span></dd>
+
+        The JSON-LD reader sees no ld+json, _label_location cannot match a
+        <dt> whose text is interrupted by a span, and the "Location:" regex
+        fallback captures the literal string 'span aria-hidden="true">:'.
+        itemprop is a standard and carries no language, so reading it adds
+        no English bias.
+        """
+        if not html or "itemprop" not in html:
+            return ""
+        for _prop in ("addressLocality", "address", "jobLocation"):
+            for _m in re.finditer(
+                r'itemprop=["\']' + _prop + r'["\'][^>]*>(.{0,400}?)</',
+                html, re.IGNORECASE | re.DOTALL,
+            ):
+                _val = _static_strip_tags(_m.group(1))
+                # A nested wrapper (<dd itemprop="jobLocation"><span ...>)
+                # leaves the text empty on the outer hit -- keep looking.
+                if len(_val) < 2 or len(_val) > 120:
+                    continue
+                if _LABEL_ONLY_VALUE_RE.match(_val):
+                    continue
+                return _val
+        return ""
+
     def _extract_ld_location_from_html(self, html):
         """Parse JobPosting JSON-LD location out of raw HTML (fast, no browser)."""
         for m in re.finditer(
@@ -10447,6 +10574,13 @@ class CareerPortalScanner:
             ld = self._extract_ld_location_from_html(html)
             if ld:
                 parsed = self.extract_location(ld)
+                if parsed != "Not Specified":
+                    return parsed, "detail"
+            # FIX P58: schema.org MICRODATA, consulted before the label strip
+            # because itemprop is explicit where a <dt>/<dd> pair is a guess.
+            _micro = self._extract_microdata_location_from_html(html)
+            if _micro:
+                parsed = self.extract_location(_micro)
                 if parsed != "Not Specified":
                     return parsed, "detail"
             # FIX P14: label/value metadata strip (no JSON-LD needed).
