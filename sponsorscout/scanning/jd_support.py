@@ -258,6 +258,16 @@ class JDSupportDetector:
         r"|permiso\s+de\s+residencia"
         r"|visum\w*|arbeitserlaubnis|blauen karte|blaue karte"          # DE
         r"|visto\w*|visti|permesso di lavoro|carta blu|sponsorizzazione|immigrazione"  # IT
+        # FIX P66 (B3): run 20261008T202403 was Netherlands-heavy -- 561 rows
+        # in Blue Card countries -- and "kennismigrant", the standard Dutch
+        # term for the highly-skilled-migrant permit (the route most of those
+        # employers actually sponsor), was in NO concept list. The English
+        # "highly skilled migrant" was already here; its Dutch name was not.
+        # NB this is deliberately a VISA concept, not a Blue Card one: the
+        # kennismigrantenregeling is a Dutch NATIONAL permit, not the EU Blue
+        # Card, and labelling it as one would make that column wrong.
+        r"|kennismigrant\w*|hooggekwalificeerde\s+migrant\w*"
+        r"|tewerkstellingsvergunning|gecombineerde\s+vergunning|\bgvva\b"
         r"|visum\w*|werkvergunning|arbeidsvergunning|blauwe kaart|sponsoring"  # NL
         r"|visa\w*|permis de travail|carte bleue|parrainage|immigration|sponsorisons?|"
         r"sponsorisent|parrainons|parraine"  # FR
@@ -300,6 +310,9 @@ class JDSupportDetector:
         r"|assistenza al trasferimento|\bvitto e alloggio\b"
         r"|\balloggio\b.{0,30}\b(?:azienda|aziendale|convenzionat\w*|gratuito|\u00a0?offerto)\b"
         r"|\b(?:contributo|indennit\u00e0|rimborso)\s+(?:per\s+l\W?)?alloggio\b"  # IT
+        # FIX P66 (B3): the 30% ruling is the Dutch expat tax facility and is
+        # advertised as a relocation benefit in nearly every NL posting.
+        r"|\b30\s*%?\s*[-\u2013]?\s*(?:ruling|regeling|tax\s+ruling)\b"
         r"|\bverhuis\w*|\bverhuiz\w*|relocatie"  # NL (verhuis- compounds + verhuizen verb)
         r"|\brelocalis\w*|\bdéménag\w*|\bréinstall\w*|frais de déménagement"  # FR
         r"|\breubic\w*|\btraslad\w*|\bmudanz\w*|ayuda de reubicación|gastos de reubicación"  # ES
@@ -695,6 +708,28 @@ class JDSupportDetector:
             return VERDICT_YES, 0.8, flags + ["benefit-noun-phrase"]
         return VERDICT_UNKNOWN, 0.2, flags + ["bare-mention"]
 
+    #: FIX P66 (B2): how much context to keep either side of the match.
+    EVIDENCE_LEAD = 150
+    EVIDENCE_TRAIL = 250
+
+    @classmethod
+    def _evidence_window(cls, sent, concept_re):
+        """Quote the clause that decided the verdict, not the sentence head."""
+        limit = cls.EVIDENCE_LEAD + cls.EVIDENCE_TRAIL
+        if len(sent) <= limit:
+            return sent
+        m = concept_re.search(sent)
+        if not m:
+            return sent[:limit]
+        lo = max(0, m.start() - cls.EVIDENCE_LEAD)
+        hi = min(len(sent), m.end() + cls.EVIDENCE_TRAIL)
+        snip = sent[lo:hi].strip()
+        if lo > 0:
+            snip = "\u2026 " + snip
+        if hi < len(sent):
+            snip = snip + " \u2026"
+        return snip
+
     def _aggregate(self, text, concept_re):
         scores = {VERDICT_YES: 0.0, VERDICT_NO: 0.0, VERDICT_UNKNOWN: 0.0}
         evidence = []
@@ -710,7 +745,18 @@ class JDSupportDetector:
             # cut off the very words that justified reloc=Yes@0.9, so the
             # verdict was correct but unauditable in the app. 400 keeps the
             # matched clause for every sentence seen in run 20261008T113455.
-            evidence.append((verdict, conf, flags, sent[:400]))
+            # FIX P66 (B2): P65 raised the cap 140 -> 400 but kept slicing
+            # from the START of the sentence. A bullet list scraped without
+            # punctuation is ONE sentence, so four Booking.com rows justified
+            # "Visa Sponsorship = No" with a paragraph about medical
+            # insurance and product discounts, while the clause that actually
+            # decided it -- "This role does not come with relocation and visa
+            # sponsorship assistance." -- sat past the cut and was never
+            # shown. The verdict was right and the proof was missing, which
+            # is exactly what A2c set out to fix. Centre the window on the
+            # concept match instead.
+            evidence.append(
+                (verdict, conf, flags, self._evidence_window(sent, concept_re)))
             if "candidate-must-move" in flags or "requirement-not-support" in flags:
                 required = True
         if not evidence:

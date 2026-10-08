@@ -1569,6 +1569,13 @@ class ProductionScannerConfig:
         "opportunities",
     }
 
+    # FIX P66 (B1): a detail page must yield at least this much prose before
+    # its BODY is accepted as a job description. Client-rendered shells carry
+    # ~1,000 characters of navigation chrome; real postings in run
+    # 20261008T202403 ran 4,600-11,400 characters.
+    DETAIL_BODY_MIN_CHARS = max(200, int(
+        os.environ.get("SPONSORSCOUT_DETAIL_BODY_MIN") or 1200))
+
     # ── P65 / A1 (2026-10-08): the JD detail pass is ON by default ──────
     # Run 20261008T113455 produced 4,700 rows of which 4,683 reported
     # "Visa Sponsorship = Unknown" and 4,700 reported "EU Blue Card =
@@ -1704,8 +1711,28 @@ from sponsorscout.scanning.jd_support import (
         # it and ran five guards; this file ran none.
         VERDICT_UNKNOWN,
         detect_blue_card,
+        # FIX P66 (B1/B2): block-aware HTML -> prose. The local reader used a
+        # bare re.sub("<[^>]+>", " ") which welds every <li> into its
+        # neighbour, producing one 2,000-character "sentence" per bullet
+        # list. normalize_jd_text turns block tags into sentence boundaries,
+        # which both the body-text fallback and the evidence window need.
+        normalize_jd_text,
     )
 # ─────────────────────────────────────────────────────────────────────────────
+# FIX P66 (B1): markup the body-text fallback drops before reading, and the
+# containers worth preferring over a bare <body>.
+_SCRIPT_STYLE_NAV_RE = re.compile(
+    r"(?is)<(script|style|noscript|svg|nav|header|footer|aside|form|iframe)"
+    r"\b[^>]*>.*?</\1>")
+_CONTENT_CONTAINER_RES = (
+    re.compile(r"(?is)<main\b[^>]*>(.*?)</main>"),
+    re.compile(r"(?is)<article\b[^>]*>(.*?)</article>"),
+    re.compile(r"""(?is)<div[^>]*\b(?:id|class)=["'][^"']*"""
+               r"""(?:job[-_]?desc|jobdescription|job[-_]?detail|job[-_]?content|"""
+               r"""posting|vacancy|content[-_]?main|main[-_]?content)"""
+               r"""[^"']*["'][^>]*>(.*?)</div>"""),
+)
+
 # FIX P0-30: EXPERIENCE REQUIREMENT EXTRACTION
 #
 # Adds four output columns:
@@ -5595,7 +5622,24 @@ class CareerPortalScanner:
         # FIX P65 (A4): shipped as accepted job titles in run 20261008T113455.
         "mygreenhouse", "company details", "candidate details",
         "create account", "sign in", "log in",
+        # FIX P66 (B5): Shopify shipped "Skip the line" pointing at
+        # /careers/extraordinary -- a call-to-action, not a vacancy.
+        "skip the line", "skip to main", "skip to content",
     )
+
+    #: FIX P66 (B4): hiphoptune contributed 462 rows to run 20261008T202403
+    #: -- 26% of the whole batch -- by scraping a WordPress category page.
+    #: 80 of those "job titles" are the blog's POST DATE welded to the
+    #: author byline: "September 7, 2026James", "August 31, 2026James",
+    #: "July 28, 2026publisher". A date is never a job title.
+    _DATE_BYLINE_TITLE_RE = re.compile(
+        r"(?i)^\s*(?:"
+        r"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
+        r"jul(?:y)?|aug(?:ust)?|sep(?:t|tember)?|oct(?:ober)?|nov(?:ember)?|"
+        r"dec(?:ember)?)\s+\d{1,2}\s*,?\s*20\d\d"
+        r"|\d{1,2}[./-]\d{1,2}[./-]20\d\d"
+        r"|20\d\d[./-]\d{1,2}[./-]\d{1,2}"
+        r")\s*[a-z]*\s*$")
     # "<role> Jobs in <place>" / "<role> Stellenangebote in <ort>" — an
     # aggregator listing pattern. The role is real, the suffix is the board's
     # own search phrase, and the place is a usable location hint.
@@ -5653,6 +5697,9 @@ class CareerPortalScanner:
             return False
         t = re.sub(r"\s+", " ", title).strip()
         low = t.casefold()
+        # FIX P66 (B4) -- a post date + byline is not a vacancy.
+        if self._DATE_BYLINE_TITLE_RE.match(t):
+            return False
         if len(t) < 3 or len(t) > 200 or not any(ch.isalpha() for ch in t):
             return False
         # FIX P0-61 (S-15): three kinds of non-title were being accepted, and
@@ -11098,6 +11145,14 @@ class CareerPortalScanner:
             raise
         except Exception:
             return "", "", ""
+        # FIX P66 (B1): parsing split out of the fetch so it can be
+        # exercised offline -- the body-text fallback is the only thing
+        # standing between 81% of rows and a sponsorship verdict, and a
+        # network-only code path cannot be pinned by the battery.
+        return self._parse_detail_html(html)
+
+    def _parse_detail_html(self, html):
+        """Pull (description, location, hiring org) out of a detail page."""
         desc = ""
         loc = ""
         org = ""
@@ -11142,8 +11197,9 @@ class CareerPortalScanner:
                 if isinstance(d, dict):
                     d = d.get("text") or ""
                 if str(d).strip() and not desc:
-                    desc = re.sub(r"<[^>]+>", " ", str(d))
-                    desc = re.sub(r"\s+", " ", desc).strip()[:8000]
+                    # FIX P66 (B2): block-aware, so <li> items stay separate
+                    # sentences instead of welding into one giant run-on.
+                    desc = normalize_jd_text(str(d))[:8000]
                 jl = it.get("jobLocation")
                 if isinstance(jl, list):
                     jl = jl[0] if jl else {}
@@ -11166,8 +11222,47 @@ class CareerPortalScanner:
                 r'<meta[^>]*(?:name|property)=["\'](?:og:)?description["\'][^>]*content=["\']([^"\']{50,1500})["\']',
                 html, re.I)
             if m:
-                desc = re.sub(r"<[^>]+>", " ", m.group(1))
-                desc = re.sub(r"\s+", " ", desc).strip()[:8000]
+                desc = normalize_jd_text(m.group(1))[:8000]
+        if len(desc) < self.config.DETAIL_BODY_MIN_CHARS:
+            # ── FIX P66 (B1): read the PAGE BODY ────────────────────────
+            # Until now this reader knew exactly two sources: JSON-LD
+            # `JobPosting.description` and `<meta og:description>`. Any
+            # employer publishing neither returned "" -- and no description
+            # means no sponsorship verdict, no Blue Card, no experience.
+            #
+            # Run 20261008T202403 measured the cost. Evidence rate by
+            # extraction method: embedded_json 100%, ashby 45%, icims 41%,
+            # greenhouse 18%, static_html 17% -- and dom_heuristic
+            # 6/1438 = 0%, i.e. 81% of that run. ASML (597 rows, 0 evidence)
+            # publishes NO JSON-LD and has NO og:description at all, yet its
+            # pages carry ~7,000 characters of body text, 2 of every 5
+            # sampled containing sponsorship or relocation language. One
+            # reads "...without sponsorship..." -- ASML stating it will not
+            # sponsor, reported to the user as "Unknown" 597 times.
+            #
+            # Prefer a real content container; fall back to <body>. Nav,
+            # header, footer, aside and forms are dropped first so the
+            # boilerplate cannot drown the posting. The length floor keeps
+            # client-rendered shells (Shopify's detail pages are ~1,000
+            # chars of chrome) from being mistaken for a JD.
+            _body = _SCRIPT_STYLE_NAV_RE.sub(" ", html)
+            _main = ""
+            for _pat in _CONTENT_CONTAINER_RES:
+                _m2 = _pat.search(_body)
+                if _m2:
+                    _cand = normalize_jd_text(_m2.group(1))
+                    if len(_cand) > len(_main):
+                        _main = _cand
+                    if len(_main) >= self.config.DETAIL_BODY_MIN_CHARS:
+                        break
+            if len(_main) < self.config.DETAIL_BODY_MIN_CHARS:
+                _m2 = re.search(r"(?is)<body[^>]*>(.*?)</body>", _body)
+                _cand = normalize_jd_text(_m2.group(1) if _m2 else _body)
+                if len(_cand) > len(_main):
+                    _main = _cand
+            if (len(_main) >= self.config.DETAIL_BODY_MIN_CHARS
+                    and len(_main) > len(desc)):
+                desc = _main[:8000]
         return desc, loc, org
 
     def _apply_support_from_text(self, rec, desc, evidence_url=""):
@@ -11807,7 +11902,20 @@ class CareerPortalScanner:
                 for row in csv.DictReader(f):
                     if (row.get("Run ID") or "") != self.run_id:
                         continue
-                    latest[row.get("Company") or ""] = (row.get("Error") or "")
+                    # FIX P67: register the row under BOTH names. The scan log
+                    # carries "Seed Name" AND "Company"; the errors file keys on
+                    # "Seed Name" alone. Keying recovery on "Company" only meant
+                    # that the moment the two diverged -- a seed named "Ikea
+                    # Italia" resolving to company "IKEA" -- the retraction
+                    # silently stopped working and a recovered company stayed
+                    # accused. In all 825 scan-log rows to date the two are
+                    # identical, so this was latent rather than active, but it
+                    # was one renamed seed away from failing in silence.
+                    err = row.get("Error") or ""
+                    for key in (row.get("Company") or "",
+                                row.get("Seed Name") or ""):
+                        if key:
+                            latest[key] = err
             recovered = {c for c, e in latest.items()
                          if c and "does not resolve (DNS)" not in e}
             if not recovered:

@@ -2806,11 +2806,33 @@ class ATSScanner:
             return t, ""          # the suffix WAS the title ("Jobs in Wien")
         return head, place
 
+    #: FIX P66 (B4/B5): parity with the career scanner. A WordPress-backed
+    #: board scraped as a listing yields the POST DATE welded to the author
+    #: byline ("September 7, 2026James") as a "job title", and a
+    #: call-to-action link ("Skip the line") as a vacancy. Career hit both in
+    #: run 20261008T202403; the ATS path shares the shape, so it is pinned
+    #: here too rather than waiting for it to appear in a future batch.
+    _W3_DATE_BYLINE_TITLE_RE = re.compile(
+        r"(?i)^\s*(?:"
+        r"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
+        r"jul(?:y)?|aug(?:ust)?|sep(?:t|tember)?|oct(?:ober)?|nov(?:ember)?|"
+        r"dec(?:ember)?)\s+\d{1,2}\s*,?\s*20\d\d"
+        r"|\d{1,2}[./-]\d{1,2}[./-]20\d\d"
+        r"|20\d\d[./-]\d{1,2}[./-]\d{1,2}"
+        r")\s*[a-z]*\s*$")
+
     def _is_nav_title(self, title):
         """Board navigation / search furniture, in any of the seed languages."""
         low = re.sub(r"\s+", " ", str(title or "")).strip().casefold()
         low = low.strip(" .:|-–—")
         if not low:
+            return True
+        # FIX P66 (B4): a post date + byline is not a vacancy.
+        if self._W3_DATE_BYLINE_TITLE_RE.match(low):
+            return True
+        # FIX P66 (B5): Shopify's "Skip the line" -> /careers/extraordinary.
+        if low in ("skip the line", "skip to main content", "skip to content",
+                   "skip to main"):
             return True
         if low in self._W3_NAV_TITLES:
             return True
