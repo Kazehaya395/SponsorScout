@@ -3017,6 +3017,25 @@ class ATSScanner:
         "united kingdom",
     })
 
+
+    # ── FIX P64 (2026-10-08): country scoping is OFF by default ─────────
+    # A seed's target_country records the PORTAL's scope and the company's
+    # HQ. It was never meant to delete that company's jobs in other
+    # countries: "country batch means HQ is from a country, but doesn't mean
+    # remove other country jobs from that portal's scan".
+    #
+    # Across the runs shared so far this filter had discarded 6,770 jobs
+    # that carried a perfectly good location -- Barclays Pune x198, New York
+    # x43, Mumbai x36; T-Systems Budapest/Warsaw/Munich; Cegedim
+    # Boulogne-Billancourt x51 -- plus 2,830 more whose location could not be
+    # proven. Every one is a real vacancy on the seeded portal, so every one
+    # is now kept, carrying whatever location the JD itself states. The user
+    # filters by location in the app's search tab.
+    #
+    # Set SPONSORSCOUT_SCOPE_FILTER=1 to restore the old behaviour.
+    SCOPE_FILTER = (os.environ.get("SPONSORSCOUT_SCOPE_FILTER", "0")
+                    .strip().lower() in ("1", "true", "yes", "on"))
+
     _SCOPE_ALIASES = {
         "germany": {"germany", "deutschland", "berlin", "hamburg", "munich", "munchen", "muenchen", "frankfurt", "cologne", "koln", "koeln", "dusseldorf", "duesseldorf", "stuttgart", "hannover", "bremen", "leipzig", "dresden", "bayern", "bavaria"},
         "italy": {"italy", "italia", "milan", "milano", "rome", "roma", "turin", "torino", "bologna", "napoli", "parma", "venice", "venezia", "florence", "firenze", "lombardia", "lombardy", "piemonte", "toscana", "sicilia"},
@@ -3027,6 +3046,9 @@ class ATSScanner:
     }
 
     def _scope_allows(self, target, location, context="", url=""):
+        # FIX P64: no job is dropped for being in the "wrong" country.
+        if not self.SCOPE_FILTER:
+            return True
         policy = (target.get("scope_policy") or "global").lower()
         tc = (target.get("target_country") or "Global").strip()
         if policy == "global" or tc.casefold() == "global" or not tc:
@@ -3131,7 +3153,8 @@ class ATSScanner:
             reason = "invalid_or_application_only_url"
         elif not self.valid_title(title):
             reason = "invalid_generic_or_department_title"
-        elif ((target.get("scope_policy") or "global").lower() == "job_location"
+        elif (self.SCOPE_FILTER
+              and (target.get("scope_policy") or "global").lower() == "job_location"
               and _location_is_site_derived(location_source)):
             # FIX W2-8 (parity): under job_location the JOB's own location is
             # the only admissible evidence. A country read off the seed's host

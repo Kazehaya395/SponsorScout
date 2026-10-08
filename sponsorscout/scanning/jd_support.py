@@ -185,7 +185,7 @@ def _read_label_field(text, match):
             return _FIELD_BLANK, None
         return _FIELD_UNPARSED, None
     tail = _strip_next_label(value).split(". ")[0]
-    return verdict, (match.group(1) + ": " + (tail or value).strip())[:140]
+    return verdict, (match.group(1) + ": " + (tail or value).strip())[:240]
 
 
 def label_field_verdict(text, kind):
@@ -280,7 +280,13 @@ class JDSupportDetector:
     RELOCATION_CONCEPTS = re.compile(
         r"\brelocat(e|es|ed|ing|ion|ions)?\b|\b(moving|move|relocation)\s+(assistance|"
         r"package|allowance|support|benefit|reimbursement|stipend|costs|expenses|bonus|"
-        r"budget|help|aid)\b|\bassist\w*\b.{0,25}\b(relocat|move)\b"
+        # FIX P65 (A2): the bare `move` branch fired on "AI-assisted tools
+        # to move faster in your day-to-day" (Factorial, reloc=Yes@0.9) --
+        # "assist*" within 25 chars of any "move". `move` now needs a
+        # destination to count as a relocation.
+        r"budget|help|aid)\b|\bassist\w*\b.{0,25}\brelocat\w*\b"
+        r"|\bassist\w*\b.{0,25}\bmove\s+(?:to|abroad|overseas|countries|"
+        r"country|cities|city|closer\s+to)\b"
         r"|\bumzug\w*|\bumzuziehen\b|\bumsiedl\w*|relokation"   # DE
         # FIX P25: "\btrasfer\w*" also matched "trasferta"/"trasferte" -- Italian
         # for a BUSINESS TRIP, not a move. In run 20261004T202946 the line
@@ -333,6 +339,21 @@ class JDSupportDetector:
         r"\b(willing|ready|open|prepared|able|expected|required|must|need|needs|"
         r"should|asked|willingness|availability)\b.{0,25}\b(relocat\w*|move|transfer)\b"
         r"|\b(relocat\w*|move|transfer)\b.{0,25}\b(is|are)?\s*(required|mandatory|expected)\b",
+        re.I,
+    )
+    #: FIX P65 (A2): "This role is eligible for visa sponsorship." scored
+    #: Unknown 0.20 ("bare-mention") because no POSITIVE_VERB appears -- an
+    #: unambiguous offer, lost. Deliberately NOT solved by adding "eligible"
+    #: to POSITIVE_VERBS: "candidates must be eligible to work in Germany" is
+    #: a REQUIREMENT and that change would have turned it into a false Yes,
+    #: the worst failure direction this tool has. The discriminator is the
+    #: preposition -- eligible FOR sponsorship (the role offers it) vs
+    #: eligible TO WORK (the candidate must already be).
+    ROLE_SPONSORSHIP_ELIGIBLE = re.compile(
+        r"\beligib\w*\s+(?:for|to\s+receive|to\s+apply\s+for)\s+"
+        r"(?:a\s+|an\s+|the\s+|full\s+|visa\s+|work\s+|uk\s+|us\s+)*"
+        r"(?:sponsorship|visa\s+sponsorship|work\s+visa|work\s+permit|"
+        r"skilled\s+worker\s+visa|relocation)\b",
         re.I,
     )
     REQUIRES_VERB = re.compile(
@@ -545,6 +566,26 @@ class JDSupportDetector:
             sentence, re.I,
         ):
             return VERDICT_UNKNOWN, 0.0, ["non-candidate-relocation-context"]
+        # FIX P65 (A2): the guard above needs the object ADJACENT to the verb,
+        # so GDIT's "the acquisition, storage, relocation, and deployment of
+        # communications equipment" (reloc=Yes@0.9, "Support" supplied the
+        # positive verb) slipped through. Allow distance to the object noun,
+        # but only when the sentence carries no candidate-relocation benefit
+        # wording -- "we offer relocation support and provide equipment" must
+        # still read as a genuine offer.
+        if concept_re is self.RELOCATION_CONCEPTS and re.search(
+            r"\brelocat\w*\b.{0,60}\b(?:equipment|hardware|servers?|machinery|"
+            r"inventory|stock|warehouse|furniture|assets?|cabling|freight|"
+            r"infrastructure|data\s+cent(?:er|re)s?|fleet|goods)\b",
+            sentence, re.I,
+        ) and not re.search(
+            r"\brelocat\w*[\s\-]*(?:assistance|package|allowance|support|"
+            r"benefit|reimbursement|stipend|costs?|expenses|bonus|budget|help)"
+            r"|\b(?:your|employee|family|candidate|personal|staff)\b"
+            r".{0,25}\brelocat",
+            sentence, re.I,
+        ):
+            return VERDICT_UNKNOWN, 0.0, ["non-candidate-relocation-context"]
         if concept_re is self.VISA_CONCEPTS and re.search(
             # (a) requirement stated BEFORE the authorisation noun:
             #     "Applicants must have the right to work in the UK"
@@ -589,6 +630,9 @@ class JDSupportDetector:
                 has_requirement = True
             if pats["cond"].search(window):
                 has_conditional = True
+        # FIX P65 (A2): "eligible for visa sponsorship" is an offer, not a verb.
+        if self.ROLE_SPONSORSHIP_ELIGIBLE.search(window):
+            has_positive = True
 
         flags = []
         if has_requirement:
@@ -621,7 +665,15 @@ class JDSupportDetector:
             return VERDICT_NO, 0.9, flags + ["negated"]
         if has_positive:
             if has_conditional:
-                return VERDICT_UNKNOWN, 0.5, flags + ["positive-but-conditional"]
+                # FIX P65 (A2): "While Etsy supports visa sponsorship,
+                # opportunities may be limited to certain roles" returned
+                # Unknown -- indistinguishable from "we never looked", for the
+                # single most valuable sentence a sponsorship hunter can find.
+                # A hedged offer is still an offer: report Yes and carry the
+                # hedge in the confidence (0.6) and the "conditional" flag.
+                # Reached only when NO negation matched above, so
+                # "sponsorship is not guaranteed" is unaffected.
+                return VERDICT_YES, 0.6, flags + ["positive-but-conditional"]
             return VERDICT_YES, 0.9, flags
         if has_conditional:
             return VERDICT_UNKNOWN, 0.4, flags + ["bare-conditional"]
@@ -653,7 +705,12 @@ class JDSupportDetector:
                 continue
             verdict, conf, flags = res
             scores[verdict] += conf
-            evidence.append((verdict, conf, flags, sent[:140]))
+            # FIX P65 (A2): 140 chars truncated the evidence mid-sentence --
+            # eDreams' "...birthday day off, and a relocation package to h"
+            # cut off the very words that justified reloc=Yes@0.9, so the
+            # verdict was correct but unauditable in the app. 400 keeps the
+            # matched clause for every sentence seen in run 20261008T113455.
+            evidence.append((verdict, conf, flags, sent[:400]))
             if "candidate-must-move" in flags or "requirement-not-support" in flags:
                 required = True
         if not evidence:

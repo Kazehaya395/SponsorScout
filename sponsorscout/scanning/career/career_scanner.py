@@ -1569,8 +1569,21 @@ class ProductionScannerConfig:
         "opportunities",
     }
 
-    # Optional detail-page scan (off by default; enable with --detail)
-    ENABLE_DETAIL_SCAN = False
+    # ── P65 / A1 (2026-10-08): the JD detail pass is ON by default ──────
+    # Run 20261008T113455 produced 4,700 rows of which 4,683 reported
+    # "Visa Sponsorship = Unknown" and 4,700 reported "EU Blue Card =
+    # Unknown" -- 662 of them in Blue Card countries. The detector was never
+    # at fault: with this flag off the JD text is never fetched, so
+    # sponsorship could only be decided on the few boards whose LIST api
+    # happens to embed the description (greenhouse 84% of rows carried
+    # evidence, workday 3%, dom_heuristic 1%). The product's core column was
+    # blank on 96.8% of the catalogue.
+    #
+    # This costs wall-clock time and that trade was accepted explicitly
+    # ("i prefer authentic results"). Set SPONSORSCOUT_DETAIL_SCAN=0 to get
+    # the old fast-but-blank behaviour back.
+    ENABLE_DETAIL_SCAN = (os.environ.get("SPONSORSCOUT_DETAIL_SCAN", "1")
+                          .strip().lower() in ("1", "true", "yes", "on"))
     DETAIL_SCAN_TIMEOUT_MS = 12000
     # Browser detail visits are enrichment fallbacks, not a second listing crawl.
     # Keep them deliberately small because the HTTP pass already reads most
@@ -1578,7 +1591,10 @@ class ProductionScannerConfig:
     DETAIL_BROWSER_TIMEOUT_MS = 8000
     DETAIL_BROWSER_FALLBACK_PER_COMPANY = 12
     DETAIL_BROWSER_HOST_FAILURES = 2
-    DETAIL_SCAN_TIME_BUDGET_SEC = 480   # max seconds one company's detail scan may run (8 min)
+    # P65 / A1: 8 min could not finish 1,228 JDs even at 24 HTTP workers,
+    # so the biggest boards would silently keep blank verdicts.
+    DETAIL_SCAN_TIME_BUDGET_SEC = max(60, int(
+        os.environ.get("SPONSORSCOUT_DETAIL_BUDGET") or 900))
     MAIN_HEARTBEAT_SEC = 30             # main thread prints how many companies are still running
     MAX_STALL_SEC = 600             # abort ONLY when NO page-level ACTIVITY anywhere for 10 min
                                     # (queued companies waiting for a worker slot are NOT a hang)
@@ -1603,8 +1619,12 @@ class ProductionScannerConfig:
     # Note the per-company scan is ALSO bounded by
     # DETAIL_SCAN_TIME_BUDGET_SEC (8 min), which keeps one huge board from
     # eating the whole run however high this is set.
+    # P65 / A1: 300 would have left GDIT's 1,228 rows (and IC Resources'
+    # 970) with sponsorship read from the title only, which is exactly the
+    # blankness A1 exists to remove. Raised to cover the largest board seen
+    # in run 20261008T113455; DETAIL_SCAN_TIME_BUDGET_SEC still bounds it.
     MAX_DETAIL_SCAN_PER_COMPANY = max(1, int(
-        os.environ.get("SPONSORSCOUT_DETAIL_PER_COMPANY") or 300))
+        os.environ.get("SPONSORSCOUT_DETAIL_PER_COMPANY") or 1500))
     MAX_DETAIL_SCAN_TOTAL = max(1, int(
         os.environ.get("SPONSORSCOUT_DETAIL_TOTAL") or 20000))
     # FIX W2-6: the global cap above used to be 5000 and it was enforced with
@@ -1636,6 +1656,25 @@ class ProductionScannerConfig:
     # ── WAVE 1: provider sniffing for provider=auto seeds ───────────────
     PROVIDER_SNIFF = (os.environ.get("SPONSORSCOUT_PROVIDER_SNIFF", "1")
                       .strip().lower() not in ("0", "false", "no"))
+
+    # ── FIX P64 (2026-10-08): country scoping is OFF by default ─────────
+    # A seed's target_country records the PORTAL's scope and the company's
+    # HQ. It was never meant to delete that company's jobs in other
+    # countries: "country batch means HQ is from a country, but doesn't mean
+    # remove other country jobs from that portal's scan".
+    #
+    # Across the runs shared so far this filter had discarded 6,770 jobs
+    # that carried a perfectly good location -- Barclays Pune x198, New York
+    # x43, Mumbai x36; T-Systems Budapest/Warsaw/Munich; Cegedim
+    # Boulogne-Billancourt x51 -- plus 2,830 more whose location could not be
+    # proven. Every one is a real vacancy on the seeded portal, so every one
+    # is now kept, carrying whatever location the JD itself states. The user
+    # filters by location in the app's search tab.
+    #
+    # Set SPONSORSCOUT_SCOPE_FILTER=1 to restore the old behaviour.
+    SCOPE_FILTER = (os.environ.get("SPONSORSCOUT_SCOPE_FILTER", "0")
+                    .strip().lower() in ("1", "true", "yes", "on"))
+
     PROVIDER_SNIFF_TIMEOUT_SEC = 12
     PROVIDER_CACHE_TTL_DAYS = 14
 
@@ -5214,6 +5253,18 @@ class CareerPortalScanner:
             return True
         return False
 
+    #: FIX P65 (A4): GDIT shipped "Job Posting Title Information Systems
+    #: Security Officer" -- the Workday FIELD LABEL "Job Posting Title" was
+    #: scraped together with its value. Anchored at the start and requires a
+    #: real title to follow, so a role actually called "Job Posting
+    #: Specialist" is untouched.
+    _FIELD_LABEL_PREFIX_RE = re.compile(
+        r"(?i)^\s*(?:job\s+posting\s+title|job\s+title|posting\s+title|"
+        r"position\s+title|vacancy\s+title|titel\s+der\s+stelle|"
+        r"stellenbezeichnung|titolo\s+(?:della\s+)?posizione|"
+        r"titre\s+du\s+poste|functietitel)\s*[:\-\u2013\u2014]?\s*"
+        r"(?=\S.{2,})")
+
     def clean_job_title(self, title):
         """Conservative, multilingual title normalization.
 
@@ -5223,6 +5274,8 @@ class CareerPortalScanner:
         """
         if not title:
             return ""
+        # FIX P65 (A4) -- strip a scraped form LABEL before anything else.
+        title = self._FIELD_LABEL_PREFIX_RE.sub("", str(title), count=1)
         title = self.fix_encoding(str(title))
         lines = [re.sub(r"\s+", " ", x).strip() for x in re.split(r"[\r\n]+", title) if x.strip()]
         if not lines:
@@ -5539,6 +5592,9 @@ class CareerPortalScanner:
         "offerte di lavoro", "alle jobs anzeigen", "toutes les offres",
         "candidatura spontanea", "open sollicitatie", "create job alert",
         "bekijk alle vacatures", "initiativbewerbung",
+        # FIX P65 (A4): shipped as accepted job titles in run 20261008T113455.
+        "mygreenhouse", "company details", "candidate details",
+        "create account", "sign in", "log in",
     )
     # "<role> Jobs in <place>" / "<role> Stellenangebote in <ort>" — an
     # aggregator listing pattern. The role is real, the suffix is the board's
@@ -5917,8 +5973,32 @@ class CareerPortalScanner:
             r"oferty pracy|praca)\b"
         )
 
+    #: FIX P65 (A4): non-jobs that reached the ACCEPTED output of run
+    #: 20261008T113455 and would be visible to the user as listings:
+    #:   "MyGreenhouse"                  my.greenhouse.io/users/sign_in
+    #:                                   (SumUp + Dremio -- an ATS LOGIN page)
+    #:   "Data is limitless, and so are you"
+    #:                                   elastic.co/careers/our-values
+    #:                                   (Elastic Finance + Sales -- a values page)
+    #:   "Company Details"               skyscanner.co.in/company-details
+    #:   "Candidate Details"             careers.etsy.com/v1/candidate_details
+    #: All four are site furniture reachable from a careers page. Matched on
+    #: the PATH only, so a genuine role whose slug contains one of these words
+    #: (".../jobs/senior-engineer-login-services") is untouched.
+    _ACCOUNT_OR_MARKETING_PATH_RE = re.compile(
+        r"(?i)(?:^|/)(?:users/)?(?:sign[_-]?in|sign[_-]?up|log[_-]?in|logout|"
+        r"signin|signup|register|registration|sessions?|password|"
+        r"forgot[_-]?password|reset[_-]?password|my[_-]?profile|"
+        r"candidate[_-]?details|company[_-]?details|account)(?:/|$)"
+        r"|(?:^|/)(?:our[_-]values|our[_-]culture|our[_-]story|why[_-]join[^/]*|"
+        r"life[_-]at[_-][^/]+|meet[_-]the[_-]team|employee[_-]stories|"
+        r"about[_-]us|company[_-]culture)(?:/|$)")
+
     def is_valid_job_url(self, url):
         if not url or not url.startswith("http"):
+            return False
+        # FIX P65 (A4) -- see _ACCOUNT_OR_MARKETING_PATH_RE.
+        if self._ACCOUNT_OR_MARKETING_PATH_RE.search(urlparse(url).path or ""):
             return False
         if _ASSET_URL_RE.search(url) or _is_download_url(url):
             return False
@@ -5944,6 +6024,16 @@ class CareerPortalScanner:
         # FIX P31: the careers list is hosted by an ATS on another domain
         # (careers.kula.ai/journi/35169). FIX P32: an aggregator's
         # /clickout/<hash> redirector IS the job link.
+        # FIX P62: on a randstad host /jobs/<anything> matches
+        # JOB_URL_PATTERN, so the entire browse taxonomy was written as jobs.
+        # A vacancy there always carries _<city>_<uuid>; nothing else under
+        # /jobs/ is one. Host-scoped on purpose -- see _RANDSTAD_VACANCY_RE.
+        if self._is_randstad_host(url):
+            # Not just /jobs/: the crawl also surfaced /carriere/beroepen,
+            # /carriere/carrieretips and /carriere/terug-aan-het-werk, which
+            # are advice pages. On a randstad host a vacancy is the ONLY
+            # thing that counts, and a vacancy always carries _<city>_<uuid>.
+            return bool(self._RANDSTAD_VACANCY_RE.search(urlparse(url).path))
         if is_ats_detail_url(url) or is_redirector_job_url(url):
             return True
         # Listing pages can themselves contain a slug that looks like a
@@ -6532,6 +6622,75 @@ class CareerPortalScanner:
                 w.writerow({k: r.get(k, "") for k in columns})
         return len(moved), len(direct) + len(recruiter)
 
+    def _dedupe_same_url_across_seeds(self, path, quarantine_csv, columns):
+        """Collapse rows that share a Job URL but arrived under DIFFERENT seeds.
+
+        FIX P65 (A5). Run 20261008T113455 shipped 12 such URLs. The canonical
+        job id is namespaced by seed name, so two seeds pointing at the SAME
+        board produce two ids for one vacancy and neither the in-memory guard
+        nor _dedupe_cross_bucket (direct-vs-recruiter only) could see it:
+            Nigel Frank + Tenth Revolution Group -> both crawl
+                tenthrevolution.com ("ServiceNow CTA", "NetSuite Business
+                Analyst", "D365 F&O Application Engineer" ... )
+            Elastic Finance + Elastic Sales       -> both crawl elastic.co
+        The user saw one vacancy listed twice under two company names.
+
+        Rows from the SAME seed are left alone -- an intra-company repeat is
+        a board/apply page, not a duplicate posting, and is already handled.
+        Returns the number of rows moved to quarantine.
+        """
+        import collections
+        try:
+            with open(path, "r", newline="", encoding="utf-8-sig") as f:
+                rows = list(csv.DictReader(f))
+        except FileNotFoundError:
+            return 0
+        if len(rows) < 2:
+            return 0
+
+        def _u(r):
+            u = (r.get("Job URL") or "").strip()
+            if not u or self._W3_DEDUPE_SKIP_URL_RE.search(u):
+                return ""
+            return u.casefold()
+
+        per_company = collections.Counter(
+            (r.get("Company Name", ""), _u(r)) for r in rows if _u(r))
+        shared = {u for (_c, u), n in per_company.items() if n > 3}
+        groups = collections.defaultdict(list)
+        for r in rows:
+            u = _u(r)
+            if u and u not in shared:
+                groups[u].append(r)
+        drop = set()
+        for u, grp in groups.items():
+            if len({(r.get("Company Name") or "") for r in grp}) < 2:
+                continue  # same seed twice -> not this defect
+            best = max(grp, key=lambda r: self._record_quality(r))
+            for r in grp:
+                if r is not best:
+                    drop.add(id(r))
+        if not drop:
+            return 0
+        keep, moved = [], []
+        for r in rows:
+            if id(r) in drop:
+                r["Record Status"] = "quarantine"
+                r["Quarantine Reason"] = "duplicate_url_cross_seed"
+                moved.append(r)
+            else:
+                keep.append(r)
+        with open(path, "w", newline="", encoding="utf-8-sig") as f:
+            w = csv.DictWriter(f, fieldnames=columns)
+            w.writeheader()
+            for r in keep:
+                w.writerow({k: r.get(k, "") for k in columns})
+        with open(quarantine_csv, "a", newline="", encoding="utf-8-sig") as f:
+            w = csv.DictWriter(f, fieldnames=columns)
+            for r in moved:
+                w.writerow({k: r.get(k, "") for k in columns})
+        return len(moved)
+
     def _sanitize_job_location(self, value, company=""):
         """FIX P0-49: last gate before a value is written to Job Location.
 
@@ -7053,6 +7212,21 @@ class CareerPortalScanner:
                      r"boulevard|calle|carrer|rua|stra[sß]e|strasse|weg|allee|"
                      r"platz|laan|straat|street|road|avenida")
 
+    def _gazetteer_knows_place(self, cand):
+        """True when `cand` resolves to a country, i.e. it is a real place.
+
+        FIX P60 support. Corroborates the bare "<postcode> <Town>" form, where
+        there is no street to lean on. Asks the same resolver the rest of the
+        pipeline uses, so a town the scanner could never place is not invented
+        here either.
+        """
+        if not cand or len(cand) < 3:
+            return False
+        try:
+            return bool((self._country_of_location(cand) or "").strip())
+        except Exception:
+            return False
+
     def _town_from_address(self, text, company=""):
         """Pull the town out of a street address the gazetteer does not know.
 
@@ -7072,7 +7246,27 @@ class CareerPortalScanner:
             m = re.search(rf"(?:{self._STREET_WORDS})\b[^,]{{0,60}},\s*({name})", t, re.IGNORECASE | re.UNICODE)
         if not m:
             # "<postcode> <Town>"  (IT/DE/FR/ES 4-5 digit postcodes)
-            m = re.search(rf"\b\d{{4,5}}\s+({name})\b", t)
+            #
+            # FIX P60 (2026-10-08): this fired on ANY 4-5 digit number
+            # followed by a capitalised word, with no address context at all.
+            # On an Oracle CandidateExperience page the numbers are job ids
+            # and years, so run 20261008T085006 shipped 14 of 61 accepted
+            # Telenet rows with a FABRICATED location, every one at "high":
+            #   'Vacature 6017 Hallo, leuk dat je er bent'  -> Hallo
+            #   'job 5925 POPULAIR Vous cherchez un emploi' -> POPULAIR Vous
+            #   '5317 Wij zoeken een collega'               -> Wij
+            # P37/b/c cannot catch these -- no legal form, no corporate noun,
+            # no role word, title-case, absent from _junk_town_words().
+            # Extending that list would be whack-a-mole in every language.
+            # The discriminator is structural: a real address names a STREET
+            # (_STREET_WORDS already covers nl weg/laan/straat and fr rue/
+            # boulevard/avenue) or names a town the gazetteer knows.
+            _pc = re.search(rf"\b\d{{4,5}}\s+({name})\b", t)
+            if _pc and not re.search(self._STREET_WORDS, t, re.IGNORECASE):
+                _cand = re.sub(r"\s+", " ", _pc.group(1)).strip(" ,.-")
+                if not self._gazetteer_knows_place(_cand):
+                    _pc = None
+            m = _pc
         if not m:
             return None
         cand = re.sub(r"\s+", " ", m.group(1)).strip(" ,.-")
@@ -7167,6 +7361,66 @@ class CareerPortalScanner:
     #: "/job/<SEGMENT>/" where SEGMENT is "NLD---North-Holland---Haarlem".
     _WORKDAY_URL_LOC_RE = re.compile(
         r"/job/([A-Z]{3})---([^/?#]+)")
+
+    # ── FIX P61/P62 (2026-10-08): randstad.* vacancy vs facet ────────────
+    # randstad.be publishes two unrelated URL species under one path:
+    #   vacancy : /werknemers/jobs/<slug>_<city>_<uuid>
+    #   facet   : /werknemers/jobs/<code>-<slug>   (jt- job type, s-/s2-
+    #             sector, r- role, re- region, ci- city, c- company)
+    # Run 20261008T085006 harvested 851 rows from Randstad; 813 were facets
+    # ("tijdelijke jobs", "Aalst", "Volvo Cars", "maak een account aan").
+    # They made it the slowest company in the batch at 537s, including 400
+    # pointless detail fetches, and it still produced zero rows.
+    # A GENERIC prefix rule is NOT safe -- /jobs/hr-manager, /jobs/it-support
+    # and /jobs/c-sharp-developer are <code>-<slug> too -- so the rule is the
+    # POSITIVE one (a vacancy carries _<city>_<uuid>) and it is scoped to
+    # randstad hosts, like the Workday (P49) and kula.ai (P31) handling.
+    _RANDSTAD_VACANCY_RE = re.compile(
+        r"/jobs/[^/]*?_(?P<city>[a-z][a-z0-9'\-]*)_"
+        r"[0-9a-f]{8}-[0-9a-f]{4}", re.IGNORECASE)
+    _NL_TOPONYM_SMALL = {"aan", "de", "den", "der", "het", "op", "ter",
+                         "ten", "van", "bij", "in", "sur", "le", "la",
+                         "les", "lez"}
+
+    @staticmethod
+    def _is_randstad_host(url):
+        try:
+            return "randstad." in (urlparse(str(url)).netloc or "").lower()
+        except Exception:
+            return False
+
+    def _randstad_url_location(self, url):
+        """FIX P61: the town is in the vacancy slug -- read it.
+
+        All 30 genuine Randstad vacancies in run 20261008T085006 named their
+        city in the URL, yet 28 were reported as a bare "Belgium" taken from
+        the host at low confidence, so job_location quarantined every one.
+        """
+        if not url or not self._is_randstad_host(url):
+            return ""
+        try:
+            path = urlparse(str(url)).path
+        except Exception:
+            return ""
+        m = self._RANDSTAD_VACANCY_RE.search(path)
+        if not m:
+            return ""
+        raw = (m.group("city") or "").strip("-")
+        parts = [w for w in raw.split("-") if w]
+        if not parts or len(raw) < 3 or raw.isdigit() or len(parts) > 6:
+            return ""
+        # NB: deliberately NOT gated on the gazetteer. It does not carry
+        # Ardooie, Zonnebeke, Borchtlombeek, Hulshout or Sint-Katelijne-Waver,
+        # so a gazetteer gate kept only 7 of the 30 real towns. The town here
+        # is not a guess pulled out of prose -- it sits in a FIXED structural
+        # slot of the employer's own vacancy URL, between the slug and the
+        # uuid, which is exactly the kind of first-party evidence P49 already
+        # takes at face value from a Workday URL.
+        if any(len(w) > 30 for w in parts):
+            return ""
+        return "-".join(w if (i and w in self._NL_TOPONYM_SMALL)
+                        else w[:1].upper() + w[1:]
+                        for i, w in enumerate(parts))
 
     def _workday_url_location(self, *urls):
         """(place, country) encoded in a Workday job URL, else ("", "").
@@ -7506,6 +7760,9 @@ class CareerPortalScanner:
         return False
 
     def _scope_allows(self, target_row, location, context="", url=""):
+        # FIX P64: no job is dropped for being in the "wrong" country.
+        if not self.config.SCOPE_FILTER:
+            return True
         policy = (target_row.get("scope_policy") or "global").lower()
         target = (target_row.get("target_country") or "Global").strip()
         if policy == "global" or target.casefold() == "global":
@@ -9512,8 +9769,13 @@ class CareerPortalScanner:
         # NB: anything containing "site" was already caught above -- that is
         # deliberate, "Milan" off the card plus "Italy" off the host is still
         # a guessed country.
-        if src in ("detail", "api", "address", "card+detail"):
+        if src in ("detail", "api", "card+detail"):
             return "high"
+        # FIX P60: a town RECONSTRUCTED from an address is an inference, not a
+        # stated location. It is now corroborated (street word or gazetteer),
+        # but it still must not outrank a location the page actually stated.
+        if src == "address":
+            return "medium"
         if src == "card":
             return "high" if "," in loc else "medium"
         if src in ("url", "title", "slug", "seed_scope+card"):
@@ -9820,7 +10082,54 @@ class CareerPortalScanner:
                 f"P49: {_wd_fixed} row(s) located from the ISO country code "
                 f"in their Workday URL")
 
+        # FIX P61 (2026-10-08): the same idea for randstad.*, with one
+        # difference -- these rows are NOT "Unknown". They carry a bare
+        # "Belgium" inferred from the hostname, which P44 rightly marks
+        # low-confidence, so job_location quarantined all 28 of them in run
+        # 20261008T085006 even though every vacancy URL names its town.
+        # A town stated in the employer's own URL outranks a country guessed
+        # from the host, so this pass also fires on site-derived rows -- and
+        # only on those. It never overwrites a location that was really read.
+        _rs_fixed = 0
+        for rec in pending:
+            _cur = (rec.get("Job Location") or "").strip()
+            _weak = (not _cur or _cur in ("Unknown", _MULTI_LOCATION_LABEL)
+                     or self._location_is_site_derived(
+                         rec.get("Location Source")))
+            if not _weak:
+                continue
+            _town = self._randstad_url_location(rec.get("Job URL"))
+            if not _town:
+                continue
+            # The country comes from the board's NATIONAL domain, not from
+            # the gazetteer. randstad.be publishes Belgian vacancies, and the
+            # gazetteer actively gets this wrong: it resolves "Halle" to
+            # Germany (Halle/Saale) when this Halle is in Flemish Brabant.
+            # Both halves therefore come from the one URL.
+            _rc = (self._country_from_site(rec.get("Job URL")) or "").strip()
+            _rloc = f"{_town}, {_rc}" if _rc else _town
+            rec["Job Location"] = _rloc
+            rec["Location Source"] = "url"
+            rec["Location Confidence"] = self._location_confidence(
+                _rloc, "url")
+            _rs_fixed += 1
+            # P43's rule, unchanged: the job's own country decides.
+            _rtc = (target_row.get("target_country") or "").strip()
+            if _rtc and _rtc.casefold() != "global" and _rc:
+                if not rec.get("_scope_pending") and rec.get(
+                        "Scope Confidence") in ("verified",
+                                                "unverified_seed_url"):
+                    rec["Scope Confidence"] = (
+                        "verified"
+                        if self._scope_country_match(_rtc, _rc, "", "")
+                        else "unverified_seed_url")
+        if _rs_fixed:
+            diagnostics.append(
+                f"P61: {_rs_fixed} row(s) located from the town in their "
+                f"randstad vacancy URL")
+
         dropped = 0
+        _kept_unscoped = 0
         for rec in list(company_jobs.values()):
             rec.pop("_loc_pending", None)  # FIX P35: never re-judged, never retried
             if not rec.get("_scope_pending"):
@@ -9836,6 +10145,15 @@ class CareerPortalScanner:
             if proven:
                 rec["Scope Confidence"] = "verified"
                 continue
+            # FIX P64: an unproven or out-of-country row is still a real
+            # vacancy on the seeded portal, so it is KEPT, carrying whatever
+            # location the JD gave (possibly "Unknown"). Only the scope label
+            # is downgraded, reusing the existing vocabulary so the UI needs
+            # no change.
+            if not self.config.SCOPE_FILTER:
+                rec["Scope Confidence"] = "unverified_seed_url"
+                _kept_unscoped += 1
+                continue
             cid = rec.get("Canonical Job ID")
             company_jobs.pop(cid, None)
             rec["Record Status"] = "quarantine"
@@ -9848,6 +10166,10 @@ class CareerPortalScanner:
             f"scope re-check: {len(pending)} unproven row(s) fetched "
             f"({loc_budget} for location only, P35), "
             f"{recovered} location(s) recovered, {dropped} quarantined")
+        if _kept_unscoped:
+            diagnostics.append(
+                f"P64: {_kept_unscoped} row(s) kept that the old country "
+                f"filter would have discarded")
 
     def _detail_enrich_one(self, page, url, company_jobs, browser_timeout_ms=None) -> str:
         """Enrich one row from its detail page.
@@ -10234,8 +10556,23 @@ class CareerPortalScanner:
                 data = json.loads(m.group(1))
             except Exception:
                 continue
-            items = data if isinstance(data, list) else (
-                data.get("@graph") if isinstance(data, dict) else [data])
+            # FIX P63 (2026-10-08): `data.get("@graph")` returns None for a
+            # plain {"@type": "JobPosting", ...} document -- the most common
+            # shape of all -- so `items` became None and the loop below
+            # iterated nothing. Only @graph-wrapped or list payloads ever
+            # worked. Proximus publishes a perfectly good jobLocation
+            # (addressLocality "Hyderabad", addressCountry "IND") and this
+            # returned "", so 100 of its rows were quarantined as "location
+            # unproven" when the page had stated it all along. The same bug
+            # sat in the JD-text reader, so those pages yielded no
+            # description either -- and no description means no sponsorship
+            # verdict.
+            if isinstance(data, list):
+                items = data
+            elif isinstance(data, dict):
+                items = data.get("@graph") or [data]
+            else:
+                items = []
             if isinstance(items, dict):
                 items = [items]
             for it in items or []:
@@ -10251,7 +10588,14 @@ class CareerPortalScanner:
                 a = (loc or {}).get("address") or {}
                 country = a.get("addressCountry")
                 if isinstance(country, dict):
-                    country = country.get("name") or ""
+                    country = (country.get("name")
+                               or country.get("alternateName") or "")
+                # FIX P63: schema.org permits an ISO code here. "IND" is not
+                # a country name the gazetteer or a human reads, so reuse
+                # P49's existing table rather than invent a second one.
+                _cc = str(country or "").strip().upper()
+                if len(_cc) == 3 and _cc in self._ISO3_TO_COUNTRY:
+                    country = self._ISO3_TO_COUNTRY[_cc]
                 loc_str = ", ".join(filter(None, [
                     a.get("addressLocality"), a.get("addressRegion"), country,
                 ])).strip()
@@ -10766,8 +11110,23 @@ class CareerPortalScanner:
                 data = json.loads(m.group(1))
             except Exception:
                 continue
-            items = data if isinstance(data, list) else (
-                data.get("@graph") if isinstance(data, dict) else [data])
+            # FIX P63 (2026-10-08): `data.get("@graph")` returns None for a
+            # plain {"@type": "JobPosting", ...} document -- the most common
+            # shape of all -- so `items` became None and the loop below
+            # iterated nothing. Only @graph-wrapped or list payloads ever
+            # worked. Proximus publishes a perfectly good jobLocation
+            # (addressLocality "Hyderabad", addressCountry "IND") and this
+            # returned "", so 100 of its rows were quarantined as "location
+            # unproven" when the page had stated it all along. The same bug
+            # sat in the JD-text reader, so those pages yielded no
+            # description either -- and no description means no sponsorship
+            # verdict.
+            if isinstance(data, list):
+                items = data
+            elif isinstance(data, dict):
+                items = data.get("@graph") or [data]
+            else:
+                items = []
             if isinstance(items, dict):
                 items = [items]
             for it in items or []:
@@ -11429,6 +11788,49 @@ class CareerPortalScanner:
     def _write_errors_header(self, path):
         with open(path, "w", newline="", encoding="utf-8-sig") as f:
             csv.DictWriter(f, fieldnames=_ERROR_COLUMNS).writeheader()
+
+    def _clear_recovered_dns_errors(self, scan_log_csv):
+        """Delete DNS error rows for companies the retry sweep recovered.
+
+        FIX P65 (A6). A transient resolver failure logged a RuntimeError, the
+        automatic sweep then re-crawled the host successfully, and nothing
+        ever retracted the error -- errors.csv accused a company that worked.
+        A company counts as recovered when its LATEST scan-log row for this
+        run is not itself a DNS failure.
+        """
+        path = getattr(self, "_errors_csv", None)
+        if not path or not os.path.exists(path):
+            return
+        try:
+            latest = {}
+            with open(scan_log_csv, newline="", encoding="utf-8-sig") as f:
+                for row in csv.DictReader(f):
+                    if (row.get("Run ID") or "") != self.run_id:
+                        continue
+                    latest[row.get("Company") or ""] = (row.get("Error") or "")
+            recovered = {c for c, e in latest.items()
+                         if c and "does not resolve (DNS)" not in e}
+            if not recovered:
+                return
+            with open(path, newline="", encoding="utf-8-sig") as f:
+                rows = list(csv.DictReader(f))
+            keep = [r for r in rows
+                    if not (r.get("Run ID") == self.run_id
+                            and (r.get("Seed Name") or "") in recovered
+                            and "does not resolve (DNS)" in (r.get("Message") or ""))]
+            dropped = len(rows) - len(keep)
+            if not dropped:
+                return
+            with open(path, "w", newline="", encoding="utf-8-sig") as f:
+                w = csv.DictWriter(f, fieldnames=_ERROR_COLUMNS)
+                w.writeheader()
+                for r in keep:
+                    w.writerow({k: r.get(k, "") for k in _ERROR_COLUMNS})
+            print(f"[dns retry] retracted {dropped} stale DNS error row(s) "
+                  f"for recovered company/companies.")
+        except Exception as exc:
+            print(f"[dns retry] could not retract DNS errors "
+                  f"({type(exc).__name__}: {exc})")
 
     def _record_error(self, seed_name, phase, err_type, message, seed_url=""):
         """Append one row to the run's errors CSV (immediate, crash-safe)."""
@@ -12445,6 +12847,11 @@ class CareerPortalScanner:
                     _rec.pop("_loc_pending", None)  # FIX P35: not a scope flag
                     if _rec.pop("_scope_pending", None):
                         _rec.pop("_scope_context", None)
+                        # FIX P64: even when the safety net trips the row is
+                        # kept -- the point is that nothing is lost.
+                        if not self.config.SCOPE_FILTER:
+                            _rec["Scope Confidence"] = "unverified_seed_url"
+                            continue
                         company_jobs.pop(_cid, None)
                         _rec["Record Status"] = "quarantine"
                         _rec["Quarantine Reason"] = "outside_or_unproven_target_country"
@@ -12669,6 +13076,13 @@ class CareerPortalScanner:
                                 totals["thread_errors"] += 1
                                 print(f"Retry worker error: {type(exc).__name__}: {exc}")
                     print(f"[dns retry] recovered {totals['dns_recovered']} company/companies.")
+                    # FIX P65 (A6): the retry writes a fresh scan-log row but
+                    # the ORIGINAL DNS error stayed in errors.csv, so run
+                    # 20261008T113455 reported a hard failure for IEDI -- a
+                    # company that had in fact been re-crawled successfully
+                    # (and left 69 log rows for 68 seeds). Drop the stale DNS
+                    # error for every company that the sweep recovered.
+                    self._clear_recovered_dns_errors(scan_log_csv)
         except Exception as exc:
             print(f"[dns retry] skipped ({type(exc).__name__}: {exc})")
 
@@ -12716,6 +13130,14 @@ class CareerPortalScanner:
             if _dupes:
                 print(f"  Cross-source duplicates moved to quarantine: {_dupes} "
                       f"(aggregator copies of an employer's own posting)")
+            # FIX P65 (A5): same URL reached under two different SEEDS.
+            _xs = 0
+            for _p in (self.output_csv, recruiter_csv):
+                _xs += self._dedupe_same_url_across_seeds(
+                    _p, quarantine_csv, columns)
+            if _xs:
+                print(f"  Cross-seed duplicate URLs moved to quarantine: {_xs} "
+                      f"(two seeds pointing at the same board)")
         except Exception as _dexc:
             print(f"  [warn] cross-source dedupe skipped: "
                   f"{type(_dexc).__name__}: {_dexc}")
