@@ -499,3 +499,109 @@ def test_ats_career_parity_new_cases():
                "Requirements:\n\u2022 4+ years",
                "Experience in fintech is a plus."):
         assert ats_mod.extract_experience(jd, "") == career_mod.extract_experience(jd, ""), jd
+
+
+# ── FIX LOCEXP (2026-10-09): shared engine + language coverage ───────────────
+
+def test_both_scanners_use_the_shared_experience_engine():
+    """The P0-30 engine lives in core/experience; both scanners import it."""
+    from sponsorscout.core import experience as core_exp
+    from sponsorscout.scanning.ats import ats_scanner as ats_mod
+
+    assert career_mod.extract_experience is core_exp.extract_experience
+    assert ats_mod.extract_experience is core_exp.extract_experience
+    assert career_mod.apply_experience_to_record is core_exp.apply_experience_to_record
+    # The drift this unification killed: career previously failed P0-46.
+    exp = career_mod.extract_experience("Four or more years of experience", "")
+    assert (exp["required"], exp["min_years"], exp["level"]) == ("4+ years", 4, "Mid")
+
+
+_NUMBER_WORD_SAMPLES = [
+    # (jd text, expected min_years, expected level)
+    ("Quatre ans d'expérience en développement.", 4, "Mid"),
+    ("Six ans d'expérience minimum.", 6, "Senior"),
+    ("Se requieren tres años de experiencia.", 3, "Mid"),
+    ("Seis años de experiencia en ventas.", 6, "Senior"),
+    ("Once años de experiencia.", 11, "Lead"),
+    ("Con almeno undici anni di esperienza.", 11, "Lead"),
+    ("Je hebt minimaal vier jaar ervaring.", 4, "Mid"),
+    ("Acht jaar ervaring in de logistiek.", 8, "Senior"),
+    ("Experiência mínima de três anos.", 3, "Mid"),
+    ("Quatro anos de experiência em vendas.", 4, "Mid"),
+    ("Dez anos de experiência.", 10, "Lead"),
+]
+
+
+def test_spelled_out_numbers_extracted():
+    """FR/ES/IT/NL/PT number words must resolve like digits do."""
+    for jd, min_years, level in _NUMBER_WORD_SAMPLES:
+        exp = career_mod.extract_experience(jd, "")
+        assert exp["min_years"] == min_years, (jd, exp)
+        assert exp["level"] == level, (jd, exp)
+        assert exp["source"] == "detail_text", (jd, exp)
+
+
+def test_plus_forms_pt_es():
+    """'Mais/más de' and 'pelo menos' set the plus; FR ', mais de' must not."""
+    for jd, req in (("Más de cinco años de experiencia requeridos.", "5+ years"),
+                    ("Mais de cinco anos de experiência.", "5+ years"),
+                    ("Pelo menos quatro anos de experiência.", "4+ years")):
+        exp = career_mod.extract_experience(jd, "")
+        assert exp["required"] == req, (jd, exp)
+    # FR ", mais de ..." ("but ...") must NOT turn "5 ans" into "5+ ans".
+    exp = career_mod.extract_experience(
+        "Vous avez 5 ans d'expérience, mais de solides bases en maths.", "")
+    assert exp["required"] == "5 years", exp
+    assert exp["min_years"] == 5, exp
+
+
+_NORDIC_SAMPLES = [
+    # (jd text, expected min_years, expected level)
+    ("Minimum 5 lat doświadczenia w sprzedaży.", 5, "Senior"),
+    ("Co najmniej 3 lata doświadczenia.", 3, "Mid"),
+    ("Požadujeme minimálně 4 roky zkušeností.", 4, "Mid"),
+    ("Nejméně 2 roky zkušeností.", 2, "Junior"),
+    ("Vi söker dig med minst 5 års erfarenhet.", 5, "Senior"),
+    ("Minimum 3 års erfaring innen salg.", 3, "Mid"),
+    ("Vähintään 5 vuotta kokemusta myynnistä.", 5, "Senior"),
+    ("6 kuukautta kokemusta vaaditaan.", 0.5, "Junior"),
+]
+
+
+def test_pl_cs_nordic_requirements_extracted():
+    for jd, min_years, level in _NORDIC_SAMPLES:
+        exp = career_mod.extract_experience(jd, "")
+        assert exp["min_years"] == min_years, (jd, exp)
+        assert exp["level"] == level, (jd, exp)
+        assert exp["source"] == "detail_text", (jd, exp)
+
+
+def test_none_required_new_languages():
+    for jd in ("Sem experiência prévia necessária.",
+               "Bez doświadczenia mile widziane.",
+               "Ingen erfarenhet krävs."):
+        exp = career_mod.extract_experience(jd, "")
+        assert exp["required"] == "None required", (jd, exp)
+        assert exp["min_years"] == 0, (jd, exp)
+
+
+def test_since_words_block_company_tenure():
+    """'Since X years' tenure must never become a requirement (any language)."""
+    for text in ("Wij zijn sinds 10 jaar actief in Nederland.",
+                 "Seit 20 Jahren im Unternehmen.",
+                 "Notre société existe depuis 15 ans.",
+                 "La empresa opera desde hace 10 años.",
+                 "Firma istnieje od 5 lat na rynku.",
+                 "5 lat temu założyliśmy firmę."):
+        exp = career_mod.extract_experience(text, "")
+        assert exp["required"] == "Unknown", (text, exp)
+
+
+def test_level_words_pl_cs_titles():
+    for title, level in (("Starszy Programista", "Senior"),
+                         ("Młodszy Specjalista", "Junior"),
+                         ("Stażysta IT", "Internship"),
+                         ("Stážista marketingu", "Internship")):
+        exp = career_mod.extract_experience("", title)
+        assert exp["level"] == level, (title, exp)
+        assert exp["source"] == "title_inference", (title, exp)

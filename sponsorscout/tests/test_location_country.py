@@ -49,6 +49,30 @@ CASES = [
     # Session regressions: screenshot cities + Workable API shape + NJ site
     ("Milano, MI", "Italy"), ("Milano", "Italy"),
     ("Berlin, Germany", "Germany"), ("Florham Park, NJ, US", "United States"),
+    # FIX LOCEXP-9/10 (2026-10-09): thin-country expansion + ASCII aliases.
+    ("Drogheda", "Ireland"), ("Dundalk, Ireland", "Ireland"),
+    ("Brugge", "Belgium"), ("Namur, Belgium", "Belgium"),
+    ("Esch-sur-Alzette", "Luxembourg"), ("Dudelange, Luxembourg", "Luxembourg"),
+    ("Klagenfurt, Austria", "Austria"), ("Wels", "Austria"),
+    ("St. Pölten", "Austria"), ("St. Polten", "Austria"),
+    ("Esbjerg", "Denmark"), ("Randers, Denmark", "Denmark"),
+    ("Tampere", "Finland"), ("Jyväskylä", "Finland"), ("Jyvaskyla", "Finland"),
+    ("Tartu, Estonia", "Estonia"), ("Pärnu", "Estonia"), ("Parnu", "Estonia"),
+    ("Aveiro", "Portugal"), ("Guimarães", "Portugal"), ("Guimaraes", "Portugal"),
+    ("Kaunas, Lithuania", "Lithuania"), ("Klaipėda", "Lithuania"),
+    ("Liepāja", "Latvia"), ("Liepaja", "Latvia"),
+    ("Tromsø", "Norway"), ("Tromso", "Norway"), ("Drammen, Norway", "Norway"),
+    ("Norrköping", "Sweden"), ("Norrkoping", "Sweden"),
+    ("Granada, Spain", "Spain"), ("San Sebastián", "Spain"),
+    ("San Sebastian", "Spain"), ("A Coruña", "Spain"), ("A Coruna", "Spain"),
+    ("Patras, Greece", "Greece"),
+    ("Leiden", "Netherlands"), ("Hilversum, Netherlands", "Netherlands"),
+    ("Gdynia", "Poland"), ("Toruń", "Poland"), ("Torun", "Poland"),
+    ("Bielsko-Biała", "Poland"), ("Bielsko-Biala", "Poland"),
+    ("München", "Germany"), ("Munchen", "Germany"),
+    ("Köln", "Germany"), ("Koln", "Germany"),
+    ("Zürich", "Switzerland"), ("Zurich", "Switzerland"),
+    ("Moss, Norway", "Norway"), ("Bray", "Ireland"),
 ]
 
 
@@ -70,3 +94,30 @@ def test_all_keys_lowercase():
         assert isinstance(table, dict) and table, f"{name} table missing/empty"
         bad = [k for k in table if isinstance(k, str) and k != k.lower()]
         assert not bad, f"{name} has {len(bad)} non-lowercase keys: {bad[:5]}"
+
+
+def test_labelled_location_new_languages():
+    """FIX LOCEXP-11: PT/CS/Nordic label/value strips resolve."""
+    from sponsorscout.scanning.career import career_scanner as career_mod
+
+    for html, want in (
+        ('<span>Local de trabalho</span><span>Aveiro</span>', "Aveiro"),
+        ('<dt>Arbejdssted</dt><dd>Esbjerg</dd>', "Esbjerg"),
+        ('<dt>Placeringsort</dt><dd>Norrköping</dd>', "Norrköping"),
+        ('<span>Toimipaikka</span><span>Tampere</span>', "Tampere"),
+        ('<span>Místo výkonu práce</span><span>Brno</span>', "Brno"),
+        ('<span>Location</span><span>Drogheda, Ireland</span>', "Drogheda"),
+    ):
+        got = career_mod.extract_labelled_location(html)
+        assert any(want in g for g in got), (html, got)
+
+
+def test_ascii_alias_collisions_are_recorded_not_guessed():
+    """Fold collisions keep the pre-existing key and stay introspectable."""
+    try:
+        import sponsorscout.core.location_country as lc
+    except ImportError:
+        import location_country as lc
+    assert isinstance(lc.ALIAS_COLLISIONS, list)
+    for folded, _skipped_country, kept_country in lc.ALIAS_COLLISIONS:
+        assert lc.CITY_TO_COUNTRY[folded] == kept_country

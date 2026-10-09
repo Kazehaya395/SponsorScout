@@ -9,6 +9,7 @@ host-adaptive pool sizing (``recommended_workers``) and the pause/stop gate
 next to the code that uses them, preserving the pipeline's 39-column jobs
 output and 15-column scan log.
 """
+import os
 
 def check_control(cancel_event, pause_event=None, poll_sec: float = 0.1) -> bool:
     """Wait out a pause, then report whether the scan must stop.
@@ -168,6 +169,12 @@ def recommended_workers(kind: str = "browser", requested: int | None = None) -> 
     ``requested`` caps the result without ever raising it, so a caller that
     knows a tighter budget (or a test) can clamp it.
 
+    The ``SPONSORSCOUT_MAX_WORKERS`` (browser) / ``SPONSORSCOUT_HTTP_WORKERS``
+    (http) environment variables are the only way to go ABOVE the heuristic:
+    opt-in, hard-capped (8 browser / 24 http), applied after the ``requested``
+    clamp. Moved here from the scanners' local wrappers on 2026-10-09 so both
+    scanners and the pipeline share one sizing formula (FIX P0-36).
+
     Returned values are always >= 1 and deliberately conservative; the scans
     stay correct at any concurrency, they are merely slower.
     """
@@ -195,6 +202,20 @@ def recommended_workers(kind: str = "browser", requested: int | None = None) -> 
             n = max(1, min(int(requested), n))
         except (TypeError, ValueError):
             pass
+    # REBASE 2026-10-03 (R3), moved here 2026-10-09: both sizers only ever
+    # clamp downward, so a user who knows their machine could not raise the
+    # pool. Verbatim the knob the scanners used to wrap around this function;
+    # applied AFTER the `requested` clamp (an explicit opt-in wins), still
+    # hard-capped so 8 Chromiums cannot thrash a laptop.
+    raw = os.environ.get("SPONSORSCOUT_MAX_WORKERS" if kind == "browser"
+                         else "SPONSORSCOUT_HTTP_WORKERS")
+    if raw:
+        try:
+            want = int(str(raw).strip())
+        except (TypeError, ValueError):
+            want = 0
+        if want >= 1:
+            return min(want, 8 if kind == "browser" else 24)
     return n
 
 

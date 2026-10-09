@@ -113,6 +113,9 @@ _LABEL_FIELD_RES = {
         r"sponsorship\s+available|sponsorship\s+offered|sponsorship|"
         r"visa\s+sponsoring|visumsponsoring|visum\s*sponsoring|"
         r"sponsorizzazione\s+(?:del\s+)?visto|parrainage\s+de\s+visa|"
+        r"patroc[íi]nio\s+de\s+visto|wsparcie\s+wizow\w*|sponsorowanie\s+wiz\w*|"
+        r"v[íi]zov[áa]\s+podpora|visumsponsring|visumsponsorering|"
+        r"visumsponsing|viisumituki|autoriza[çc][ãa]o\s+de\s+trabalho|"
         r"visa|work\s+permit|werkvergunning|arbeitserlaubnis"
         r")\s*:", re.I),
     "relocation": re.compile(
@@ -129,11 +132,13 @@ _LABEL_FIELD_RES = {
 #: "No relocation" is NO but "Nordic markets" is not (word boundary required).
 _LABEL_YES_RE = re.compile(
     r"^(?:yes|y|true|available|offered|provided|possible|eligible|supported|"
-    r"full|partial|sponsored|will\s+sponsor|ja|jawohl|oui|s[i\u00ed\u00ec]|sim)\b", re.I)
+    r"full|partial|sponsored|will\s+sponsor|ja|jawohl|oui|s[i\u00ed\u00ec]|"
+    r"sim|tak|ano|kyll\u00e4)\b", re.I)
 _LABEL_NO_RE = re.compile(
     r"^(?:no|n|none|false|not\s+available|not\s+offered|not\s+provided|"
     r"not\s+eligible|not\s+applicable|no\s+relocation|no\s+sponsorship|"
-    r"no\s+visa|unavailable|nein|nee|niet|non|ingen)\b", re.I)
+    r"no\s+visa|unavailable|nein|nee|niet|non|ingen|"
+    r"nie|nej|nei|ne|ei|n\u00e3o)\b", re.I)
 #: Only whitespace and list bullets may precede the value. Anything else
 #: (notably a stray "<" left by a mangled scrape) means the field is EMPTY and
 #: the text that follows belongs to the NEXT field -- see MSD's
@@ -284,6 +289,18 @@ class JDSupportDetector:
         r"|eligible\s+|qualified\s+|international\s+|overseas\s+|foreign\s+)?"
         r"(?:candidate|applicant|employee|hire|new\s+joiner|individual|person"
         r"|professional|talent|worker|you)s?"
+        # ── PT / PL / CS / SV / DA / NO / FI (2026-10-09) ──────────────────
+        r"|visto\s+de\s+trabalho|patroc[íi]nio|autoriza[çc][ãa]o\s+de\s+trabalho"
+        r"|wiza\w*|wizy\b|wizow\w*|wiz\b|pozwoleni\w*\s+na\s+prac[eę]|"
+        r"prawo\s+do\s+pracy|sponsorowani\w*|wsparcie\s+wizow\w*"
+        r"|v[íi]zum\w*|v[íi]za\b|v[íi]zov\w*|pracovn[íi]\s+povolen[íi]|"
+        r"povolen[íi]\s+k\s+pr[áa]ci|sponzorov\w*"
+        r"|visumsponsring|arbetstillst[åa]nd"
+        r"|visumsponsorering|arbejdstilladelse"
+        r"|visumsponsing|arbeidstillatelse"
+        r"|viisumituk\w*|viisum\w*|ty[öo]lupa\w*|ty[öo]luv\w*"
+        r"|patrocin\w*\s+(?:o\s+|os\s+|a\s+|as\s+)?(?:candidat\w*|"
+        r"funcion[áa]ri\w*|profissional\w*|voc[êe]|t[ée]cnic\w*)"
         r")\b",
         re.I,
     )
@@ -316,6 +333,12 @@ class JDSupportDetector:
         r"|\bverhuis\w*|\bverhuiz\w*|relocatie"  # NL (verhuis- compounds + verhuizen verb)
         r"|\brelocalis\w*|\bdéménag\w*|\bréinstall\w*|frais de déménagement"  # FR
         r"|\breubic\w*|\btraslad\w*|\bmudanz\w*|ayuda de reubicación|gastos de reubicación"  # ES
+        r"|relokacj\w*|przeprowadzk\w*|pakiet\s+relokacyjn\w*"
+        r"|p[řr]est[ěe]hov\w*|st[ěe]hov\w*|relokac\w*"
+        r"|flytt\w*|relokera\w*"
+        r"|flytn\w*|flytte\w*"
+        r"|muutto\w*"
+        r"|relocaliza\w*"
         r"|\bassist\w*\b.{0,25}\b(umzug|trasfer|verhuis|déménag|reubic)\b",
         re.I,
     )
@@ -323,7 +346,8 @@ class JDSupportDetector:
         r"\b(offer|offers|offered|offering|provide|provides|provided|providing|support|"
         r"supports|supported|supporting|assist|assists|assisted|assisting|help|helps|"
         r"helped|cover|covers|covered|covering|pay|pays|paid|reimburse|reimburses|"
-        r"reimbursed|arrange|arranges|arranged|handle|handles|handled|sponsor|sponsors|"
+        r"reimbursed|arrange|arranges|arranged|handle|handles|handled|"
+        r"manage|manages|managed|managing|sponsor|sponsors|"
         r"sponsored|sponsoring|include|includes|included|including|available|is offered|"
         r"is provided|will be provided|is included|granted|we will|receive|receives|"
         r"received|get|gets|enjoy|enjoys)\b",
@@ -379,6 +403,24 @@ class JDSupportDetector:
         r"limited to|restricted to|only for)\b",
         re.I,
     )
+    #: A possibility modal with a STATIVE positive ("may be available") is
+    #: speculation about an offer, not a scoped offer -- so it stays Unknown,
+    #: unlike an active offer verb with a conditional scope ("supports X, may
+    #: be limited to ..."), which is Yes. Without this split, P65 (A2)
+    #: ("positive-but-conditional -> Yes") turned "Sponsorship may be
+    #: available on a case-by-case basis." into Yes 0.6 and broke the hedged
+    #: contract the tests pin: a hedge must never read as decisive. The
+    #: speculative phrase is stripped and the REMAINDER must carry something
+    #: stronger -- an active verb, an "eligible for sponsorship" role
+    #: statement, or a non-English positive -- otherwise the sentence is
+    #: speculative-only.
+    SPECULATIVE_OFFER = re.compile(
+        r"\b(may|might|could)\s+be\s+(?:\w+\s+){0,2}?"
+        r"(available|possible|considered"
+        r"|able(?:\s+to\s+(?:offer|provide|sponsor|support|assist|help|cover|"
+        r"pay|arrange|handle|fund)?)?)\b",
+        re.I,
+    )
     SCOPE = re.compile(
         r"\b(for|to|towards|covering|regarding|concerning|in the case of)\b.{0,20}"
         r"\b(international|foreign|overseas|non-eu|non eu|expat|expatriate|"
@@ -395,12 +437,96 @@ class JDSupportDetector:
     #: possible failure direction: real, hedged offers were reported as hard
     #: refusals and disappeared from the results.
     HEDGED_NEGATION = re.compile(
-        r"\b(?:not|never|no)\s+(?:guaranteed|assured|available|offered|provided|"
-        r"possible|granted|committed|given|confirmed|ruled out)\b"
+        r"\b(?:not|never|no)\s+(?:guaranteed|assured|possible|granted|"
+        r"committed|given|confirmed|ruled out)\b"
         r"|\bnot\s+necessarily\b|\bmay\s+not\b|\bmight\s+not\b|\bcannot\s+be\s+"
         r"(?:guaranteed|assured|ruled out)\b|\bdoes\s+not\s+mean\s+that\s+we\s+can(?:no|\x27)t\b"
         r"|\bnicht\s+garantiert\b|\bkeine\s+garantie\b|\bnicht\s+zugesichert\b"
-        r"|\bnon\s+garanti\b|\bnon\s+garantie\b|\bno\s+garantizado\b|\bgeen\s+garantie\b",
+        r"|\bnon\s+garanti\b|\bnon\s+garantie\b|\bno\s+garantizado\b|\bgeen\s+garantie\b"
+        # A possibility left open ("can't rule out") is a hedge, not a refusal.
+        r"|\bcannot\s+(?:rule\s+out|exclude)\b|\bcan'?t\s+(?:rule\s+out|exclude)\b"
+        r"|\bcould\s+not\s+(?:rule\s+out|exclude)\b"
+        r"|\bnot\s+(?:be\s+)?(?:ruled|excluded)\s+out\b"
+        # Hedged negatives in the seven new languages (and FR/ES already above).
+        r"|\bnie\s+jest\s+gwarantowan\w*\b|\bnie\s+gwarantujemy\b"
+        r"|\bnen[íi]\s+zaru[č]en\w*\b|\bnezaru[č]en\w*\b"
+        r"|\bgaranteras\s+inte\b|\binte\s+garanterat\b"
+        r"|\bikke\s+garanter(?:et|t)\b"
+        r"|\bei\s+(?:ole\s+)?taattu\b"
+        r"|\bn[ãa]o\s+(?:[ée]\s+)?garantid\w*\b",
+        re.I,
+    )
+
+    #: A negation spent on the PROBLEM noun, not on the support: "A visa is
+    #: not a problem", "kein Problem", "n'est pas un obstacle", "no es un
+    #: problema", "nie jest problemem", "viisumi ei ole ongelma". The plain
+    #: negation branch used to read every one of those as a hard refusal --
+    #: the worst failure direction for a sponsorship finder: the warmest
+    #: sentence in the advert ("don't worry, visas are fine") was reported as
+    #: "No" and filtered the best candidates straight out of the results.
+    #: Checked against the qualifier window; the matched phrase is REMOVED and
+    #: only a negation that remains outside it counts (so "we do not sponsor
+    #: visas even though they are not a problem" is still a refusal). Covers
+    #: all thirteen supported languages from day one, because every new
+    #: negation list would otherwise reintroduce the same false "No".
+    PROBLEM_NEGATION = re.compile(
+        r"\b(?:"
+        # EN: "is/are not a problem", "isn't a problem", "is no problem",
+        # "not an issue", "no barrier" (hedge adverbs tolerated)
+        r"(?:isn'?t|aren'?t|wasn'?t|weren'?t|'s\s+not"
+        r"|(?:is|are|was|were)\s+(?:not|never))\s+"
+        r"(?:really\s+|just\s+|simply\s+|at\s+all\s+)?(?:a\s+|an\s+)?"
+        r"(?:problem|issue|barrier|obstacle|hurdle|deal[- ]?breaker|blocker"
+        r"|concern)s?\b"
+        r"|(?:is|are)\s+no\s+(?:problem|issue|barrier|obstacle|hurdle)s?\b"
+        r"|no\s+(?:problem|issue|barrier|obstacle)s?\b"
+        r"|not\s+(?:really\s+|just\s+|simply\s+)?(?:a\s+|an\s+)"
+        r"(?:problem|issue|barrier|obstacle|hurdle)s?\b"
+        # DE: "kein Problem" ("ist kein Problem" contains this)
+        r"|kein(?:e|en|er)?\s+(?:problem\w*|thema\b|hindernis\w*"
+        r"|h\u00fcrde\w*|huerde\w*|barriere\w*)"
+        # IT: "non e un problema"
+        r"|non\s+\u00e8\s+(?:un\s+)?(?:problema|ostacolo|impedimento|barriera)"
+        r"|nessun\w*\s+(?:problema|ostacolo)"
+        # FR: "n'est pas un probleme"
+        r"|n['\u2019]est\s+pas\s+(?:un\s+|une\s+)?"
+        r"(?:probl[\u00e8e\u00e9]me|obstacle|frein|souci)"
+        r"|aucun\w*\s+(?:probl[\u00e8e\u00e9]me|obstacle)"
+        r"|ne\s+pose\s+pas\s+de\s+probl[\u00e8e\u00e9]me"
+        r"|ne\s+repr[\u00e9e]sente\s+pas\s+(?:un\s+)?(?:probl[\u00e8e\u00e9]me|obstacle)"
+        # ES: "no es un problema"
+        r"|no\s+es\s+(?:un\s+)?(?:problema|obst[\u00e1a]culo)"
+        r"|no\s+(?:representa|supone|constituye)\s+(?:un\s+)?"
+        r"(?:problema|obst[\u00e1a]culo)"
+        r"|ning\u00fan\w*\s+(?:problema|obst[\u00e1a]culo)"
+        # NL: "geen probleem"
+        r"|geen\s+(?:probleem|obstakel|hindernis|belemmering)"
+        r"|(?:is|vormt)\s+geen\s+probleem"
+        # PT: "nao e um problema"
+        r"|n[\u00e3a]o\s+[e\u00e9]\s+(?:um\s+)?(?:problema|obst[\u00e1a]culo)"
+        r"|n[\u00e3a]o\s+(?:representa|h[\u00e1a])\s+(?:um\s+)?problema"
+        r"|nenhum\w*\s+(?:problema|obst[\u00e1a]culo)"
+        # PL: "nie jest problemem" (instrumental)
+        r"|nie\s+(?:jest|stanowi|b[\u0119e]dzie)\s+"
+        r"(?:problemem|problemu|przeszkod[\u0105a]|barier[\u0105a])"
+        r"|brak\s+(?:problemu|przeszkody)"
+        r"|[\u017bz]aden\w*\s+(?:problem|przeszkoda)"
+        # CS: "neni problem"
+        r"|nen[\u00edi]\s+(?:probl[\u00e9e]m\w*|p[\u0159r]ek[\u00e1a][\u017e]k\w*)"
+        r"|[\u017e]adn[\u00fdy]\s+probl[\u00e9e]m"
+        # SV: "inget problem" / "inte ett problem"
+        r"|(?:[\u00e4a]r\s+)?(?:inte|ej)\s+"
+        r"(?:n[\u00e5a]got\s+|ett\s+|et\s+|en\s+)?"
+        r"(?:problem|hinder|hindring)"
+        r"|inget\s+(?:problem|hinder)|inga\s+problem"
+        # DA/NO: "er ikke et problem"
+        r"|(?:er\s+)?ikke\s+(?:noget\s+|noe\s+|et\s+|en\s+|ett\s+)?"
+        r"(?:problem|hinder|hindring)"
+        r"|intet\s+(?:problem|hinder)|ingen\s+problemer"
+        # FI: "ei ole ongelma"
+        r"|ei\s+(?:ole\s+)?(?:ongelm\w*|este\w*|ongelmaa)"
+        r"|ei\s+aiheuta\s+ongelm\w*"
+        r")",
         re.I,
     )
 
@@ -469,7 +595,23 @@ class JDSupportDetector:
                               r"disponibilita)\b.{0,30}\b(trasferiment\w*|trasferir\w*|"
                               r"spost\w*|ricolloc\w*)\b"
                               r"|\b(trasferiment\w*|trasferir\w*|spost\w*)\b.{0,30}"
-                              r"\b(richiesto|obbligatorio|necessario|richiede)\b", re.I),
+                              r"\b(richiesto|obbligatorio|necessario|richiede)\b"
+                              # FIX 2026-10-09 (batch 20261009T225341):
+                              # "Sono previste trasferte e trasferimenti."
+                              # (= travel and transfers are expected) scored
+                              # reloc Yes 0.9 via P47 "previste" -- it is the
+                              # P25 duty shape. Impersonal "previst*" + the
+                              # mobility nouns is a requirement; a benefit
+                              # ("È previsto un trasferimento con rimborso
+                              # spese") is exempt via the lookahead.
+                              r"|\b(?:[eè]\s+|sono\s+|saranno\s+|si\s+)?"
+                              r"previst\w*\b.{0,30}\b(?:trasfert\w*|trasferir\w*|"
+                              r"spost\w*)\b"
+                              r"(?!\s+(?:con|e)\s+(?:\w+\s+){0,2}?"
+                              r"(?:rimborso|contributo|alloggio|indennit\w*|"
+                              r"voucher|bonus)\b)"
+                              r"|\b(?:trasfert\w*|trasferir\w*)\b\s*(?:e|,|ed)\s*"
+                              r"\b(?:trasfert\w*|trasferir\w*)\b", re.I),
             "reqverb": re.compile(r"\b(richiede|richiedono|necessario|obbligatorio)\b", re.I),
             "cond": re.compile(r"\b(caso per caso|soggetto a|può essere|dipende da|negoziabile|"
                                r"su richiesta|se applicabile|non garantito)\b", re.I),
@@ -530,6 +672,107 @@ class JDSupportDetector:
             "cond": re.compile(r"\b(caso por caso|sujeto a|puede ser|negociable|bajo petición|"
                                r"si aplica|no garantizado)\b", re.I),
         },
+        "pl": {
+            "pos": re.compile(r"\b(oferujemy|oferuje|oferują|zapewniamy|zapewnia|"
+                              r"zapewniają|pomagamy|pomaga|pokrywamy|pokrywa|"
+                              r"sponsorujemy|sponsoruje|wspieramy|wspiera|"
+                              r"udostępniamy|dofinansowujemy|możliwe|dostępne)\b", re.I),
+            "neg": re.compile(r"\b(nie|brak|niestety|bez)\b", re.I),
+            "req": re.compile(r"\b(gotow\w*|chętn\w*|zobowiązan\w*)\b.{0,30}"
+                              r"\b(przeprowadzk\w*|relokacj\w*|przeprowadzić)\b"
+                              r"|\b(przeprowadzk\w*|relokacj\w*)\b.{0,30}"
+                              r"\b(wymagan\w*|konieczn\w*|obowiązkow\w*)\b", re.I),
+            "reqverb": re.compile(r"\b(wymagan\w*|wymaga|wymagają|niezbędne|"
+                                  r"konieczne|konieczny|wymogiem)\b", re.I),
+            "cond": re.compile(r"\b(w zależności od|na życzenie|do negocjacji|"
+                               r"nie gwarantowane|rozpatrywane indywidualnie|"
+                               r"w indywidualnych przypadkach|po uzgodnieniu)\b", re.I),
+        },
+        "cs": {
+            "pos": re.compile(r"\b(nabízíme|nabízí|poskytujeme|poskytuje|zajišťujeme|"
+                              r"zajišťuje|podporujeme|podporuje|hradíme|hradí|"
+                              r"pomáháme|pomáhá|zahrnuto|zahrnuje|k dispozici|"
+                              r"možné|sponzorujeme)\b", re.I),
+            "neg": re.compile(r"\b(není|nejsou|nenabízíme|neposkytujeme|"
+                              r"nezajišťujeme|nemůžeme|bez|bohužel)\b", re.I),
+            "req": re.compile(r"\b(připraven\w*|ochotn\w*|schopen|schopna)\b.{0,30}"
+                              r"\b(přestěhov\w*|stěhov\w*|relokac\w*)\b"
+                              r"|\b(přestěhov\w*|stěhov\w*)\b.{0,30}"
+                              r"\b(vyžadov\w*|požadov\w*|povinn\w*)\b", re.I),
+            "reqverb": re.compile(r"\b(vyžaduje|vyžadují|vyžadováno|požadováno|"
+                                  r"nutné|nezbytné|povinné)\b", re.I),
+            "cond": re.compile(r"\b(dle dohody|na vyžádání|dle situace|"
+                               r"případ od případu|není zaručeno|individuálně)\b", re.I),
+        },
+        "sv": {
+            "pos": re.compile(r"\b(erbjuder|erbjuds|tillhandahåller|tillhandahålls|"
+                              r"stödjer|stöder|hjälper|täcker|betalar|ingår|"
+                              r"tillgängligt|möjligt|sponsrar)\b", re.I),
+            "neg": re.compile(r"\b(inte|ingen|inget|inga|utan|tyvärr)\b", re.I),
+            "req": re.compile(r"\b(beredd|villig|förväntas)\b.{0,30}"
+                              r"\b(flytt\w*|relokera\w*)\b"
+                              r"|\b(flytt\w*|relokera\w*)\b.{0,30}"
+                              r"\b(krävs|kräver|nödvändigt|obligatoriskt)\b", re.I),
+            "reqverb": re.compile(r"\b(krävs|kräver|nödvändigt|obligatoriskt|"
+                                  r"krävas)\b", re.I),
+            "cond": re.compile(r"\b(efter överenskommelse|på begäran|beroende på|"
+                               r"ej garanterat|inte garanterat|fall för fall)\b", re.I),
+        },
+        "da": {
+            "pos": re.compile(r"\b(tilbyder|tilbydes|yder|støtter|hjælper|dækker|"
+                              r"betaler|indgår|tilgængelig|mulig|sponsorerer)\b", re.I),
+            "neg": re.compile(r"\b(ikke|ingen|intet|uden|desværre)\b", re.I),
+            "req": re.compile(r"\b(indstillet|parat|villig|forventes)\b.{0,30}"
+                              r"\b(flytn\w*|flytte\w*)\b"
+                              r"|\b(flytn\w*|flytte\w*)\b.{0,30}"
+                              r"\b(kræves|kræver|nødvendig|obligatorisk)\b", re.I),
+            "reqverb": re.compile(r"\b(kræves|kræver|nødvendig|obligatorisk|"
+                                  r"påkrævet)\b", re.I),
+            "cond": re.compile(r"\b(efter aftale|på anmodning|afhængig af|"
+                               r"ikke garanteret|fra sag til sag)\b", re.I),
+        },
+        "no": {
+            "pos": re.compile(r"\b(tilbyr|tilbys|yter|støtter|hjelper|dekker|"
+                              r"betaler|inngår|tilgjengelig|mulig|sponser)\b", re.I),
+            "neg": re.compile(r"\b(ikke|ingen|intet|uten|dessverre)\b", re.I),
+            "req": re.compile(r"\b(villig|innstilt|forventes)\b.{0,30}"
+                              r"\b(flytt\w*|flytting\w*)\b"
+                              r"|\b(flytt\w*|flytting\w*)\b.{0,30}"
+                              r"\b(kreves|krever|nødvendig|obligatorisk)\b", re.I),
+            "reqverb": re.compile(r"\b(kreves|krever|nødvendig|obligatorisk|"
+                                  r"påkrevd)\b", re.I),
+            "cond": re.compile(r"\b(etter avtale|på forespørsel|avhengig av|"
+                               r"ikke garantert|fra sak til sak)\b", re.I),
+        },
+        "fi": {
+            "pos": re.compile(r"\b(tarjoamme|tarjoaa|tarjotaan|tarjoavat|tuetamme|"
+                              r"tukee|autamme|auttaa|kustannamme|kattaa|sisältyy|"
+                              r"saatavilla|mahdollista|sponsataan)\b", re.I),
+            "neg": re.compile(r"\b(ei|emme|ette|eivät|valitettavasti|ilman)\b", re.I),
+            "req": re.compile(r"\b(valmis|halukas)\b.{0,30}\b(muutto\w*|muuttamaan)\b"
+                              r"|\b(muutto\w*)\b.{0,30}"
+                              r"\b(vaaditaan|vaatii|välttämätön|pakollinen)\b", re.I),
+            "reqverb": re.compile(r"\b(vaaditaan|vaatii|välttämätön|pakollinen)\b",
+                                  re.I),
+            "cond": re.compile(r"\b(sopimuksen mukaan|pyydettäessä|tilanteen mukaan|"
+                               r"ei taattu|tapauskohtaisesti)\b", re.I),
+        },
+        "pt": {
+            "pos": re.compile(r"\b(oferecemos|oferece|proporcionamos|proporciona|"
+                              r"apoiamos|apoia|ajudamos|ajuda|cubrimos|cobre|"
+                              r"pagamos|paga|reembolsamos|inclui|incluímos|"
+                              r"disponível|possível|patrocinamos|patrocina|"
+                              r"fornecemos)\b", re.I),
+            "neg": re.compile(r"\b(não|nao|nenhum|nenhuma|sem|infelizmente)\b", re.I),
+            "req": re.compile(r"\b(disposto|disposta|pronto|pronta|disponível)\b"
+                              r".{0,30}\b(relocaliza\w*|mudan[çc]a\w*|reinstalar)\b"
+                              r"|\b(relocaliza\w*)\b.{0,30}"
+                              r"\b(necess[áa]ri\w*|obrigat\w*|requerid\w*)\b", re.I),
+            "reqverb": re.compile(r"\b(requer|requerem|exige|exigem|necess[áa]ri\w*|"
+                                  r"obrigat\w*|requerid\w*)\b", re.I),
+            "cond": re.compile(r"\b(caso a caso|conforme|negociável|a pedido|"
+                               r"se aplicável|não garantido|mediante acordo)\b", re.I),
+        },
     }
 
     @staticmethod
@@ -538,7 +781,9 @@ class JDSupportDetector:
         parts = re.split(
             r"(?<=[.!?])\s+|\n+|;\s*|\s+(?:but|while|whereas|however|yet|though|although|"
             r"aber|jedoch|während|aber|ma|mentre|però|tuttavia|maar|echter|terwijl|"
-            r"mais|cependant|tandis que|pero|sin embargo|mientras)\s+",
+            r"mais|cependant|tandis que|pero|sin embargo|mientras|"
+            r"ale|jednak|avšak|zatímco|däremot|hvorimot|medan|"
+            r"mutta|vaikka|kun taas|mas|porém|embora|enquanto)\s+",
             text,
         )
         return [p.strip() for p in parts if p.strip()]
@@ -556,7 +801,33 @@ class JDSupportDetector:
         r"avete|siete|hai|serve|necessiti|"
         r"heeft|hebt|bent|kunt|moet|"
         r"est-ce|avez|\u00eates|pouvez|"
-        r"necesita|necesitas|requiere|tiene|puede)\b",
+        r"necesita|necesitas|requiere|tiene|puede|"
+        r"czy|je|jsou|zda|vy[žz]aduj\w*|kräver|kræver|krever|"
+        r"vaatitko|onko|é|você|voce|precisa|tem|possui)\b",
+        re.I)
+
+    #: FIX 2026-10-09 (batch 20261009T225341): the job FUNCTION, not a
+    #: benefit. "Relocation & Immigration Revamp: Take over our global
+    #: mobility support and manage external service providers ..." (HR
+    #: lead) and "Manage job offers, onboarding, and offboarding
+    #: end-to-end--from negotiation and visa support to administrative
+    #: updates ..." (people administration manager) both scored Yes 0.90.
+    #: The hire would ADMINISTER mobility/visa support for OTHERS. The
+    #: frame is an imperative/role-task verb plus the function plus an
+    #: admin noun; "your ..." still vetoes ("Manage your visa process").
+    #: Sentence-level on purpose: the scanner's whole-text guard (5) would
+    #: also erase a genuine perk block on the same career page.
+    FUNCTION_DUTY_FRAME = re.compile(
+        r"^(?:[^.;!?]{0,60}?)"
+        r"(?:(?:you|he|she|they)\s+(?:will|would|shall)\s+)?"
+        r"(?:take\s+over|take\s+ownership|manage|managing|handle|handling|"
+        r"coordinate|coordinating|oversee|overseeing|administer|"
+        r"administering|drive|own|lead|run)\b"
+        r"[^.;!?]{0,90}\b(?:global\s+mobility|immigration|mobility|"
+        r"relocation|visa)s?\b"
+        r"[^.;!?]{0,60}\b(?:support|services?|service\s+providers?|"
+        r"vendors?|operations?|program|process(?:es)?|requests?|cases|"
+        r"applications?|agreements?|administration|administrative|updates?)\b",
         re.I)
 
     def sentence_verdict(self, sentence, concept_re):
@@ -599,6 +870,9 @@ class JDSupportDetector:
             sentence, re.I,
         ):
             return VERDICT_UNKNOWN, 0.0, ["non-candidate-relocation-context"]
+        if self.FUNCTION_DUTY_FRAME.search(sentence) and not re.search(
+                r"\byour\b|\bfor\s+you\b", sentence, re.I):
+            return VERDICT_UNKNOWN, 0.0, ["function-duty-context"]
         if concept_re is self.VISA_CONCEPTS and re.search(
             # (a) requirement stated BEFORE the authorisation noun:
             #     "Applicants must have the right to work in the UK"
@@ -616,11 +890,36 @@ class JDSupportDetector:
             #     "Aufenthaltserlaubnis required".
             r"\b(?:valid\s+)?(?:work permit|visa|right to work|residence permit|"
             r"aufenthalt\w*|anmeldebescheinigung|anmeldung|"
-            r"permis\s+de\s+s[ée]jour|permiso\s+de\s+residencia)\b"
+            r"permis\s+de\s+s[ée]jour|permiso\s+de\s+residencia|"
+            r"prawo\s+do\s+pracy|pozwoleni\w*\s+na\s+prac[eę]|"
+            r"pracovn[íi]\s+povolen[íi]|povolen[íi]\s+k\s+pr[áa]ci|"
+            r"arbetstillst[åa]nd|arbejdstilladelse|arbeidstillatelse|"
+            r"ty[öo]lupa\w*|autoriza[çc][ãa]o\s+de\s+trabalho)\b"
             r".{0,30}\b(?:(?:is|are|must\s+be)\s+)?"
             r"(?:required|mandatory|mandatory|essential|needed|obligatory|"
-            r"a\s+prerequisite|erforderlich|necessario)\b|"
-            r"\brequired\b.{0,20}\b(?:right to work|work permit|visa)\b",
+            r"a\s+prerequisite|erforderlich|necessario|wymagan\w*|"
+            r"vy[žz]adov\w*|kr[äa]vs?|p[åa]kr[æe]vet|p[åa]krevd|kreves?|"
+            r"vaaditaan|vaadittu|obrigat\w*|necess[áa]ri\w*|obligatorisk\w*|"
+            r"povinn\w*)\b|"
+            r"\brequired\b.{0,20}\b(?:right to work|work permit|visa)\b|"
+            # Pre-posed requirement ("Wymagane prawo do pracy", "É necessária
+            # autorização de trabalho") -- noun AFTER the requirement word.
+            r"(?:wymagan\w*|vy[žz]adov\w*|kr[äa]vet|kreves?|p[åa]kr[æe]vet|"
+            r"p[åa]krevd|vaaditaan|vaadittu|obrigat\w*|necess[áa]ri\w*)"
+            r"\s+(?:\w+\s+){0,2}?(?:prawo\s+do\s+pracy|"
+            r"pozwoleni\w*\s+na\s+prac[eę]|pracovn[íi]\s+povolen[íi]|"
+            r"povolen[íi]\s+k\s+pr[áa]ci|arbetstillst[åa]nd|"
+            r"arbejdstilladelse|arbeidstillatelse|ty[öo]lupa\w*|"
+            r"autoriza[çc][ãa]o\s+de\s+trabalho)\b"
+            # FIX 2026-10-09 (batch 20261009T225341): "All offers ... are
+            # subject to background checks, including right to work, ...
+            # financial checks." is an eligibility screen -- the candidate
+            # must ALREADY be employable. Was Yes 0.6 ("including" +
+            # "subject to"), only saved to Unknown by the scanners' guard (1).
+            r"|\bright\s+to\s+work\b[^.;!?]{0,60}\b(?:checks?|verification|"
+            r"verified|screening|screen)\b"
+            r"|\b(?:background|employment|pre[- ]employment)\s+checks?\b"
+            r"[^.;!?]{0,80}\bright\s+to\s+work\b",
             sentence, re.I,
         ):
             return VERDICT_NO, 0.9, ["candidate-must-already-have-authorization"]
@@ -643,6 +942,17 @@ class JDSupportDetector:
                 has_requirement = True
             if pats["cond"].search(window):
                 has_conditional = True
+        # A negation spent on the PROBLEM noun is not a refusal -- see
+        # PROBLEM_NEGATION. The phrase is removed and only a negation that
+        # remains OUTSIDE it counts, so "we do not sponsor visas even though
+        # they are not a problem" is still hard "No".
+        problem_negated = False
+        if self.PROBLEM_NEGATION.search(window):
+            residual = self.PROBLEM_NEGATION.sub(" ", window)
+            has_negation = bool(self.NEGATION.search(residual)) or any(
+                pats["neg"].search(residual)
+                for pats in self.EXTRA_LANGS.values())
+            problem_negated = True
         # FIX P65 (A2): "eligible for visa sponsorship" is an offer, not a verb.
         if self.ROLE_SPONSORSHIP_ELIGIBLE.search(window):
             has_positive = True
@@ -676,8 +986,24 @@ class JDSupportDetector:
             return VERDICT_UNKNOWN, 0.5, flags + ["hedged-negation"]
         if has_negation:
             return VERDICT_NO, 0.9, flags + ["negated"]
+        if problem_negated and not has_positive:
+            # "A visa is not a problem" -- a warm signal, but it never says
+            # the employer SPONSORS. Unknown (never No, never a fabricated
+            # offer), ranked above a bare mention.
+            return VERDICT_UNKNOWN, 0.5, flags + ["negated-problem"]
         if has_positive:
             if has_conditional:
+                # A speculative offer ("may be available") with nothing
+                # stronger behind it is not a scoped offer -- see
+                # SPECULATIVE_OFFER above. Reached only when NO negation
+                # matched, so hedged negations are unaffected.
+                if self.SPECULATIVE_OFFER.search(window):
+                    rest = self.SPECULATIVE_OFFER.sub(" ", window)
+                    if (not self.POSITIVE_VERBS.search(rest)
+                            and not self.ROLE_SPONSORSHIP_ELIGIBLE.search(window)
+                            and not any(pats["pos"].search(window)
+                                        for pats in self.EXTRA_LANGS.values())):
+                        return VERDICT_UNKNOWN, 0.5, flags + ["speculative-conditional"]
                 # FIX P65 (A2): "While Etsy supports visa sponsorship,
                 # opportunities may be limited to certain roles" returned
                 # Unknown -- indistinguishable from "we never looked", for the
@@ -831,7 +1157,12 @@ _BLUE_CARD_RE = re.compile(
     r"|\bcarta\s+blu(?:\s*ue)?\b"
     r"|\bblauwe\s+kaart\b"
     r"|\bcarte\s+bleue(?:\s+europ\w*)?\b"
-    r"|\btarjeta\s+azul(?:\s+ue)?\b",
+    r"|\btarjeta\s+azul(?:\s+ue)?\b"
+    r"|\bniebiesk\w*\s+kart\w*\b"
+    r"|\bmodr\w*\s+kart\w*\b"
+    r"|\bcart[ãa]o\s+azul\b"
+    r"|\b(?:eu[-\s]*)?bl[åa][-\s]?kort\w*\b"
+    r"|\bsinis\w*\s+kortt?\w*\b",
     re.I)
 
 # FIX P0-57: non-English affirmative verbs. detector.POSITIVE_VERBS is
@@ -847,7 +1178,14 @@ _BLUE_CARD_POSITIVE_RE = re.compile(
     r"assistenza|agevol\w*|"
     r"ofrecemos|ofrece|apoyo|ayuda|facilitamos|"
     r"proposons|propose|offrons|aide|accompagn\w*|prise\s+en\s+charge|"
-    r"bieden|biedt|ondersteun\w*|helpen|verzorgen|regelen)\b",
+    r"bieden|biedt|ondersteun\w*|helpen|verzorgen|regelen|"
+    r"oferujemy|oferuje|zapewniamy|zapewnia|pomagamy|pomoc|uzyskani\w*|"
+    r"nab[íi]z[íi]me|nab[íz]z[íi]|zaji[šs][ťt]ujeme|podpor\w*|sponzorujeme|"
+    r"erbjuder|erbjuds|tillhandah[åa]ller|st[öo]d|hj[äa]lp|ans[öo]kan|"
+    r"tilbyder|tilbydes|yder|st[øo]tte|hj[æa]lp|"
+    r"tilbyr|tilbys|hjelp|s[øo]ker|"
+    r"tarjoamme|tarjoaa|tarjotaan|tuki|apu|autamme|hakemus|"
+    r"oferecemos|oferece|proporcionamos|apoio|ajuda|suporte|apoiamos)\b",
     re.I)
 
 
@@ -884,7 +1222,10 @@ def detect_blue_card(detector, text):
         return VERDICT_UNKNOWN
     for sent in detector.split_sentences(text):
         if _BLUE_CARD_RE.search(sent):
-            if detector.NEGATION.search(sent):
+            negated = bool(detector.NEGATION.search(sent)) or any(
+                pats["neg"].search(sent)
+                for pats in detector.EXTRA_LANGS.values())
+            if negated:
                 return VERDICT_NO
             if (detector.POSITIVE_VERBS.search(sent)
                     or _BLUE_CARD_POSITIVE_RE.search(sent)):

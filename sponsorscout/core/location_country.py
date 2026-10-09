@@ -7,6 +7,7 @@ This module maps all such strings to a canonical country name for filtering.
 """
 from __future__ import annotations
 import re
+import unicodedata
 
 # ── ISO 3166-1 alpha-2 → Country ─────────────────────────────────────────────
 ISO2_TO_COUNTRY: dict[str, str] = {
@@ -453,6 +454,143 @@ CITY_TO_COUNTRY: dict[str, str] = {
     "salvador": "Brazil", "fortaleza": "Brazil",
     "puebla": "Mexico", "barranquilla": "Colombia",
 }
+
+# ── FIX LOCEXP-9 (2026-10-09): thin-country EU city expansion ────────────────
+# The gazetteer above held 636 cities but the user's target countries were
+# nearly absent (Luxembourg 1, Estonia/Lithuania/Latvia 1 each, Ireland 5,
+# Norway/Denmark/Finland/Austria 5-6, Portugal 7, Belgium 10). A posting in
+# "Drogheda", "Esch-sur-Alzette" or "Tartu" could not resolve, so its country
+# fell back to the company HQ (or empty) and local search missed it.
+# Kept as a separate, clearly-marked table (same lowercase-key contract) so
+# future curation does not have to touch the original literal.
+_CITY_ADDITIONS_2026_10: dict[str, str] = {
+    # Ireland (+12)
+    "athlone": "Ireland", "drogheda": "Ireland", "dundalk": "Ireland",
+    "swords": "Ireland", "bray": "Ireland", "navan": "Ireland",
+    "kilkenny": "Ireland", "carlow": "Ireland", "sligo": "Ireland",
+    "wexford": "Ireland", "letterkenny": "Ireland", "killarney": "Ireland",
+    # Belgium (+10)
+    "bruges": "Belgium", "brugge": "Belgium", "namur": "Belgium",
+    "mons": "Belgium", "hasselt": "Belgium", "charleroi": "Belgium",
+    "ostend": "Belgium", "oostende": "Belgium", "kortrijk": "Belgium",
+    "mechelen": "Belgium",
+    # Luxembourg (+4)
+    "esch-sur-alzette": "Luxembourg", "esch": "Luxembourg",
+    "dudelange": "Luxembourg", "differdange": "Luxembourg",
+    # Austria (+8)
+    "klagenfurt": "Austria", "villach": "Austria", "wels": "Austria",
+    "st. pölten": "Austria", "sankt pölten": "Austria",
+    "dornbirn": "Austria", "wiener neustadt": "Austria", "bregenz": "Austria",
+    # Denmark (+9)
+    "esbjerg": "Denmark", "randers": "Denmark", "horsens": "Denmark",
+    "vejle": "Denmark", "roskilde": "Denmark", "herning": "Denmark",
+    "silkeborg": "Denmark", "helsingør": "Denmark",
+    "frederiksberg": "Denmark",
+    # Finland (+11)
+    "lahti": "Finland", "kuopio": "Finland", "jyväskylä": "Finland",
+    "pori": "Finland", "kouvola": "Finland", "joensuu": "Finland",
+    "lappeenranta": "Finland", "vaasa": "Finland", "seinäjoki": "Finland",
+    "rovaniemi": "Finland", "hämeenlinna": "Finland",
+    # Estonia (+4)
+    "tartu": "Estonia", "narva": "Estonia", "pärnu": "Estonia",
+    "viljandi": "Estonia",
+    # Portugal (+11)
+    "setúbal": "Portugal", "aveiro": "Portugal", "leiria": "Portugal",
+    "évora": "Portugal", "viseu": "Portugal", "guimarães": "Portugal",
+    "portimão": "Portugal", "cascais": "Portugal", "sintra": "Portugal",
+    "oeiras": "Portugal", "matosinhos": "Portugal",
+    # Lithuania (+4)
+    "kaunas": "Lithuania", "klaipėda": "Lithuania",
+    "šiauliai": "Lithuania", "panevėžys": "Lithuania",
+    # Latvia (+4)
+    "daugavpils": "Latvia", "liepāja": "Latvia", "jelgava": "Latvia",
+    "jūrmala": "Latvia",
+    # Norway (+7)
+    "tromsø": "Norway", "fredrikstad": "Norway", "drammen": "Norway",
+    "sandnes": "Norway", "asker": "Norway", "haugesund": "Norway",
+    "moss": "Norway",
+    # Sweden (+10)
+    "norrköping": "Sweden", "västerås": "Sweden", "helsingborg": "Sweden",
+    "jönköping": "Sweden", "umeå": "Sweden", "sundsvall": "Sweden",
+    "gävle": "Sweden", "borås": "Sweden", "halmstad": "Sweden",
+    "växjö": "Sweden",
+    # Spain (+11)
+    "granada": "Spain", "santander": "Spain", "pamplona": "Spain",
+    "salamanca": "Spain", "burgos": "Spain", "gijón": "Spain",
+    "a coruña": "Spain", "san sebastián": "Spain", "murcia": "Spain",
+    "tarragona": "Spain", "oviedo": "Spain",
+    # Greece (+4)
+    "patras": "Greece", "piraeus": "Greece", "heraklion": "Greece",
+    "larissa": "Greece",
+    # Netherlands (+8)
+    "leiden": "Netherlands", "hilversum": "Netherlands",
+    "amersfoort": "Netherlands", "zaandam": "Netherlands",
+    "den bosch": "Netherlands", "s-hertogenbosch": "Netherlands",
+    "alkmaar": "Netherlands", "dordrecht": "Netherlands",
+    # Poland (+8)
+    "gdynia": "Poland", "białystok": "Poland", "rzeszów": "Poland",
+    "gliwice": "Poland", "toruń": "Poland", "kielce": "Poland",
+    "olsztyn": "Poland", "bielsko-biała": "Poland",
+    # France (+5)
+    "nancy": "France", "rouen": "France", "clermont-ferrand": "France",
+    "aix-en-provence": "France", "saint-étienne": "France",
+    # Italy (+5)
+    "trieste": "Italy", "trento": "Italy", "perugia": "Italy",
+    "monza": "Italy", "reggio emilia": "Italy",
+}
+CITY_TO_COUNTRY.update(_CITY_ADDITIONS_2026_10)
+
+
+#: Extra foldings NFKD cannot derive (no Unicode decomposition): ł/ø/å/æ/œ/ß/ð/þ/ı/ș/ț.
+_ASCII_FOLD_EXTRA = str.maketrans({
+    "ł": "l", "ø": "o", "å": "a", "æ": "ae", "œ": "oe", "ß": "ss",
+    "đ": "d", "ð": "d", "þ": "th", "ı": "i", "ș": "s", "ț": "t",
+})
+
+
+def _ascii_fold(text: str) -> str:
+    """Return `text` with diacritics folded to ASCII (NFC-normalised first)."""
+    t = unicodedata.normalize("NFC", text).translate(_ASCII_FOLD_EXTRA)
+    return unicodedata.normalize("NFKD", t).encode("ascii", "ignore").decode()
+
+
+#: Folded aliases that collided with an existing key of another country and
+#: were therefore NOT added (existing key always wins). Introspectable for
+#: debugging; expected to stay empty.
+ALIAS_COLLISIONS: list[tuple[str, str, str]] = []
+
+
+def _expand_ascii_aliases() -> int:
+    """Add unaccented aliases for every diacritic city key (runs at import).
+
+    FIX LOCEXP-10 (2026-10-09): lookups are exact-match on lowercase keys, so
+    "München" resolved but the equally common ASCII spelling "Munchen" did
+    not (same for Köln/Koln and dozens of others — the table carried both
+    spellings only for a hand-picked few). The NFC pass also heals keys
+    stored in a non-composed normalisation form. Purely additive: no existing
+    key is modified or removed, so no previously-resolving string can change
+    its answer; on a cross-country collision the pre-existing key wins and
+    the collision is recorded in ALIAS_COLLISIONS instead of guessing.
+    """
+    added = 0
+    for key in sorted(CITY_TO_COUNTRY):
+        country = CITY_TO_COUNTRY[key]
+        nfc = unicodedata.normalize("NFC", key)
+        if nfc != key and nfc not in CITY_TO_COUNTRY:
+            CITY_TO_COUNTRY[nfc] = country
+            added += 1
+        folded = _ascii_fold(nfc)
+        if not folded or folded == nfc or folded in CITY_TO_COUNTRY:
+            if (folded and folded != nfc and folded in CITY_TO_COUNTRY
+                    and CITY_TO_COUNTRY[folded] != country):
+                ALIAS_COLLISIONS.append((folded, country, CITY_TO_COUNTRY[folded]))
+            continue
+        CITY_TO_COUNTRY[folded] = country
+        added += 1
+    return added
+
+
+_ALIAS_COUNT = _expand_ascii_aliases()
 
 # Phrases that mean truly remote — no single country
 _GLOBAL_REMOTE = re.compile(

@@ -346,3 +346,216 @@ def test_detector_is_deterministic():
             "Applicants must have the right to work in the UK.")
     for _ in range(5):
         assert a.detect(text) == b.detect(text)
+
+
+# ── FIX 2026-10-09: a negation spent on the PROBLEM noun ───────────────────
+# "A visa is not a problem" is the warmest thing a JD can say short of an
+# explicit offer. The plain negation branch scored it No 0.90 -- a hard
+# refusal -- in every language with negation cues (confirmed for EN/IT/DE).
+# Keep the tri-state contract: not-a-problem is Unknown, NEVER No.
+
+def test_problem_negation_is_never_a_refusal(det):
+    for kind, text in [
+        ("visa", "A visa is not a problem for the right candidate."),
+        ("visa", "Visas are not a problem for us."),
+        ("visa", "Getting a visa is no problem."),
+        ("relocation", "Relocation is not a problem."),
+        ("visa", "Il visto non è un problema per noi."),
+        ("visa", "Ein Visum ist kein Problem für uns."),
+        ("visa", "El visado no es un problema para nosotros."),
+        ("visa", "Un visa n'est pas un problème pour nous."),
+        ("visa", "Een visum is geen probleem voor ons."),
+        ("visa", "Um visto não é um problema para nós."),
+        ("visa", "Ett visum är inget problem."),
+        ("visa", "Visum er ikke et problem."),
+        # NB: PL/CS/FI problem-negation pins (wiza/vízum/viisumi) live in the
+        # new-language corpus -- those words match no concept yet.
+    ]:
+        out = det.detect(text)[kind]
+        assert out["verdict"] == "Unknown", (text, out)
+        assert out["confidence"] == 0.5, (text, out)
+        assert out["evidence"] and "negated-problem" in out["evidence"][0][2], \
+            (text, out)
+
+
+def test_residual_negation_still_refuses_despite_problem_negation(det):
+    """The problem phrase may only consume ITS OWN negation."""
+    assert _visa(det, "We cannot sponsor visas; visas are not a problem.") == "No"
+    assert _visa(det, "We don't sponsor visas even though they are not a problem.") == "No"
+
+
+def test_problem_negation_with_a_real_offer_is_yes(det):
+    out = det.detect(
+        "Visas are not a problem: we sponsor the right candidate.")["visa"]
+    assert out["verdict"] == "Yes", out
+
+
+
+# ── PT/PL/CS/SV/DA/NO/FI coverage (2026-10-09) ─────────────────────────────
+# Compact pins; the full synthetic corpus is /home/user/detect_eval.py.
+
+
+@pytest.mark.parametrize("text", [
+    "Oferujemy sponsoring wizowy dla odpowiednich kandydatów.",
+    "Zapewniamy wsparcie wizowe.",
+    "Nabízíme vízovou podporu pro vhodné kandidáty.",
+    "Vi erbjuder visumsponsring för rätt kandidater.",
+    "Vi tilbyder visumsponsorering til de rette kandidater.",
+    "Vi tilbyr visumsponsing til de rette kandidatene.",
+    "Tarjoamme viisumitukea sopiville hakijoille.",
+    "Oferecemos patrocínio de visto para os candidatos certos.",
+])
+def test_new_language_offers_and_refusals(det, text):
+    assert _visa(det, text) == "Yes", text
+
+
+@pytest.mark.parametrize("text", [
+    "Nie oferujemy sponsorowania wiz.",
+    "Nie sponsorujemy wiz.",
+    "Nenabízíme vízovou podporu.",
+    "Vi erbjuder inte visumsponsring.",
+    "Vi tilbyder ikke visumsponsorering.",
+    "Vi tilbyr ikke visumsponsing.",
+    "Emme tarjoa viisumitukea.",
+    "Não oferecemos patrocínio de visto.",
+])
+def test_new_language_refusals(det, text):
+    assert _visa(det, text) == "No", text
+
+
+@pytest.mark.parametrize("text", [
+    "Wsparcie wizowe: Tak", "Wsparcie wizowe: Nie",
+    "Vízová podpora: Ano", "Vízová podpora: Ne",
+    "Visumsponsring: Ja", "Visumsponsring: Nej",
+    "Visumsponsorering: Ja", "Visumsponsorering: Nej",
+    "Visumsponsing: Ja", "Visumsponsing: Nei",
+    "Viisumituki: Kyllä", "Viisumituki: Ei",
+    "Patrocínio de visto: Sim", "Patrocínio de visto: Não",
+])
+def test_new_language_label_fields(det, text):
+    want = "Yes" if text.rsplit(": ", 1)[1] in ("Tak", "Ano", "Ja", "Kyllä", "Sim") \
+        else "No"
+    out = det.detect(text)["visa"]
+    assert out["verdict"] == want, (text, out)
+    assert out["confidence"] == 0.95, (text, out)
+
+
+@pytest.mark.parametrize("text", [
+    "Wymagane prawo do pracy w Polsce.",
+    "Pracovní povolení je vyžadováno.",
+    "Arbetstillstånd krävs.",
+    "Arbejdstilladelse påkrævet.",
+    "Arbeidstillatelse kreves.",
+    "Työlupa vaaditaan.",
+    "É necessária autorização de trabalho.",
+])
+def test_new_language_requirements_are_no(det, text):
+    assert _visa(det, text) == "No", text
+
+
+@pytest.mark.parametrize("text", [
+    "Czy wymagane jest pozwolenie na pracę?",
+    "Vyžadujete pracovní povolení?",
+    "Kräver ni arbetstillstånd?",
+    "Kræver I arbejdstilladelse?",
+    "Krever dere arbeidstillatelse?",
+    "Vaatitko työlupaa?",
+    "É necessário ter autorização de trabalho?",
+])
+def test_new_language_questions_are_never_policy(det, text):
+    assert _visa(det, text) == "Unknown", text
+
+
+@pytest.mark.parametrize("text", [
+    "Sponsoring wizowy nie jest gwarantowany.",
+    "Vízová podpora není zaručena.",
+    "Visumsponsring garanteras inte.",
+    "Visumsponsorering er ikke garanteret.",
+    "Visumsponsing er ikke garantert.",
+    "Viisumitukea ei taattu.",
+    "O patrocínio de visto não é garantido.",
+])
+def test_new_language_hedged_negations_are_unknown(det, text):
+    out = det.detect(text)["visa"]
+    assert out["verdict"] == "Unknown", (text, out)
+    assert out["evidence"] and "hedged-negation" in out["evidence"][0][2], (text, out)
+
+
+@pytest.mark.parametrize("text", [
+    "Wiza nie jest problemem.",
+    "Vízum není problém.",
+    "Viisumi ei ole ongelma.",
+])
+def test_new_language_problem_negation(det, text):
+    out = det.detect(text)["visa"]
+    assert out["verdict"] == "Unknown", (text, out)
+    assert out["evidence"] and "negated-problem" in out["evidence"][0][2], (text, out)
+
+
+@pytest.mark.parametrize("text", [
+    "Oferujemy pomoc w uzyskaniu niebieskiej karty UE.",
+    "Nabízíme modrou kartu EU.",
+    "Vi erbjuder EU-blåkort.",
+    "Vi tilbyder EU-blåkort.",
+    "Vi tilbyr EU-blåkort.",
+    "Tarjoamme sinisen kortin (EU).",
+    "Oferecemos apoio para o cartão azul UE.",
+])
+def test_new_language_blue_card(det, text):
+    assert detect_blue_card(det, text) == "Yes", text
+
+
+
+# ── Batch 20261009T225341 gap fixes (2026-10-09) ────────────────────────────
+
+def test_function_duty_sentences_are_not_benefits(det):
+    """HR/mobility roles ADMINISTER support for others -- not a benefit."""
+    duty = ("Relocation & Immigration Revamp: Take over our global mobility "
+            "support and manage external service providers for a seamless "
+            "relocation experience.")
+    for kind, text in [
+        ("visa", duty),
+        ("relocation", duty),
+        ("visa", "Manage job offers, onboarding, and offboarding end-to-end"
+                 "\u2014from negotiation and visa support to administrative "
+                 "updates\u2014ensuring outstanding experiences"),
+        ("visa", "You will manage visa applications and own the immigration "
+                 "case queue."),
+    ]:
+        out = det.detect(text)[kind]
+        assert out["verdict"] == "Unknown", (text, out)
+        assert out["confidence"] == 0.0, (text, out)
+        assert "function-duty-context" in out["evidence"][0][2], (text, out)
+
+
+def test_function_duty_frame_does_not_hide_real_offers(det):
+    assert _visa(det, "We manage the visa process for you.") == "Yes"
+    out = det.detect(
+        "Relocation & Immigration Revamp: Take over our global mobility "
+        "support and manage external service providers for a seamless "
+        "relocation experience. We support every ambition\u2014from learning "
+        "German to a relocation bonus that helps you settle in and make "
+        "Hamburg feel like home.")["relocation"]
+    assert out["verdict"] == "Yes", out
+
+
+def test_italian_expected_transfers_are_a_requirement(det):
+    out = det.detect("Sono previste trasferte e trasferimenti.")["relocation"]
+    assert out["verdict"] == "No", out
+    assert "requirement-not-support" in out["evidence"][0][2], out
+    # ... but provision wording stays an offer (P25/P47 must not regress).
+    assert det.detect(
+        "\u00c8 previsto un trasferimento con rimborso spese."
+    )["relocation"]["verdict"] == "Yes"
+    assert det.detect(
+        "Per gli inserimenti che richiedono il trasferimento, garantiamo "
+        "3 mesi di alloggio in struttura convenzionata."
+    )["relocation"]["verdict"] == "Yes"
+
+
+def test_right_to_work_checks_are_a_requirement(det):
+    out = det.detect(
+        "All offers of employment are subject to background checks, "
+        "including right to work, reference education and for some roles "
+        "criminal, and financial checks.")["visa"]
+    assert out["verdict"] == "No", out
