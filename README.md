@@ -172,7 +172,8 @@ Your pipeline. Select a saved job to set its status and add notes.
 Edit the company lists that get scanned (**ATS portals** and **Career
 portals**). Changes apply on the next scan; **Reset to bundled defaults**
 restores the original lists.
-**Recomendation** - Always prefer to add ATS portal job list of a company is available for quick results.
+
+**Recommendation** - Always prefer adding ATS portal with "Job listing" of a company if available. App show quick results.
 
 <img src="assets/backend_data_management.png" alt="Data Management tab: ATS portals and career portals seed editor with Save to CSV, Reload and Reset actions" width="780">
 
