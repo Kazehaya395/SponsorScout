@@ -28,7 +28,8 @@ from sponsorscout.i18n import (
 )
 from sponsorscout.paths import DB_PATH
 from sponsorscout.ui.tabs import (
-    ApplicationsTab, DashboardTab, DataManagementTab, SearchTab, ToolsTab,
+    ApplicationsTab, DashboardTab, DataManagementTab, SearchTab, TailoringTab,
+    ToolsTab,
 )
 
 logger = logging.getLogger(__name__)
@@ -193,12 +194,14 @@ class SponsorScoutApp(QMainWindow):
         self.applications_tab = ApplicationsTab(self.db_path)
         self.tools_tab = ToolsTab(self.db_path)
         self.data_tab = DataManagementTab()
+        self.tailoring_tab = TailoringTab(self.db_path)
 
         tabs.addTab(self.dashboard_tab, _("Dashboard"))
         tabs.addTab(self.search_tab, _("Search"))
         tabs.addTab(self.applications_tab, _("Applications"))
         tabs.addTab(self.tools_tab, _("Tools"))
         tabs.addTab(self.data_tab, _("Data Management"))
+        tabs.addTab(self.tailoring_tab, _("AI Prompt Kit"))
         self.tabs = tabs
 
         # ── Cross-tab wiring ─────────────────────────────────────────────────
@@ -215,6 +218,8 @@ class SponsorScoutApp(QMainWindow):
         self.applications_tab.data_changed.connect(
             lambda: self.dashboard_tab.refresh())
         self.applications_tab.status_message.connect(self._set_status)
+        self.search_tab.job_selected.connect(self.tailoring_tab.set_selected_job)
+        self.tailoring_tab.status_message.connect(self._set_status)
 
         self.data_tab.seeds_changed.connect(lambda: self._set_status(
             _("Seed files changed — they will be used on the next scan.")))
@@ -293,8 +298,10 @@ class SponsorScoutApp(QMainWindow):
         self.tabs.setTabText(2, _("Applications"))
         self.tabs.setTabText(3, _("Tools"))
         self.tabs.setTabText(4, _("Data Management"))
+        self.tabs.setTabText(5, _("AI Prompt Kit"))
         for tab in (self.dashboard_tab, self.search_tab,
-                    self.applications_tab, self.tools_tab, self.data_tab):
+                    self.applications_tab, self.tools_tab, self.data_tab,
+                    self.tailoring_tab):
             retranslate = getattr(tab, "retranslate", None)
             if callable(retranslate):
                 retranslate()

@@ -58,6 +58,8 @@ data/*.csv
 data/*.json
 # Bundled seed CSVs are committed resources — don't ignore them:
 !data/seeds/*.csv
+CODEBASE.md
+SponsorScout_codebase_guide.md
 
 # ── Tracked source that must NEVER be ignored ─────────────────────────────
 # NOTE: CODEBASE.md, SponsorScout.spec, .gitattributes, .editorconfig and the
@@ -68,6 +70,7 @@ data/*.json
 # Large third-party installers cached inside the legacy reference folder are
 # NOT source and are not committed.
 extra_for_dev_purpose(do not delete)/
+
 
 # ── Build tools (large binaries, not for git) ─────────────────────────────
 # NOTE: tools/*.py (find_dead_code.py, check_readme_anchors.py) are tracked

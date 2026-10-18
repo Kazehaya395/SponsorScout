@@ -314,8 +314,26 @@ fi
   --exclude-module lxml \
   --exclude-module tkinter \
   --exclude-module pytest \
+  --exclude-module PySide6.QtQuick \
+  --exclude-module PySide6.QtQuickWidgets \
+  --exclude-module PySide6.QtQuickControls2 \
+  --exclude-module PySide6.QtQuickTest \
+  --exclude-module PySide6.QtQml \
+  --exclude-module PySide6.QtQmlFeatures \
+  --exclude-module PySide6.QtDesigner \
+  --exclude-module PySide6.QtHelp \
+  --exclude-module PySide6.QtSql \
+  --exclude-module PySide6.QtSvg \
+  --exclude-module PySide6.QtSvgWidgets \
+  --exclude-module PySide6.QtOpenGL \
+  --exclude-module PySide6.QtOpenGLWidgets \
+  --exclude-module PySide6.QtUiTools \
+  --exclude-module PySide6.QtXml \
+  --exclude-module PySide6.QtTest \
+  --exclude-module PySide6.QtConcurrent \
   sponsorscout/main.py
 
+mkdir -p "$APP_DIR"
 cp -a "dist/$APP_NAME/"* "$APP_DIR/"
 
 # ── Size reduction: remove caches only ──────────────────────────────────────
@@ -343,6 +361,15 @@ find "$APP_DIR" -type d -name "locale" -exec rm -rf {} + 2>/dev/null || true
 find "$APP_DIR" -type d \( -name "tests" -o -name "test" -o -name "testing" \) \
   -not -path "*/sponsorscout/*" -exec rm -rf {} + 2>/dev/null || true
 
+# ── Qt slimming: the app uses only QtCore/QtGui/QtWidgets ─────────────────────
+# Plugin folders the app never loads: image formats (all icons are PNG), Qt's
+# own TLS (HTTPS goes through requests), network-info, generic input, and SQL
+# drivers. Qt translation files are KEPT on purpose so Qt's stock dialogs show
+# in Italian as well as English (the app's own strings are EN + IT).
+for p in imageformats tls networkinformation generic sqldrivers; do
+  find "$APP_DIR" -type d -path "*/PySide6/Qt/plugins/$p" -prune -exec rm -rf {} + 2>/dev/null || true
+done
+
 # ── Bundled Playwright Chromium ──────────────────────────────────────────────
 # Install Chromium DIRECTLY into the package's `_playwright` directory so it
 # ships inside the .rpm and sponsorscout/paths.py (exe_dir/_playwright) and
@@ -351,7 +378,7 @@ find "$APP_DIR" -type d \( -name "tests" -o -name "test" -o -name "testing" \) \
 # build machine's ~/.cache/ms-playwright and every `provider=auto` career
 # target fails with "Executable doesn't exist".
 echo "Installing Playwright Chromium into bundle ($APP_DIR/_playwright)..."
-PLAYWRIGHT_BROWSERS_PATH="$APP_DIR/_playwright" "$PYTHON" -m playwright install chromium
+PLAYWRIGHT_BROWSERS_PATH="$APP_DIR/_playwright" "$PYTHON" -m playwright install chromium --only-shell
 if [ ! -d "$APP_DIR/_playwright" ]; then
   echo "ERROR: Playwright browsers were NOT installed into $APP_DIR/_playwright -" >&2
   echo "the packaged app could not scan SPA career portals. Aborting build." >&2

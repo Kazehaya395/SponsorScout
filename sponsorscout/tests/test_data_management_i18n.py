@@ -1,19 +1,13 @@
-"""Data Management tab i18n regression: guidance hint + seed-grid headers.
+"""Data Management tab i18n: guidance hint follows the language, seed-grid
+headers follow the FILE.
 
-Bug (screenshot): with the UI set to Italian the tab's guidance paragraph
-("Manage the source URLs scanned by SponsorScout…") and every table column
-header (``name, careers_url, provider, board_slug, source_type…``) stayed
-English:
-
-* the hint QLabel was built once in ``__init__`` and ``retranslate()``
-  never touched it;
-* the horizontal header received the raw snake_case CSV column names and
-  never went through ``_()`` at all;
-* the "File:" caption and the "N companies" count were set once at load.
-
-Pin: after ``set_locale("it")`` + ``retranslate()`` the hint, the headers
-and the count must all be Italian, and switching back must restore
-English — with the raw column names used for data I/O left untouched.
+Contract (v0.2.0 merge): the grid shows the seed file's own header — raw
+column names, identical in every language, written back unchanged on Save
+(that was the fix for the 15-hard-coded-columns bug with three permanently
+empty ones).  Column headers are therefore NOT translated and the old
+``_column_label`` helper is gone.  Still translated and pinned here: the
+guidance hint (``retranslate()`` must refresh it — the redesigned tab
+dropped that once), the editor buttons and the tab captions.
 """
 import os
 
@@ -49,13 +43,14 @@ def test_hint_and_seed_headers_follow_language():
         set_locale("en")
         tab = _make_tab()
         assert "Manage the source URLs" in tab._hint.text()
-        # English UI shows human labels, never the raw CSV column names.
+        # The grid shows the FILE's own header: raw column names — they are
+        # the data I/O contract, so no "_"-free translated labels any more.
         en_headers = _headers(tab.ats_editor)
-        assert "Careers URL" in en_headers
-        assert not any("_" in h for h in en_headers), en_headers
+        assert "careers_url" in en_headers
         assert tab.ats_editor.count_label.text().endswith("companies")
 
-        # Switch to Italian: hint, headers AND count must all follow.
+        # Switch to Italian: hint, buttons and tab captions must follow;
+        # the raw headers must NOT change.
         set_locale("it")
         tab.retranslate()
         assert tab._hint.text() == LANGUAGES["it"][
@@ -63,33 +58,31 @@ def test_hint_and_seed_headers_follow_language():
             "are scanned via their job-board APIs; career portals are "
             "crawled on the company site.  Edits are saved to your "
             "personal seed files and take effect on the next scan."]
-        it_headers = _headers(tab.ats_editor)
-        assert "URL carriera" in it_headers         # careers_url
-        assert "Paese target" in it_headers         # target_country
-        assert "Storico sponsorship" in it_headers  # sponsorship_history
-        assert not any("_" in h for h in it_headers), it_headers
-        assert tab.ats_editor.count_label.text().endswith("aziende")
-        assert tab._tabs.tabText(0) == "Portali ATS"
+        it = LANGUAGES["it"]
+        assert tab.ats_editor.save_btn.text() == it["Save to CSV"]
+        assert tab.ats_editor.add_btn.text() == it["Add\u2026"]
+        assert tab._tabs.tabText(0) == it["ATS portals"]
+        assert _headers(tab.ats_editor) == en_headers
 
-        # …and back to English restores every one of them.
+        # …and back to English restores the hint.
         set_locale("en")
         tab.retranslate()
         assert "Manage the source URLs" in tab._hint.text()
-        assert _headers(tab.ats_editor) == en_headers
-        assert tab.ats_editor.count_label.text().endswith("companies")
     finally:
         set_locale("en")
 
 
-def test_column_labels_cover_every_seed_column():
-    """Every v7 seed column must have an explicit translated label."""
+def test_grid_columns_follow_the_seed_file():
+    """The fallback column list IS the v7 seed contract; the translated
+    ``_column_label`` helper was removed together with the hard-coded
+    15-column header."""
+    try:
+        import PySide6  # noqa: F401
+    except Exception:  # pragma: no cover - PySide6 missing
+        import pytest
+        pytest.skip("PySide6 unavailable")
     from sponsorscout.application import seed_manager as sm
-    from sponsorscout.ui.tabs.data_management import _column_label
+    from sponsorscout.ui.tabs import data_management as dm
 
-    for col in sm.SEED_COLUMNS:
-        label = _column_label(col)
-        assert label and label == label.strip()
-        # The label is display-only; the raw column name must survive.
-        assert "_" not in label, (col, label)
-        if col != "industry":  # "Industry" is its own English label
-            assert label != col, col
+    assert dm.FALLBACK_COLUMNS == sm.SEED_COLUMNS
+    assert not hasattr(dm, "_column_label")

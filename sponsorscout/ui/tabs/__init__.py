@@ -11,6 +11,7 @@ from sponsorscout.ui.tabs.applications import ApplicationsTab
 from sponsorscout.ui.tabs.dashboard import DashboardTab
 from sponsorscout.ui.tabs.data_management import DataManagementTab
 from sponsorscout.ui.tabs.search import SearchTab
+from sponsorscout.ui.tabs.tailoring import TailoringTab
 from sponsorscout.ui.tabs.tools import ToolsTab
 
 __all__ = [
@@ -18,5 +19,6 @@ __all__ = [
     "DashboardTab",
     "DataManagementTab",
     "SearchTab",
+    "TailoringTab",
     "ToolsTab",
 ]

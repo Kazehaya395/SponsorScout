@@ -4,22 +4,43 @@ Ported from the tkinter Applications tab (tree of saved applications with
 an inline status/notes edit form) to PySide6, preserving behavior:
 selecting a row reveals the edit form; Save updates status + notes;
 Remove deletes the row after confirmation.
+
+Layout: the table auto-fits its columns to their content on load, every
+column is manually resizable, the Status cell is colour-coded by status,
+and the latest saved note is shown in its own column. A read-only activity
+log above the edit form records each status change made this session.
 """
 
+from datetime import datetime
+
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
     QAbstractItemView, QComboBox, QGroupBox, QHBoxLayout, QHeaderView, QLabel,
-    QLineEdit, QMessageBox, QPushButton, QTableWidget, QTableWidgetItem,
-    QVBoxLayout, QWidget,
+    QLineEdit, QMessageBox, QPlainTextEdit, QPushButton, QTableWidget,
+    QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from sponsorscout.db import database as db
 from sponsorscout.i18n import _
 
 APP_STATUSES = ["saved", "applied", "interview", "offer", "rejected"]
+
+# Status → (background, text) colours for the Status cell.
+STATUS_COLORS = {
+    "saved":     ("#E8EEF7", "#1F3A5F"),
+    "applied":   ("#DCEBFF", "#0B4F9C"),
+    "interview": ("#FFF1C2", "#7A5300"),
+    "offer":     ("#D4F5DD", "#155B2A"),
+    "rejected":  ("#FBD7D7", "#8B1A1A"),
+}
+
 # Canonical column order (defines the indexes); only the visible labels are
 # translated — see _header_labels().
-HEADERS = ["Company", "Title", "Status", "Saved on", "URL"]
+HEADERS = ["Company", "Title", "Status", "Saved on", "URL", "Latest notes"]
+COL_STATUS = 2
+COL_URL = 4
+COL_NOTES = 5
 
 
 def _header_labels() -> list:
@@ -37,6 +58,8 @@ class ApplicationsTab(QWidget):
         super().__init__(parent)
         self.db_path = db_path
         self._editing_url = None
+        self._fitting = False            # True while we set widths ourselves
+        self._user_resized = False       # becomes True once the user drags a border
 
         root = QVBoxLayout(self)
         root.setContentsMargins(14, 12, 14, 12)
@@ -51,9 +74,6 @@ class ApplicationsTab(QWidget):
         self.remove_btn = QPushButton(_("Remove Selected"))
         self.remove_btn.clicked.connect(self._remove_application)
         tb.addWidget(self.remove_btn)
-        self.refresh_btn = QPushButton(_("↻ Refresh"))
-        self.refresh_btn.clicked.connect(self.load_applications)
-        tb.addWidget(self.refresh_btn)
         root.addLayout(tb)
 
         # ── Applications table ───────────────────────────────────────────────
@@ -66,14 +86,22 @@ class ApplicationsTab(QWidget):
         self.table.setAlternatingRowColors(True)
         header = self.table.horizontalHeader()
         header.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        header.setSectionResizeMode(0, QHeaderView.Interactive)
-        header.setSectionResizeMode(1, QHeaderView.Stretch)
-        self.table.setColumnWidth(0, 170)
-        self.table.setColumnWidth(2, 90)
-        self.table.setColumnWidth(3, 130)
-        header.setSectionResizeMode(4, QHeaderView.Stretch)
+        header.setSectionResizeMode(QHeaderView.Interactive)   # manual resize on every column
+        header.setStretchLastSection(False)
+        header.setMinimumSectionSize(60)
+        header.sectionResized.connect(self._on_section_resized)
         self.table.itemSelectionChanged.connect(self._on_select)
         root.addWidget(self.table, 1)
+
+        # ── Activity log (bottom area, session only) ─────────────────────────
+        self.log_label = QLabel(_("Activity log"))
+        self.log_label.setObjectName("SectionTitle")
+        root.addWidget(self.log_label)
+        self.log = QPlainTextEdit()
+        self.log.setReadOnly(True)
+        self.log.setMaximumHeight(96)
+        self.log.setPlaceholderText(_("Status changes you save appear here."))
+        root.addWidget(self.log)
 
         # ── Edit form (hidden until a row is selected) ───────────────────────
         self.form = QGroupBox(_(" Edit selected "))
@@ -97,20 +125,50 @@ class ApplicationsTab(QWidget):
         self.form.hide()
         root.addWidget(self.form)
 
+    # ── Column sizing ────────────────────────────────────────────────────────
+
+    def _on_section_resized(self, _index, _old, _new):
+        # Ignore resizes we caused ourselves while fitting content.
+        if not self._fitting:
+            self._user_resized = True
+
+    def _fit_columns(self):
+        """Size every column to its content (header text included)."""
+        self._fitting = True
+        try:
+            self.table.resizeColumnsToContents()
+            for col in range(self.table.columnCount()):
+                self.table.setColumnWidth(
+                    col, self.table.columnWidth(col) + 16)   # cell padding
+        finally:
+            self._fitting = False
+
     # ── Data loading ─────────────────────────────────────────────────────────
 
     def load_applications(self):
         rows = db.list_applications(self.db_path)
         self.table.setRowCount(0)
         for r in rows:
-            company, title, status, applied_at, _f, _n, job_url = r[:7]
+            company, title, status, applied_at, _f, notes, job_url = r[:7]
             row = self.table.rowCount()
             self.table.insertRow(row)
             saved_on = (applied_at or "")[:10]
-            for col, val in enumerate(
-                    (company, title, status, saved_on, job_url)):
-                self.table.setItem(
-                    row, col, QTableWidgetItem(str(val or "")))
+            values = (company, title, status, saved_on, job_url, notes)
+            for col, val in enumerate(values):
+                item = QTableWidgetItem(str(val or ""))
+                if col == COL_STATUS:
+                    self._style_status(item, status)
+                self.table.setItem(row, col, item)
+        if not self._user_resized:
+            self._fit_columns()
+
+    @staticmethod
+    def _style_status(item: QTableWidgetItem, status):
+        colors = STATUS_COLORS.get(str(status or "").strip().lower())
+        if colors:
+            bg, fg = colors
+            item.setBackground(QBrush(QColor(bg)))
+            item.setForeground(QBrush(QColor(fg)))
 
     # ── Selection / edit-form handling ───────────────────────────────────────
 
@@ -125,8 +183,8 @@ class ApplicationsTab(QWidget):
         v = self._selected_row_values()
         if not v:
             return
-        self._editing_url = v[4]
-        status = v[2] if v[2] in APP_STATUSES else "saved"
+        self._editing_url = v[COL_URL]
+        status = v[COL_STATUS] if v[COL_STATUS] in APP_STATUSES else "saved"
         self.status_combo.setCurrentText(status)
         self.notes_edit.clear()
         self.form.show()
@@ -142,18 +200,33 @@ class ApplicationsTab(QWidget):
         v = self._selected_row_values()
         if not v:
             return
+        old_status = v[COL_STATUS]
+        new_status = self.status_combo.currentText()
+        notes = self.notes_edit.text().strip()
         db.upsert_application(
             self.db_path,
             job_url=self._editing_url,
             company=v[0],
             title=v[1],
-            status=self.status_combo.currentText(),
-            notes=self.notes_edit.text().strip(),
+            status=new_status,
+            notes=notes,
         )
+        self._log_change(v[0], v[1], old_status, new_status, notes)
         self.status_message.emit(_("Application updated."))
         self.load_applications()
         self._hide_form()
         self.data_changed.emit()
+
+    def _log_change(self, company, title, old_status, new_status, notes):
+        stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+        if old_status == new_status:
+            change = _("status {s} (unchanged)").format(s=new_status)
+        else:
+            change = _("{old} → {new}").format(old=old_status, new=new_status)
+        line = f"[{stamp}]  {company} — {title}: {change}"
+        if notes:
+            line += f"  ·  {notes}"
+        self.log.appendPlainText(line)
 
     def _remove_application(self):
         v = self._selected_row_values()
@@ -167,7 +240,7 @@ class ApplicationsTab(QWidget):
                                                         company=v[0]),
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if answer == QMessageBox.Yes:
-            db.delete_application(self.db_path, v[4])
+            db.delete_application(self.db_path, v[COL_URL])
             self._hide_form()
             self.load_applications()
             self.data_changed.emit()
@@ -175,10 +248,9 @@ class ApplicationsTab(QWidget):
     # ── i18n ──────────────────────────────────────────────────────────────
     def retranslate(self):
         self.remove_btn.setText(_("Remove Selected"))
-        self.refresh_btn.setText(_("↻ Refresh"))
+        self.log_label.setText(_("Activity log"))
+        self.log.setPlaceholderText(_("Status changes you save appear here."))
         self.form.setTitle(_(" Edit selected "))
         self.save_btn.setText(_("Save"))
         self.cancel_btn.setText(_("Cancel"))
-        self.table.setHorizontalHeaderLabels(
-            [_("Company"), _("Title"), _("Status"), _("Saved on"),
-             _("URL")])
+        self.table.setHorizontalHeaderLabels(_header_labels())

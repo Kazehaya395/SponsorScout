@@ -734,6 +734,10 @@ class ToolsTab(QWidget):
         self.scan_bar.setTextVisible(True)
         self.scan_bar.setFormat("%p%")
         self.scan_phase = QLabel("")
+        # FIX UI-7 (run 20261016T173850): the DNS-retry re-crawl emits no
+        # ticks, so the bar froze at 100 % under a flat "Running...". While a
+        # re-crawl is live the bar goes busy and the phase names it.
+        self._retry_busy = False
         self.scan_phase.setMinimumWidth(220)
         prow.addWidget(self.scan_bar, stretch=1)
         prow.addWidget(self.scan_phase)
@@ -1061,6 +1065,17 @@ class ToolsTab(QWidget):
                    if not ln.strip().startswith(PROGRESS_PREFIX)]
         if visible:
             self.scan_log.appendPlainText("\n".join(visible))
+        # FIX UI-7: name the DNS re-crawl phase and put the bar in busy mode
+        # until the next tick or the run finishing restores it.
+        low = str(chunk).lower()
+        if "[dns retry]" in low and "re-crawl" in low:
+            import re as _re
+            _m = _re.search(r"(\d+)\s+host", str(chunk))
+            self._retry_busy = True
+            self.scan_bar.setRange(0, 0)
+            self.scan_phase.setText(
+                _("DNS re-crawl: %s host(s) recovering")
+                % (_m.group(1) if _m else "?"))
 
     def _on_scan_progress_tick(self, done: int, total: int,
                                phase: str, label: str):
@@ -1069,6 +1084,9 @@ class ToolsTab(QWidget):
         try:
             if total <= 0:
                 return
+            if getattr(self, "_retry_busy", False):
+                self._retry_busy = False
+                self.scan_bar.setRange(0, 1000)
             done = max(0, min(int(done), int(total)))
             self.scan_bar.setValue(int(done * 1000 / total))
             # The tick label already carries phase name + phase-local count
@@ -1107,6 +1125,8 @@ class ToolsTab(QWidget):
             f"duplicates={summary.get('duplicates', 0)}, "
             f"quarantined={summary.get('quarantined', 0)} ---")
         try:
+            self._retry_busy = False
+            self.scan_bar.setRange(0, 1000)
             if summary.get("cancelled"):
                 self.scan_phase.setText(
                     _("Cancelled — partial progress shown."))

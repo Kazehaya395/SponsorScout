@@ -167,3 +167,11 @@ CREATE INDEX IF NOT EXISTS idx_jobs_canonical ON jobs(canonical_job_id);
 CREATE INDEX IF NOT EXISTS idx_jobs_source_type ON jobs(source_type);
 CREATE INDEX IF NOT EXISTS idx_jobs_remote_verified
     ON jobs(remote_type, verified_active, is_expired);
+
+-- AI Tailoring tab: the saved AI prompt, CV and cover letter (one row each).
+-- The job description is NOT stored here: it is session-only by design.
+CREATE TABLE IF NOT EXISTS tailoring_documents (
+    kind TEXT PRIMARY KEY,
+    body TEXT DEFAULT '',
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);

@@ -387,6 +387,7 @@ class _SearchHeader(QHeaderView):
 
 class SearchTab(QWidget):
     application_saved = Signal(str)  # job url
+    job_selected = Signal(str)       # job url of the row now selected
 
     def __init__(self, db_path: str, parent=None):
         super().__init__(parent)
@@ -427,8 +428,18 @@ class SearchTab(QWidget):
         self.location_edit.setPlaceholderText(_("Location"))
         self.country_combo = QComboBox()
         self.remote_combo = QComboBox()
+        # FIX UI-6 (run 20261016T140013): at the layout's natural width the
+        # combo clipped its own selection to "rer", so the active Remote
+        # filter was unreadable on screen.
+        self.remote_combo.setMinimumWidth(96)
         self.experience_combo = QComboBox()
         self.experience_combo.setToolTip(_("Experience:"))
+        # FIX DATA-2 (run 20261016T173850): Search shows the UNION of every
+        # run, so stale pre-fix rows kept surfacing beside new ones. A Run
+        # filter narrows the table to one scan; All restores the union.
+        self.run_combo = QComboBox()
+        self.run_combo.setToolTip(_("Run:"))
+        self.run_label = QLabel(_("Run:"))
         # Descriptive labels so the user can tell the three dropdowns apart.
         self.country_label = QLabel(_("Country:"))
         self.remote_label = QLabel(_("Remote:"))
@@ -452,6 +463,8 @@ class SearchTab(QWidget):
         filters.addWidget(self.remote_combo)
         filters.addWidget(self.experience_label)
         filters.addWidget(self.experience_combo)
+        filters.addWidget(self.run_label)
+        filters.addWidget(self.run_combo)
         filters.addWidget(self.sponsor_check)
         filters.addWidget(self.bluecard_check)
         filters.addWidget(self.reloc_check)
@@ -550,6 +563,7 @@ class SearchTab(QWidget):
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._context_menu)
         self.table.doubleClicked.connect(self._open_selected)
+        self.table.itemSelectionChanged.connect(self._emit_job_selected)
         root.addWidget(self.table, stretch=1)
 
         # wiring
@@ -587,6 +601,7 @@ class SearchTab(QWidget):
             (self.country_combo, db.get_distinct_job_countries(self.db_path)),
             (self.remote_combo, db.get_distinct_remote_types(self.db_path)),
             (self.experience_combo, experience),
+            (self.run_combo, db.list_run_ids(self.db_path)),
         ):
             current = combo.currentText()
             combo.blockSignals(True)
@@ -638,6 +653,7 @@ class SearchTab(QWidget):
             eu_blue_card_only=self.bluecard_check.isChecked(),
             relocation_only=self.reloc_check.isChecked(),
             regex=use_regex,
+            run_filter=self.run_combo.currentText(),
         )
         # db.search_jobs() returns sqlite3.Row objects (row_factory in
         # db/database.py), which have no .get(). Convert to plain dicts so
@@ -1087,6 +1103,12 @@ class SearchTab(QWidget):
     def _selected_url(self):
         item = self.table.item(self.table.currentRow(), 0)
         return item.data(URL_ROLE) if item else None
+
+    def _emit_job_selected(self):
+        # Empty selections (e.g. during a table rebuild) keep the last job.
+        url = self._selected_url()
+        if url:
+            self.job_selected.emit(url)
 
     def _open_selected(self):
         url = self._selected_url()

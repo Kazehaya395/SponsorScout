@@ -55,7 +55,13 @@ if ($RepairNeeded) {
     & $Python @PythonArgs -m ensurepip --upgrade 2>$null
     if ($LASTEXITCODE -ne 0) { & $Python @PythonArgs -m ensurepip 2>$null }
 }
-& $Python @PythonArgs -m pip install -r requirements.txt | Out-Null
+# Pip never removes packages that are no longer listed. An older venv can still
+# hold the full PySide6 meta-package and PySide6-Addons, which bring WebEngine,
+# Quick, QML, PDF, Multimedia and FFmpeg (about 300 MB uncompressed in the bundle).
+# Remove them, then install the runtime requirements (PySide6-Essentials,
+# playwright) at their latest allowed versions.
+& $Python @PythonArgs -m pip uninstall -y PySide6 PySide6-Addons 2>$null | Out-Null
+& $Python @PythonArgs -m pip install -r requirements.txt --upgrade | Out-Null
 
 # Fail fast when a dependency installed but is not actually usable. A broken
 # greenlet (its compiled extension missing) makes `playwright.sync_api` raise
@@ -102,12 +108,44 @@ if (Test-Path $BuildDir) {
     --exclude-module lxml `
     --exclude-module tkinter `
     --exclude-module pytest `
+    --exclude-module PySide6.QtQuick `
+    --exclude-module PySide6.QtQuickWidgets `
+    --exclude-module PySide6.QtQuickControls2 `
+    --exclude-module PySide6.QtQuickTest `
+    --exclude-module PySide6.QtQml `
+    --exclude-module PySide6.QtQmlFeatures `
+    --exclude-module PySide6.QtDesigner `
+    --exclude-module PySide6.QtHelp `
+    --exclude-module PySide6.QtSql `
+    --exclude-module PySide6.QtSvg `
+    --exclude-module PySide6.QtSvgWidgets `
+    --exclude-module PySide6.QtOpenGL `
+    --exclude-module PySide6.QtOpenGLWidgets `
+    --exclude-module PySide6.QtUiTools `
+    --exclude-module PySide6.QtXml `
+    --exclude-module PySide6.QtTest `
+    --exclude-module PySide6.QtConcurrent `
+    --exclude-module PySide6.QtWebEngineCore `
+    --exclude-module PySide6.QtWebEngineWidgets `
+    --exclude-module PySide6.QtWebEngineQuick `
+    --exclude-module PySide6.QtMultimedia `
+    --exclude-module PySide6.QtMultimediaWidgets `
+    --exclude-module PySide6.QtPdf `
+    --exclude-module PySide6.QtPdfWidgets `
+    --exclude-module PySide6.QtQuick3D `
     sponsorscout/main.py
 
 if (-not (Test-Path $ExePath)) {
     throw "PyInstaller did not produce $ExePath"
 }
 Write-Host "Built $ExePath (version $Version)" -ForegroundColor Green
+
+# Guard: the app never imports WebEngine. If its DLL is in the bundle, the build
+# venv still has the full PySide6 install, and the installer would be ~200 MB larger.
+$WebEngineDll = Get-ChildItem -Path $BuildDir -Recurse -Filter 'Qt6WebEngineCore.dll' -ErrorAction SilentlyContinue
+if ($WebEngineDll) {
+    throw "Qt6WebEngineCore.dll is in the bundle. Remove the full PySide6 packages from the build venv (pip uninstall PySide6 PySide6-Addons) and rebuild."
+}
 
 # Install Playwright's Chromium DIRECTLY into the bundle's `_playwright`
 # directory so it ships inside the installer and sponsorscout/paths.py can
@@ -119,7 +157,7 @@ $BundledPlaywright = Join-Path $BuildDir '_playwright'
 Write-Host "[3/4] Installing Chromium into bundle ($BundledPlaywright)..." -ForegroundColor Cyan
 $env:PLAYWRIGHT_BROWSERS_PATH = $BundledPlaywright
 try {
-    & $Python @PythonArgs -m playwright install chromium
+    & $Python @PythonArgs -m playwright install chromium --only-shell
     if ($LASTEXITCODE -ne 0) { throw "playwright install chromium failed (exit $LASTEXITCODE)" }
 } finally {
     Remove-Item Env:PLAYWRIGHT_BROWSERS_PATH -ErrorAction SilentlyContinue
@@ -167,6 +205,15 @@ Get-ChildItem -Path $InternalDir -Recurse -Force -ErrorAction SilentlyContinue |
 # ~3 MB.
 Get-ChildItem -Path $BundledPlaywright -Directory -Filter 'ffmpeg*' -ErrorAction SilentlyContinue |
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+# Qt slimming: the app uses only QtCore/QtGui/QtWidgets. Drop the plugin folders
+# the app never loads (image formats, Qt TLS, network info, generic input, SQL
+# drivers). HTTPS goes through requests; icons are PNG. Qt translation files are
+# KEPT so Qt's stock dialogs show in Italian as well as English.
+foreach ($plug in 'imageformats','tls','networkinformation','generic','sqldrivers') {
+    Get-ChildItem -Path $BuildDir -Recurse -Directory -Filter $plug -ErrorAction SilentlyContinue |
+        Where-Object { $_.FullName -match ('PySide6[\\/]Qt[\\/]plugins[\\/]' + $plug + '$') } |
+        Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+}
 Write-Host "Bundle cleanup complete (caches, *.pyc, *.dist-info, _playwright/ffmpeg-*)."
 
 # Prepare installer source directory with the entire onedir build output.

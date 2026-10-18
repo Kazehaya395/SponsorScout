@@ -265,11 +265,28 @@ def initialize(db_path=DB_PATH):
         conn.close()
 
 
+def list_run_ids(db_path):
+    """FIX DATA-2 (run 20261016T173850): distinct scan runs, newest first,
+    for the Search tab's Run filter (Search shows the union of all runs).
+    """
+    conn = None
+    try:
+        conn = get_connection(db_path)
+        return [r[0] for r in conn.execute(
+            "SELECT DISTINCT run_id FROM jobs WHERE run_id IS NOT NULL "
+            "AND run_id != '' ORDER BY run_id DESC")]
+    except Exception:
+        return []
+    finally:
+        if conn:
+            conn.close()
+
+
 def search_jobs(db_path, title="", company="", location="", country="All", source_type="All",
                 verified_only=True, sponsorship_only=False, active_only=True,
                 remote_filter="All", eu_blue_card_only=False, relocation_only=False,
                 sponsorship_filter="All", blue_card_filter="All", relocation_filter="All",
-                experience_filter="All", regex=False):
+                experience_filter="All", regex=False, run_filter="All"):
     conn = None
     try:
         conn = get_connection(db_path)
@@ -291,6 +308,7 @@ def search_jobs(db_path, title="", company="", location="", country="All", sourc
                    COALESCE(experience_required, '') as experience_required,
                    COALESCE(experience_min_years, NULL) as experience_min_years,
                    COALESCE(experience_source, '') as experience_source,
+                   COALESCE(run_id, '') as run_id,
                    COALESCE(industry, '') as industry,
                    COALESCE(ai_score, 0) as ai_score,
                    COALESCE(visa_sponsorship, '') as visa_sponsorship,
@@ -337,6 +355,9 @@ def search_jobs(db_path, title="", company="", location="", country="All", sourc
                 query += f" AND lower({column}) LIKE ? ESCAPE '\\'"
                 params.append(f"%{escaped}%")
 
+        if run_filter and run_filter != "All":
+            query += " AND run_id = ?"
+            params.append(run_filter)
         _add_text_filter("title", title)
         _add_text_filter("company", company)
         _add_text_filter("location", location)
@@ -840,6 +861,45 @@ def record_scan_log_rows(db_path, run_id: str, scanner: str, rows):
             ],
         )
         conn.commit()
+    finally:
+        if conn:
+            conn.close()
+
+
+def bump_scan_log_quarantined(db_path, run_id: str, counts) -> int:
+    """FIX P76 (run 20261016T140013): add late-known quarantines to scan_log.
+
+    Cross-seed duplicate URLs are only detectable once every seed has
+    finished, but each scan_log row's ``quarantined`` counter is written while
+    its seed runs -- so those rows never reached it (81 logged against 89 rows
+    in the quarantine CSV of run 20261016T140013). ``counts`` maps Seed Name to
+    the number of rows moved for that seed.
+
+    P80 (run 20261016T173850): returns ``(updated, requested)`` so the caller
+    can say out loud when the UPDATE matched nothing (wrong DB, wrong
+    run_id) instead of silently returning 0.
+    """
+    if not counts:
+        return 0
+    conn = None
+    requested = sum(int(n) for n in counts.values() if n)
+    if not requested:
+        return 0, 0
+    updated = 0
+    try:
+        conn = get_connection(db_path)
+        for seed, n in counts.items():
+            if not n:
+                continue
+            cur = conn.execute(
+                """UPDATE scan_log SET quarantined = quarantined + ?
+                   WHERE run_id = ? AND seed_name = ?""",
+                (int(n), run_id, seed))
+            updated += max(0, cur.rowcount or 0)
+        conn.commit()
+        return updated, requested
+    except Exception:
+        return 0, requested
     finally:
         if conn:
             conn.close()
@@ -1369,6 +1429,54 @@ def delete_application(db_path, job_url: str):
         conn = get_connection(db_path)
         conn.execute("DELETE FROM applications WHERE job_url=?", (job_url,))
         conn.commit()
+    finally:
+        if conn:
+            conn.close()
+
+
+# ── AI Tailoring helpers ─────────────────────────────────────────────────────
+
+def get_tailoring_document(db_path, kind: str) -> str:
+    """Return the saved body for ``kind`` (\"ai_prompt\", \"cv\", \"cover_letter\")."""
+    conn = None
+    try:
+        conn = get_connection(db_path)
+        row = conn.execute(
+            "SELECT body FROM tailoring_documents WHERE kind=?", (kind,)).fetchone()
+        return row[0] if row and row[0] else ""
+    finally:
+        if conn:
+            conn.close()
+
+
+def save_tailoring_document(db_path, kind: str, body: str):
+    conn = None
+    try:
+        conn = get_connection(db_path)
+        conn.execute(
+            "INSERT INTO tailoring_documents (kind, body, updated_at) "
+            "VALUES (?, ?, CURRENT_TIMESTAMP) "
+            "ON CONFLICT(kind) DO UPDATE SET body=excluded.body, "
+            "updated_at=CURRENT_TIMESTAMP",
+            (kind, body or ""))
+        conn.commit()
+    finally:
+        if conn:
+            conn.close()
+
+
+def get_job_for_tailoring(db_path, job_url: str):
+    """Title, company, URL and stored description of one job (or None)."""
+    conn = None
+    try:
+        conn = get_connection(db_path)
+        row = conn.execute(
+            "SELECT title, company, url, COALESCE(description, '') "
+            "FROM jobs WHERE url=?", (job_url,)).fetchone()
+        if not row:
+            return None
+        return {"title": row[0] or "", "company": row[1] or "",
+                "url": row[2] or "", "description": row[3] or ""}
     finally:
         if conn:
             conn.close()

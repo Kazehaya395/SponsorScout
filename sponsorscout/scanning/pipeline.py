@@ -36,7 +36,7 @@ from sponsorscout import paths
 from sponsorscout.application import seed_manager
 from sponsorscout.scanning.ats import ats_scanner as ats_module
 from sponsorscout.scanning.career import career_scanner as career_module
-from sponsorscout.scanning.common import ScanCancelled, recommended_workers
+from sponsorscout.scanning.common import recommended_workers
 from sponsorscout.core.integrity import check_integrity
 from sponsorscout.core.location_country import country_from_location
 from sponsorscout.core import persistence
@@ -1281,13 +1281,6 @@ def run_scan(method: str = "full",
             ats_csv = ats_out
             if cancel_event.is_set():
                 cancelled = True
-        except ScanCancelled:
-            # STOP FAST: an unwind that escaped the scanner's own catch is a
-            # clean stop, not a phase failure — keep the partial CSV so the
-            # rows already written are ingested and Resume still works.
-            cancelled = True
-            ats_csv = ats_out
-            progress("ATS phase stopped by user")
         except Exception as exc:  # preflight failure, seed errors, network down
             logger.exception("ATS scan phase failed")
             phase_errors.append(f"ATS: {type(exc).__name__}: {exc}")
@@ -1302,10 +1295,8 @@ def run_scan(method: str = "full",
         progress("No career companies selected — skipping career phase")
     elif n_career == 0:
         progress("No career seed rows — skipping career phase")
-    elif cancel_event.is_set():
-        # Stop already pressed (e.g. mid-ATS): don't spin up the browser-heavy
-        # career phase at all. Its own gates would exit immediately, but this
-        # skips pool/browser setup and pre-flight work for a run that is over.
+    elif cancel_event.is_set() and ats_csv is None:
+        # Cancelled during ATS with nothing produced: honour the stop fully.
         cancelled = True
     else:
         # Pre-flight: one browser-availability check for the whole career
@@ -1345,10 +1336,13 @@ def run_scan(method: str = "full",
                 cancel_event=cancel_event,
                 pause_event=pause_event,
                 only_companies=scan_only_career,
-                # Host-adaptive: the scanner sizes its own browser pool from
-                # CPU/RAM when this is None (2-core / 8 GB machines must not
-                # run several Chromium instances at once).
-                max_workers=recommended_workers("browser"),
+                # FIX RUNTIME-2 (run 20261016T140013): None lets the scanner
+                # size COMPANY concurrency from the I/O profile while a
+                # semaphore caps resident Chromium SESSIONS from the browser
+                # profile. Passing recommended_workers("browser") here made a
+                # 2-core box run companies one at a time (108 seeds at ~1.3x
+                # serial speed) although most seeds never open a browser.
+                max_workers=None,
             )
             scanner.run_id = run_id
             career_module.progress_cb = progress
@@ -1356,11 +1350,6 @@ def run_scan(method: str = "full",
             career_csv = career_out
             if cancel_event.is_set():
                 cancelled = True
-        except ScanCancelled:
-            # See the ATS handler: a stop unwind keeps the partial CSV.
-            cancelled = True
-            career_csv = career_out
-            progress("Career phase stopped by user")
         except Exception as exc:
             logger.exception("Career scan phase failed")
             phase_errors.append(f"Career: {type(exc).__name__}: {exc}")
@@ -1377,12 +1366,7 @@ def run_scan(method: str = "full",
     except AttributeError:
         pass
     live.stop()
-    # STOP FAST: the poller interval is 5 s, so a plain join() can stall the
-    # "Stopping..." UI for a full cycle after the scanners already exited.
-    # join() it briefly (it only tails CSVs); on timeout leave the daemon to
-    # die with the worker — the final bulk ingest below re-reads everything
-    # idempotently, so no rows are lost either way.
-    live.join(timeout=1.0)
+    live.join(timeout=15)
     # Deliberately a *fresh* dedup set: the final pass re-reads every row once
     # so the summary counts match the previous bulk-only behaviour exactly
     # (rows already ingested live are simply upserted again, idempotently).

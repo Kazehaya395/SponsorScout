@@ -341,7 +341,7 @@ def fetch_static_jobs(seed_url, timeout_sec=15, min_jobs=None,
             continue
         if url_validator is not None and not url_validator(absolute):
             continue
-        if title_validator is not None and not title_validator(title):
+        if title_validator is not None and not title_validator(title, absolute):
             continue
         seen.add(absolute)
         jobs.append({
@@ -359,25 +359,523 @@ def fetch_static_jobs(seed_url, timeout_sec=15, min_jobs=None,
     return jobs, f"static HTML: {len(jobs)}"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# FIX P0-30: EXPERIENCE REQUIREMENT EXTRACTION — canonical engine now lives in
-# sponsorscout/core/experience.py (single source of truth). The two scanners
-# previously carried identical copies "kept in sync" by hand, and they had
-# already drifted: only the ATS copy had FIX P0-46 ("or more years"), so the
-# same JD scored differently per engine. Imported here so both engines and
-# all existing call sites (career_mod.extract_experience, ...) work unchanged.
+# FIX P0-30: EXPERIENCE REQUIREMENT EXTRACTION
+#
+# Adds four output columns:
+#   Experience Required   e.g. "5-8 years", "3+ years", "6 months", "None required"
+#   Experience Min Years  numeric, for sorting/filtering
+#   Experience Level      Internship / Junior / Mid / Senior / Lead / Executive
+#   Experience Source     api_field > api_description > card_context > title_inference
+#
+# Design rules (mirrors the visa detector's evidence discipline):
+#   • Sentence-scoped, never keyword-alone. A number counts only when its own
+#     clause is about work experience (_EXP_ANCHOR) AND no disqualifier sits
+#     within +/-45 chars (_EXP_BLOCK_NEAR). That window is what keeps
+#     "at least 18 years old", "founded 25 years ago", "fixed-term contract of
+#     2 years", "visa valid for 3 years" and "notice period of 3 months" out.
+#   • Numeric years are reported ONLY when explicitly written. The LEVEL may be
+#     inferred from the job title; "Experience Source" always records which
+#     happened so an inference is never mistaken for a stated fact.
+#   • Multilingual by construction (EN/DE/IT/NL/FR/ES/PT). The Career seed is
+#     heavily Italian/German, so an English-only matcher would under-report.
+#   • Title inference beats year-band inference: a "Senior Consultant" asking
+#     for 4 years is Senior, not Mid.
 # ─────────────────────────────────────────────────────────────────────────────
-from sponsorscout.core.experience import (
-    _EXP_ATS_LEVEL,
-    _EXP_SOURCE_RANK,
-    _exp_level_from_text,
-    _exp_level_from_years,
-    _exp_num,
-    _exp_scan_numbers,
-    _jd_plain,
-    apply_experience_to_record,
-    extract_experience,
-)
 
+_EXP_WORD_NUM = {
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
+    "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12,
+    "a": 1, "an": 1,
+    "ein": 1, "eine": 1, "eins": 1, "zwei": 2, "drei": 3, "vier": 4,
+    "fuenf": 5, "fünf": 5, "sechs": 6, "sieben": 7, "acht": 8, "neun": 9,
+    "zehn": 10, "elf": 11, "zwoelf": 12, "zwölf": 12,
+    "uno": 1, "due": 2, "tre": 3, "quattro": 4, "cinque": 5, "sei": 6,
+    "sette": 7, "otto": 8, "nove": 9, "dieci": 10,
+    "een": 1, "twee": 2, "drie": 3, "vijf": 5, "zes": 6, "zeven": 7,
+    "negen": 9, "tien": 10,
+    "un": 1, "une": 1, "deux": 2, "trois": 3, "cinq": 5, "sept": 7,
+    "huit": 8, "neuf": 9, "dix": 10,
+    "dos": 2, "cuatro": 4, "cinco": 5, "siete": 7, "ocho": 8, "nueve": 9,
+    "diez": 10,
+}
+_EXP_WORD_ALT = "|".join(sorted((re.escape(w) for w in _EXP_WORD_NUM),
+                                key=len, reverse=True))
+
+_EXP_YEAR_UNIT = (r"(?:years?|yrs?\.?|jahre?n?|anni|anno|jaar|jaren|"
+                  r"ans|an|a[nñ]os|a[nñ]o)")
+_EXP_MONTH_UNIT = (r"(?:months?|mon\.?|monate?n?|mesi|mese|maanden|maand|"
+                   r"mois|meses|mes)")
+
+# The number must sit in a clause genuinely about work experience.
+_EXP_ANCHOR = re.compile(
+    r"experien|berufserfahrung|erfahrung|praxis|esperienz|ervaring|"
+    r"exp[ée]rien|experienc|experienci|"
+    r"similar role|comparable role|equivalent role|relevant|professional|"
+    r"requirements?|qualif\w*|must[- ]haves?|anforderungen|"
+    r"voraussetzungen|requisiti|requisitos|vereisten|wer du bist|"
+    r"what you|das bringen|nous recherchons|buscamos|"
+    r"hands[-\s]?on|proven|track record|background in|working (?:in|with|as)|"
+    r"seniority|vergleichbarer? (?:position|rolle)|einschl[äa]gig|"
+    r"ruolo simile|ambito|settore|soortgelijke|vergelijkbare|"
+    r"poste similaire|puesto similar|en el (?:sector|[áa]rea)",
+    re.I)
+
+_EXP_YEARS_IN = re.compile(r"(?:\d{1,2}|" + _EXP_WORD_ALT + r")\s*(?:\+|plus)?\s*(?:years?|yrs?|months?)\s+(?:in|of|as)\s+[A-Za-z]", re.I)
+
+# Disqualifiers, checked in a tight window around the number so a sentence
+# that merely also mentions a degree is not discarded wholesale.
+_EXP_BLOCK_NEAR = re.compile(
+    r"\b(?:old|of age|age of|ago|"
+    r"last|past|next|recent|"
+    r"founded|established|since|anniversar|"
+    r"fixed[-\s]?term|befristet|tempo determinato|"
+    r"contract|vertrag|contratto|duur|dur[ée]e|duration|"
+    r"visa|permit|warrant|guarantee|garantie|"
+    r"degree|bachelor|master|phd|doctora|studi|studium|laurea|"
+    r"we(?:'|\s)?(?:ve|have)\s+(?:over|more than|than|nearly|almost|\d)|"
+    r"our (?:company|team|group|history|story|brand)|"
+    r"the company (?:has|was|is|been)|nous (?:avons|existons)|"
+    r"abbiamo|la nostra azienda|im unternehmen|in the company|"
+    r"in azienda|chez nous|ons bedrijf|wij bestaan|"
+    r"universit|school|apprenticeship duration|"
+    r"notice period|k[üu]ndigungsfrist|preavviso|"
+    # FIX P16 (2026-10-04): PERKS AND TENURE ARE NOT EXPERIENCE.
+    # LOOP (run 20261003T233023) wrote "Experience Required = 1 years" on 13
+    # of its 17 rows. The JD says "EXPERIENCE  Experienced" -- no number
+    # anywhere. The phantom came from the benefits copy:
+    #   "4-day Workweek At LOOP you can choose between a 5-day or a 4-day
+    #    workweek AFTER ONE YEAR WITH US"
+    # a <=100-char fragment, so the weak tier scanned it, and nothing in the
+    # +/-45 window disqualified it. Perk, loyalty and probation wording now
+    # does. "with us" / "bei uns" / "da noi" is the giveaway: it describes
+    # time SPENT AT THE EMPLOYER, never experience brought to the job.
+    r"with us\b|bei uns|da noi|chez nous|bij ons|con nosotros|"
+    r"workweek|work week|working week|arbeitswoche|settimana lavorativa|"
+    r"holiday|vacation|urlaub|ferien|vakantie|vacanze|cong[ée]s|"
+    r"sabbatical|probation|probezeit|periodo di prova|proeftijd|"
+    r"bonus|pension|insurance|versicherung|assicurazione|"
+    r"anniversary|jubil[äa]um|loyalty|tenure|betriebszugeh[öo]rigkeit|"
+    r"once a year|per year|every year|annually|j[äa]hrlich|ogni anno|"
+    r"pay ri[sz]e|salary review|gehaltserh[öo]hung)\b", re.I)
+
+_EXP_NONE = re.compile(
+    r"(no (?:prior |previous |work |professional )?experience (?:is )?"
+    r"(?:required|necessary|needed)|"
+    r"without (?:prior |previous )?experience|"
+    r"keine (?:berufserfahrung|vorkenntnisse)|ohne (?:vor)?erfahrung|"
+    r"nessuna esperienza (?:richiesta|necessaria)|senza esperienza|"
+    r"geen ervaring (?:vereist|nodig)|"
+    r"aucune exp[ée]rience (?:requise|n[ée]cessaire)|"
+    r"sin experiencia (?:previa)?|no se requiere experiencia|"
+    r"entry[-\s]?level|no experience)", re.I)
+
+_EXP_LEVEL_PATTERNS = [
+    ("Internship", re.compile(
+        r"\b(intern(?:ship)?|internship|praktikum|praktikant|werkstudent|"
+        r"working student|stage(?:air)?|stagiaire|stagista|tirocini|"
+        r"becari|pr[áa]cticas|alternance|apprentice|apprendist|"
+        r"ausbildung|azubi|lehrling|summer analyst)\b", re.I)),
+    ("Executive", re.compile(
+        r"\b(chief|c[etofi]o\b|cxo|vp\b|vice[-\s]president|svp|evp|"
+        r"managing director|general manager|gesch[äa]ftsf[üu]hrer|"
+        r"head of|leiter(?:in)?\b|direttore|directeur|director\b|"
+        # "Partner" alone matched "Partner Solution Architect", "Partner
+        # Manager" and "HR Business Partner" — none are executives.
+        r"(?:managing|equity|founding|general)\s+partner\b|"
+        r"amministratore)\b", re.I)),
+    ("Lead", re.compile(
+        r"\b(lead\b|leader\b|principal\b|"
+        r"staff(?:\s+\w+){0,2}\s+(?:engineer|scientist|designer|developer|"
+        r"researcher|analyst)|architect\b|team ?lead|tech ?lead|"
+        r"capo(?:squadra)?|responsabile|teamleiter)\b", re.I)),
+    ("Senior", re.compile(
+        r"\b(senior|sr\.?\b|snr\b|experienced|expert(?:e)?\b|"
+        r"esperto|senior[-\s]?level|erfahrene[rn]?)\b", re.I)),
+    ("Mid", re.compile(
+        r"\b(mid[-\s]?(?:level|weight)|intermediate|regular\b|"
+        r"medior|confirm[ée]\b)\b", re.I)),
+    ("Junior", re.compile(
+        r"\b(junior|jr\.?\b|graduate|grad\b|entry[-\s]?level|entry\b|"
+        r"einsteiger|berufseinsteiger|absolvent|neolaureat|"
+        r"d[ée]butant|reci[ée]n titulad|starter|trainee|"
+        r"associate\b|assistant\b)\b", re.I)),
+]
+
+# "Senior Care Assistant" is not a senior role; a role that TALKS TO senior
+# people is not itself senior.
+_EXP_LEVEL_FALSE = re.compile(
+    r"\b(senior (?:care|living|citizen|home|school|resident|manager of care)|"
+    r"junior (?:school|college|suite)|"
+    r"director of (?:nursing|care)|seniorenheim|seniorenbetreuung|"
+    r"(?:with|to|for|among|across|manage|managing|engage|engaging|"
+    r"influence|influencing|present(?:ing)? to|report(?:ing)? to|"
+    r"partner(?:ing)? with|work(?:ing)? with|liais(?:e|ing) with)\s+"
+    r"(?:our\s+|the\s+|various\s+|multiple\s+|key\s+|"
+    r"internal\s+|external\s+|c-level\s+)*"
+    r"senior\s+(?:stakeholder|leader|management|leadership|executive|"
+    r"colleague|team|member|client|partner|sponsor|manager)s?|"
+    r"senior\s+(?:stakeholder|leadership|management)\b)", re.I)
+
+# A seniority word in body text only counts when the sentence is about the
+# person being hired. Without this, "you will lead a team for the next 2
+# years" scored the row as a Lead role.
+_EXP_HIRING_CUE = re.compile(
+    r"(we are (?:looking|seeking|hiring)|are you an?|you are an?|"
+    r"looking for an?|seeking an?|hiring an?|join us as|as an?\s|"
+    r"the role|this role|position of|role of|vacancy|opening for|"
+    r"wir suchen|du bist|sie sind|als\s|stelle als|"
+    r"cerchiamo|sei un|ricerchiamo|posizione di|"
+    r"wij zoeken|je bent|functie van|"
+    r"nous recherchons|vous [êe]tes|poste de|"
+    r"buscamos|eres un|puesto de)", re.I)
+
+_EXP_SENT_SPLIT = re.compile(r"(?<=[.!?;:])\s+|[\n\r]+|\s*[•·▪▸–—]\s+")
+
+# --- Requirements-section awareness (bare requirement fragments) ----------
+# _EXP_SENT_SPLIT breaks at ':', bullets and newlines, so "Requirements: 3-5
+# years" can arrive as the bare fragment "3-5 years" with the anchor word
+# stranded in the header. These headers re-open the gate: a fragment under a
+# requirements/qualifications heading, or any short fragment (a list bullet,
+# <=100 chars), may be scanned even without an anchor. Disqualifiers and all
+# numeric rules still apply; a strong (anchored) hit always wins.
+_EXP_REQ_HEADER = re.compile(
+    r"^(?:experience|requirements?|qualifications?|must[- ]haves?|"
+    r"what you(?:'?ll)? (?:bring|need|have)|what we(?:'?re| are) looking for|"
+    r"about you|your (?:profile|background|skills|experience)|"
+    r"profil(?:e)?|we expect|ideal candidate|key (?:skills|qualifications)|"
+    r"minimum (?:qualifications?|requirements?)|preferred qualifications?|"
+    r"skills required|about the role|role requirements|who you are|"
+    r"anforderungen|voraussetzungen|wer du bist|das erwarten wir|"
+    r"das bringen sie mit|berufserfahrung|erfahrung|"
+    r"requisiti|profilo|chi cerchiamo|esperienza|"
+    r"ervaring|werkervaring|eisen|vereisten|profiel|"
+    r"nous recherchons|exp[\u00e9e]rience|qu\u00e9 buscas|buscamos|"
+    r"perfil)$",
+    re.I)
+
+# Section headings that end requirements scope - after one of these a relaxed
+# fragment no longer counts, so marketing numbers ("About us: 25 years of
+# experience") stay unclaimed by the weak tier.
+_EXP_SECTION_END = re.compile(
+    r"^(?:about (?:us|the company)|our (?:story|history|mission|values|"
+    r"culture|offer)|what we (?:offer|provide|value)|we (?:offer|provide)|"
+    r"benefits?|perks?|how to apply|apply (?:now|by)|next steps|"
+    r"hiring process|equal opportunit|diversity|privacy|company culture|"
+    r"chi siamo|cosa ti offriamo|la nostra (?:missione|azienda)|"
+    r"wir bieten|[\u00fcu]ber uns|unser angebot|ons aanbod|wij bieden|"
+    r"ce que nous offrons|notre entreprise|qu\u00e9 ofrecemos|nuestra empresa|"
+    r"bewerbung|candidatura)$",
+    re.I)
+
+# Strict experience NOUN - narrower than _EXP_ANCHOR (no 'relevant' /
+# 'professional' / 'working in'): the mention fallback that yields
+# "Mentioned" instead of NA may only fire when the JD actually names
+# experience in some language.
+_EXP_MENTION_NOUN = re.compile(
+    r"experien|berufserfahrung|erfahrung|vorkenntnis|"
+    r"esperienz|exp\u00e9rience|ervaring|experiencia|experi[e\u00ea]nc", re.I)
+
+_EXP_SOURCE_RANK = {"": 0, "none": 0, "title_inference": 1,
+                    "card_context": 2, "api_description": 3, "detail_text": 3,
+                    "api_field": 4}
+
+# ATS-published seniority vocabulary -> canonical level. Employer-set, so it
+# outranks anything inferred from a title or from prose.
+_EXP_ATS_LEVEL = {
+    "internship": "Internship", "intern": "Internship", "student": "Internship",
+    "entry level": "Junior", "entry_level": "Junior", "entry": "Junior",
+    "graduate": "Junior", "junior": "Junior", "associate": "Junior",
+    "mid level": "Mid", "mid-level": "Mid", "intermediate": "Mid",
+    "experienced": "Mid", "professional": "Mid",
+    "mid-senior level": "Senior", "mid_senior_level": "Senior",
+    "senior level": "Senior", "senior": "Senior", "expert": "Senior",
+    "lead": "Lead", "principal": "Lead", "staff": "Lead", "manager": "Lead",
+    "director": "Executive", "executive": "Executive", "vp": "Executive",
+    "c-level": "Executive", "chief": "Executive",
+}
+
+
+def _jd_plain(raw, limit=20000):
+    """HTML/markup -> plain text for experience extraction.
+
+    Several ATS APIs already return the FULL job description in the same
+    response used for titles (Ashby descriptionPlain, Greenhouse content,
+    Workable description, Lever/Recruitee description). Feeding that straight
+    in costs ZERO extra HTTP requests.
+
+    Greenhouse returns HTML-ESCAPED markup ("&lt;p&gt;"); stripping tags before
+    unescaping would leave every tag in the text, so unescape comes FIRST.
+    """
+    if not raw:
+        return ""
+    txt = str(raw)
+    if "&lt;" in txt or "&gt;" in txt or "&amp;" in txt:
+        txt = unescape(txt)
+    txt = re.sub(r"(?is)<(script|style)[^>]*>.*?</\1>", " ", txt)
+    txt = re.sub(r"(?i)<br\s*/?>|</p>|</li>|</div>|</h[1-6]>", "\n", txt)
+    txt = re.sub(r"<[^>]+>", " ", txt)
+    txt = unescape(txt)
+    txt = re.sub(r"[ \t\xa0]+", " ", txt)
+    txt = re.sub(r"\n\s*\n+", "\n", txt)
+    return txt.strip()[:limit]
+
+
+def _exp_num(tok):
+    tok = (tok or "").strip().lower().rstrip(".")
+    if tok.isdigit():
+        return int(tok)
+    return _EXP_WORD_NUM.get(tok)
+
+
+def _exp_level_from_years(lo, hi):
+    # For a stated range use the midpoint: "5-8 years" is a Senior ask, but
+    # anchoring on the lower bound alone would call it Mid.
+    if lo is not None and hi is not None:
+        v = (lo + hi) / 2.0
+    else:
+        v = lo if lo is not None else hi
+    if v is None:
+        return ""
+    if v <= 0:
+        return "Entry"
+    if v <= 2:
+        return "Junior"
+    if v < 5:
+        return "Mid"
+    if v < 10:
+        return "Senior"
+    return "Lead"
+
+
+def _exp_level_from_text(text):
+    if not text:
+        return ""
+    if _EXP_LEVEL_FALSE.search(text):
+        return ""
+    for level, rx in _EXP_LEVEL_PATTERNS:
+        if rx.search(text):
+            return level
+    return ""
+
+
+def _exp_scan_numbers(text):
+    """Return the strongest explicit experience statement, or None.
+
+    Two tiers, because _EXP_SENT_SPLIT breaks at ':', bullets and newlines
+    and can strand a bare fragment ("Requirements: 3-5 years" arrives as just
+    "3-5 years") away from the anchor words in its header:
+
+    * STRONG - the fragment itself names experience (anchor / years-in).
+      Anchored hits are unambiguous: they always win, lowest minimum first
+      (the historic behaviour).
+    * WEAK - the fragment sits under a requirements/qualifications heading
+      (_EXP_REQ_HEADER, state persists until _EXP_SECTION_END) or is a short
+      list fragment (<=100 chars). Used only when no strong hit exists.
+
+    Every candidate, strong or weak, must clear the +/-45 char disqualifier
+    window, so ages, contract durations and company-tenure marketing never
+    become experience requirements.
+    """
+    strong_best = None
+    weak_best = None
+    in_req = False
+    for sent in _EXP_SENT_SPLIT.split(text or ""):
+        sent = (sent or "").strip()
+        if not sent:
+            continue
+        probe = sent.strip(" *#>_:-")
+        if _EXP_REQ_HEADER.match(probe):
+            in_req = True
+            continue
+        if _EXP_SECTION_END.match(probe):
+            in_req = False
+            continue
+        if len(sent) > 600:
+            continue
+        strong = bool(_EXP_ANCHOR.search(sent) or _EXP_YEARS_IN.search(sent))
+        if not strong and not (in_req or len(sent) <= 100):
+            continue
+        num = rf"(?:\d{{1,2}}|{_EXP_WORD_ALT})"
+        unit = rf"(?:{_EXP_YEAR_UNIT}|{_EXP_MONTH_UNIT})"
+        # FIX P0-46: "Four or more years" / "4 or more years" produced
+        # required="Mentioned", level=Unknown. "or" was only listed as a RANGE
+        # connector, so the parser demanded a second NUMBER after it and
+        # "more" is not one -- the whole match then failed. Every sibling
+        # phrasing already worked ("at least four years", "minimum four
+        # years", "Four+ years", "Four years"), which is why this stayed
+        # hidden. It is NOT a words-vs-digits problem: the digit form failed
+        # identically. Also accepts the restated-numeral form American
+        # Express uses, "Four (4) or more years".
+        rx = re.compile(
+            rf"(?<![\w.,/-])({num})\s*(?:\+|plus)?\s*"
+            rf"(?:\(\s*\d{{1,2}}\s*\)\s*)?"
+            rf"(?P<ormore>\b(?:or|and|o|oder|of|ou|y)\s+"
+            rf"(?:more|above|greater|over|higher|plus|pi[uù]|mehr|meer|"
+            rf"m[aá]s|superiore?)\b\s*)?"
+            rf"(?:(?:-|–|—|\bto\b|\bbis\b|\ba\b|\btot\b|\b[àa]\b|\bund\b|"
+            rf"\be\b|\by\b|\bet\b|\bor\b|\bof\b)\s*"
+            rf"({num})\s*(?:\+|plus)?\s*)?"
+            rf"({unit})\b", re.I)
+        for m in rx.finditer(sent):
+            _g = m.groups()
+            lo, hi = _exp_num(m.group(1)), _exp_num(_g[2])
+            u = _g[3].lower()
+            if lo is None:
+                continue
+            # "a month-end close process" / "year-end reporting": the unit is
+            # part of a compound noun, not a duration.
+            if re.match(r"\s*[-\u2010-\u2015](?:end|on-end|round)", sent[m.end():]):
+                continue
+            # A bare article is only a real quantity when something
+            # quantifies it, else "a month-end" produces a phantom 1.
+            if m.group(1).strip().lower() in {"a", "an"} and not re.search(
+                    r"\b(?:at least|minimum|min\.|over|more than|within|after|"
+                    r"first|least)\b", sent[:m.start()], re.I):
+                continue
+            win = sent[max(0, m.start() - 45):m.end() + 45]
+            if _EXP_BLOCK_NEAR.search(win):
+                continue
+            months = bool(re.fullmatch(_EXP_MONTH_UNIT, u, re.I))
+            # Word boundaries are mandatory: an unanchored "[üu]ber" matched
+            # inside "K-uber-netes" and turned "6 months" into "6+ months".
+            plus = bool(m.group("ormore")) or bool(re.search(
+                r"\+|\b(?:plus|at least|minimum|min\.|mindestens|almeno|"
+                r"minimaal|au moins|al menos|over|more than|[üu]ber|oltre|"
+                r"upwards of|no less than|m[ií]nimo|minimo de|mindest|"
+                r"ten minste|minstens)\b", sent, re.I))
+            if hi is not None and hi < lo:
+                hi = None
+            lo_y = lo / 12.0 if months else float(lo)
+            hi_y = (hi / 12.0 if months else float(hi)) if hi is not None else None
+            if lo_y > 40:
+                continue
+            cand = (lo_y, hi_y, months, plus, lo, hi, sent[:300])
+            # Prefer the lowest stated minimum: "3-5 years" beats a stray "10".
+            # Anchored (strong) candidates are kept apart from relaxed (weak)
+            # ones so a stray bullet can never outrank an explicit statement.
+            if strong:
+                if strong_best is None or lo_y < strong_best[0]:
+                    strong_best = cand
+            elif weak_best is None or lo_y < weak_best[0]:
+                weak_best = cand
+    return strong_best or weak_best
+
+
+def extract_experience(text="", title=""):
+    """Detect required experience from JD text and/or job title.
+
+    Returns a dict: required / min_years / max_years / level / evidence / source.
+    Numeric years appear ONLY when explicitly stated in the text.
+    """
+    out = {"required": "Unknown", "min_years": "", "max_years": "",
+           "level": "Unknown", "evidence": "", "source": "none"}
+    text = text or ""
+    title = title or ""
+
+    hit = _exp_scan_numbers(text)
+    if hit:
+        lo_y, hi_y, months, plus, lo_raw, hi_raw, ev = hit
+        unit = "months" if months else "years"
+        if hi_raw is not None:
+            label = f"{lo_raw}-{hi_raw} {unit}"
+        elif plus:
+            label = f"{lo_raw}+ {unit}"
+        else:
+            label = f"{lo_raw} {unit}"
+        out["required"] = label
+        out["min_years"] = round(lo_y, 2) if months else int(lo_y)
+        if hi_y is not None:
+            out["max_years"] = round(hi_y, 2) if months else int(hi_y)
+        out["level"] = (_exp_level_from_text(title)
+                        or _exp_level_from_years(lo_y, hi_y))
+        out["evidence"] = ev
+        out["source"] = "detail_text"
+        return out
+
+    none_hit = _EXP_NONE.search(text) or _EXP_NONE.search(title)
+    if none_hit:
+        out.update({"required": "None required", "min_years": 0,
+                    "level": _exp_level_from_text(title) or "Entry",
+                    "evidence": none_hit.group(0)[:300],
+                    "source": ("detail_text" if _EXP_NONE.search(text)
+                               else "title_inference")})
+        return out
+
+    lvl = _exp_level_from_text(title)
+    if lvl:
+        out.update({"level": lvl, "source": "title_inference",
+                    "evidence": title[:300]})
+        return out
+
+    for sent in _EXP_SENT_SPLIT.split(text):
+        sent = (sent or "").strip()
+        if not sent or len(sent) > 400:
+            continue
+        if not _EXP_HIRING_CUE.search(sent):
+            continue
+        lvl = _exp_level_from_text(sent)
+        if lvl:
+            out.update({"level": lvl, "source": "detail_text",
+                        "evidence": sent[:300]})
+            return out
+
+    # The JD names experience somewhere but yielded neither a number nor a
+    # seniority word: that is a reference, not an absence - report it as
+    # "Mentioned" so the UI can reserve NA for descriptions that never name
+    # experience at all. Disqualified sentences (company tenure, ages, ...)
+    # are not references.
+    for sent in _EXP_SENT_SPLIT.split(text):
+        sent = (sent or "").strip()
+        if not sent or len(sent) > 400:
+            continue
+        m = _EXP_MENTION_NOUN.search(sent)
+        if not m:
+            continue
+        win = sent[max(0, m.start() - 60):m.end() + 60]
+        if _EXP_BLOCK_NEAR.search(win):
+            continue
+        out.update({"required": "Mentioned", "evidence": sent[:300],
+                    "source": "detail_text"})
+        return out
+    return out
+
+
+def apply_experience_to_record(rec, jd_text="", card_context="", title="",
+                               level_hint="", key_prefix="Experience "):
+    """Fill the four Experience columns on a record, respecting source rank.
+
+    Never downgrades: a weaker source cannot overwrite a stronger one.
+    `level_hint` is an employer-published seniority string (e.g.
+    SmartRecruiters experienceLevel) and outranks every inference.
+    """
+    jd = (jd_text or "").strip()
+    if "&lt;" in jd or ("<" in jd and ">" in jd):
+        # Raw HTML slipped through (some adapters pass markup verbatim);
+        # extraction must always see plain text.
+        jd = _jd_plain(jd)
+    exp = extract_experience(jd or card_context or "", title or "")
+    src = exp["source"]
+    if src == "detail_text":
+        src = "api_description" if jd else "card_context"
+
+    hint = (level_hint or "").strip()
+    if hint:
+        mapped = _EXP_ATS_LEVEL.get(hint.lower())
+        if mapped:
+            exp["level"] = mapped
+            if exp["required"] in ("Unknown", "Mentioned"):
+                src = "api_field"
+
+    cur = rec.get(key_prefix + "Source") or "none"
+    if _EXP_SOURCE_RANK.get(src, 0) < _EXP_SOURCE_RANK.get(cur, 0):
+        return False
+    if exp["required"] == "Unknown" and exp["level"] == "Unknown":
+        return False
+    rec[key_prefix + "Required"] = exp["required"]
+    rec[key_prefix + "Min Years"] = exp["min_years"]
+    rec[key_prefix + "Level"] = exp["level"]
+    rec[key_prefix + "Source"] = src
+    return True
 
 # ─────────────────────────────────────────────────────────────────────────────
 # FIX P0-29: HOST-ADAPTIVE RESOURCE GOVERNOR (low-end laptop safety)
@@ -474,9 +972,26 @@ _RESERVE_MB = 1200
 # scanners" symptom. There is now one definition for both scanners and the
 # pipeline. The ``requested=`` cap the local copy offered is preserved in
 # ``common.recommended_workers``, so no caller lost functionality.
-from sponsorscout.scanning.common import recommended_workers
-# (REBASE R3 knob SPONSORSCOUT_MAX_WORKERS/SPONSORSCOUT_HTTP_WORKERS moved
-# INTO common.recommended_workers 2026-10-09, so this module needs no wrapper.)
+from sponsorscout.scanning.common import recommended_workers as _common_recommended_workers
+
+
+# REBASE 2026-10-03 (R3): identical knob to career_scanner.py so the two
+# scanners still size themselves the same way. common.recommended_workers only
+# ever clamps downward; SPONSORSCOUT_MAX_WORKERS / SPONSORSCOUT_HTTP_WORKERS is
+# the one way to raise it, opt-in, hard-capped.
+def recommended_workers(kind="browser", requested=None):
+    n = _common_recommended_workers(kind, requested)
+    raw = os.environ.get("SPONSORSCOUT_MAX_WORKERS" if kind == "browser"
+                         else "SPONSORSCOUT_HTTP_WORKERS")
+    if not raw:
+        return n
+    try:
+        want = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return n
+    if want < 1:
+        return n
+    return min(want, 8 if kind == "browser" else 24)
 
 
 def describe_host_budget():
@@ -546,9 +1061,26 @@ def install_page_resource_blocking(target, block_types=None, block_hosts=True):
 
 
 # Chromium flags that cut memory and CPU without changing rendered DOM.
-# Canonical launch flags live in sponsorscout.scanning.common (P0-36);
-# this module carried its own 18-flag copy, missing 5 lean flags.
-from sponsorscout.scanning.common import LOW_RESOURCE_BROWSER_ARGS
+LOW_RESOURCE_BROWSER_ARGS = [
+    "--no-sandbox",
+    "--disable-dev-shm-usage",
+    "--disable-http2",
+    "--ignore-certificate-errors",
+    "--disable-gpu",
+    "--disable-software-rasterizer",
+    "--disable-extensions",
+    "--disable-background-networking",
+    "--disable-background-timer-throttling",
+    "--disable-backgrounding-occluded-windows",
+    "--disable-renderer-backgrounding",
+    "--disable-features=TranslateUI,BlinkGenPropertyTrees,MediaRouter",
+    "--metrics-recording-only",
+    "--mute-audio",
+    "--no-first-run",
+    "--no-default-browser-check",
+    "--renderer-process-limit=2",
+    "--js-flags=--max-old-space-size=512",
+]
 
 # ───────────────────────── CONFIG ─────────────────────────────────────────────
 
@@ -581,8 +1113,11 @@ def classify_work_mode(blob: str) -> str:
     strong = bool(_WORK_MODE_STRONG_REMOTE.search(low))
     hybrid = bool(_WORK_MODE_HYBRID.search(low))
     remote = strong or bool(_WORK_MODE_REMOTE.search(low))
+    # FIX P74 (run 20261016T140013): identical bytes to career_scanner.py --
+    # a strong-remote phrase no longer outranks an explicit hybrid; one
+    # evidence set, one verdict, in both passes and both scanners.
     if remote and hybrid:
-        return "Remote" if strong else "Remote/Hybrid"
+        return "Remote/Hybrid"
     if hybrid:
         return "Hybrid"
     if remote:
@@ -592,12 +1127,174 @@ def classify_work_mode(blob: str) -> str:
     return "Unknown"
 
 
+def work_mode_evidence(blob, limit=3) -> str:
+    """FIX P74 (run 20261016T140013): identical bytes to career_scanner.py --
+    the snippets a work-mode verdict came from, so the verdict is auditable
+    from the run output instead of being a bare unexplained word."""
+    text = str(blob or "")
+    low = text.lower()
+    out: list[str] = []
+    for pat in (_WORK_MODE_STRONG_REMOTE, _WORK_MODE_HYBRID,
+                _WORK_MODE_REMOTE, _WORK_MODE_ONSITE):
+        for m in pat.finditer(low):
+            a, b = max(0, m.start() - 40), min(len(text), m.end() + 40)
+            snip = re.sub(r"\s+", " ", text[a:b]).strip()
+            if snip and snip not in out:
+                out.append(snip)
+            if len(out) >= limit:
+                return "; ".join(out)
+    return "; ".join(out)
+
+
+# FIX P75 (run 20261016T140013): identical rule to career_scanner.py -- a
+# trailing "Remote - <region>" tail welded onto the title in the SOURCE
+# markup is a location, not title text. "(Full-time, Remote)" is untouched.
+_GLUED_REMOTE_TAIL_RE = re.compile(
+    r"\s*(?:\([^)]*\)|\))?Remote\s*[-–—][^\n]*$", re.I)
+
+
+def strip_glued_remote_tail(title: str) -> str:
+    if not title:
+        return title
+    cut = _GLUED_REMOTE_TAIL_RE.sub("", title)
+    if cut and len(cut) >= 6 and re.search(r"[a-z]", cut, re.I):
+        return cut.strip(" \t-–—|•,")
+    return title
+
+
+# FIX P73 (run 20261016T140013): role-word vocabulary for the category-page
+# gate, mirroring career's ProductionScannerConfig.ROLE_WORD_PATTERN.
+# FIX P78 (run 20261016T173850): a trailing support-facet slug
+# (/jobs/<category>/visasponsorship, .../relocation, .../remote) marks a
+# FACET LISTING over a category, not a job detail page. Jaabz shipped 15 such
+# rows ("Blockchain", "Testing", "Graphic Design"...) as accepted jobs.
+_SUPPORT_FACET_SEGS = {
+    "visasponsorship", "relocation", "remote", "hybrid", "onsite",
+    "workfromhome",
+}
+
+
+_ATS_JOB_HOST_RE = re.compile(
+    r"(?:^|\.)(?:"
+    r"kula\.ai|join\.com|recruitee\.com|teamtailor\.com|workable\.com|"
+    r"lever\.co|greenhouse\.io|ashbyhq\.com|smartrecruiters\.com|"
+    r"personio\.de|jobs\.personio\.com|bamboohr\.com|breezy\.hr|"
+    r"jobvite\.com|softgarden\.io|heyjobs\.co|factorialhr\.com|"
+    r"applytojob\.com|careers-page\.com|homerun\.co|pinpointhq\.com|"
+    r"hibob\.com|rippling\.com|polymer\.co|jazzhr\.com|workizard\.com|"
+    r"myworkdayjobs\.com|icims\.com|taleo\.net|successfactors\.com|"
+    r"avature\.net|eightfold\.ai|phenompeople\.com|oraclecloud\.com"
+    r")$", re.I)
+
+#: A host that exists to serve job pages: careers.x.com, jobs.x.com, ...
+_JOB_SUBDOMAIN_RE = re.compile(
+    r"^(?:careers?|jobs?|apply|recruiting|recruitment|vacancies|hiring|work)\.",
+    re.I)
+
+#: An opaque record id: 35169, 44bdf359cd980a79973ba9119532279e, a UUID.
+_OPAQUE_ID_SEG_RE = re.compile(
+    r"^(?:[0-9]{3,}|[0-9a-f]{8,}|[0-9a-f-]{20,}|[A-Za-z0-9_-]*\d[A-Za-z0-9_-]{5,})$",
+    re.I)
+
+#: P32 -- aggregators that hide the employer behind a redirector.
+#: englishjobsearch.at lists 15 real jobs, every one of them behind
+#: /clickout/<hash> or /clickout_alt/<hash>, with the title in the anchor
+#: text. No path token matched, so the seed reported 0 jobs written.
+_REDIRECT_JOB_PATH_RE = re.compile(
+    r"/(?:clickout|clickout_alt|click|out|goto|go|redirect|redir|jump|"
+    r"track|tracking|visit|away|link|apply-redirect|r)/"
+    r"([A-Za-z0-9][A-Za-z0-9_-]{5,})/?$", re.I)
+
+#: P33 -- a department / function / place CHIP sitting under /jobs/.
+#: jobsinvienna.com's static HTML holds NO job-detail links at all, only
+#: /jobs/Sales-and-Sales-Related, /jobs/Marketing, /jobs/IT, /jobs/AT-Vienna,
+#: /jobs/PROFESSIONAL-SCIENTIFIC-AND-TECHNICAL-ACTIVITIES. Every one passed
+#: JOB_URL_PATTERN (which accepts /jobs/<anything>) and the old
+#: CATEGORY_PATH_INDICATORS only caught the /jobs/categories/<x> shape, so a
+#: run wrote 13 chips as if they were jobs -- and then timed out trying to
+#: open a category page as a job detail.
+_DEPT_WORDS = (
+    r"sales|marketing|it|ict|tech|technology|technologies|telekommunikation|"
+    r"finance|financial|accounting|banking|banken|versicherungen|insurance|"
+    r"hr|human|resources|personal|recruiting|legal|compliance|audit|"
+    r"administration|admin|office|operations|logistics|supply|chain|"
+    r"procurement|purchasing|production|manufacturing|engineering|"
+    r"construction|design|creative|media|communications|communication|"
+    r"public|relations|press|customer|support|service|services|helpdesk|"
+    r"research|development|science|scientific|healthcare|medical|health|"
+    r"pharma|nursing|education|teaching|training|hospitality|tourism|travel|"
+    r"retail|consulting|management|quality|regulatory|affairs|security|"
+    r"data|analytics|product|project|business|general|other|various|"
+    r"professional|technical|activities|and|或|und|et|e|y|of|the|for|amp"
+)
+_DEPT_SEGMENT_RE = re.compile(
+    r"^(?:" + _DEPT_WORDS + r")(?:[-_+%20 &]+(?:" + _DEPT_WORDS + r"))*$", re.I)
+#: "AT-Vienna", "DE-Berlin" -- a country/city facet chip.
+_GEO_FACET_SEG_RE = re.compile(r"^[A-Z]{2}[-_][A-Za-z][A-Za-z-]{2,}$")
+#: A word that only ever appears in a ROLE, never in a department chip. It is
+#: the escape hatch for boards that publish Title-Cased job slugs with no id
+#: (/jobs/Senior-Software-Engineer must stay a job).
+_ROLE_WORD_RE = re.compile(
+    r"\b(?:engineer|developer|programmer|manager|analyst|scientist|architect|"
+    r"designer|consultant|specialist|advisor|officer|director|head|lead|chief|"
+    r"president|principal|senior|junior|graduate|intern|trainee|apprentice|"
+    r"associate|assistant|coordinator|administrator|executive|representative|"
+    r"agent|recruiter|accountant|controller|auditor|counsel|lawyer|paralegal|"
+    r"technician|mechanic|electrician|operator|driver|chef|cook|waiter|nurse|"
+    r"doctor|physician|pharmacist|teacher|tutor|professor|researcher|editor|"
+    r"writer|copywriter|translator|planner|buyer|cashier|clerk|secretary|"
+    r"receptionist|supervisor|foreman|warehouse|picker|packer|installer|"
+    r"welder|plumber|carpenter|painter|cleaner|guard|stylist|therapist|"
+    r"addetto|impiegato|operaio|responsabile|tecnico|commesso|venditore|"
+    r"mitarbeiter|leiter|berater|techniker|verkaeufer|ingenieur|praktikant)\b",
+    re.I)
+
+
+def _url_last_segment(url):
+    try:
+        path = urlparse(url).path.rstrip("/")
+    except Exception:
+        return ""
+    return path.rsplit("/", 1)[-1] if path else ""
+
+
+def is_ats_detail_url(url):
+    """P31: a job detail page on a third-party ATS / dedicated careers host."""
+    try:
+        host = (urlparse(url).hostname or "").lower()
+    except Exception:
+        return False
+    if not host:
+        return False
+    if not (_ATS_JOB_HOST_RE.search(host) or _JOB_SUBDOMAIN_RE.search(host)):
+        return False
+    segs = [x for x in urlparse(url).path.split("/") if x]
+    # Needs a tenant AND an opaque record id, so the board's own landing page
+    # (careers.kula.ai/journi) is still not mistaken for a job.
+    return len(segs) >= 2 and bool(_OPAQUE_ID_SEG_RE.match(segs[-1]))
+
+_ROLE_WORD_RE = re.compile(
+    r"\b("
+    r"engineer|developer|manager|analyst|scientist|specialist|consultant|"
+    r"president|vice|chief|cfo|ceo|cto|cmo|coo|chro|chairman|chef|"
+    r"architect|designer|director|lead|head|principal|senior|junior|"
+    r"intern|trainee|associate|advisor|officer|administrator|recruiter|"
+    r"counsel|lawyer|accountant|controller|planner|coordinator|assistant|"
+    r"representative|agent|technician|mechanic|operator|driver|picker|"
+    r"cashier|crew|barista|rider|expert|owner|scrum master|product owner|"
+    r"sales|marketing|finance|security|devops|frontend|backend|full stack|"
+    r"fullstack|software|data|qa|quality|stagiair|stage|werkstudent|"
+    r"apprentice|graduate|nurse|doctor|pharmacist|planner|scheduler|"
+    r"receptionist|waiter|warehouse|legal counsel|business partner"
+    r")\b", re.I)
+
+
 OUTPUT_FIELDS = [
     "Company Name", "Seed Name", "Source Type", "Hiring Company",
     "Target Country", "Scope Policy", "Industry Type",
     "Sponsorship History Score", "English Friendly Score", "Remote Score",
     "Job Title", "Raw Job Title", "Job Location", "Raw Location", "Job Type",
-    "Work Mode",
+    "Work Mode", "Work Mode Evidence",
     "Job URL", "Canonical Job ID", "Provider", "Extraction Method",
     "EU Blue Card", "Blue Card Evidence", "Relocation/Visa Support",
     # FIX P19b (2026-10-04): schema parity. The career CSV carried 42
@@ -814,34 +1511,17 @@ _SUPPORT_VISA_KEYWORD_RE = re.compile(
     r"blue card|carta blu|blaue karte|blauwe kaart|carte bleue|"
     r"tarjeta azul|skilled (migrant|worker)|aufenthaltstitel|"
     r"arbeitserlaubnis|permesso di soggiorno|permis de travail|"
-    r"werkvergunning|arbeidsvergunning|permiso de trabajo|"
-    # PT/PL/CS/SV/DA/NO/FI (2026-10-09): without these nouns guard (1)
-    # silently downgrades every new-language true Yes to Unknown.
-    r"visto de trabalho|patroc[íi]nio|autoriza[çc][ãa]o de trabalho|"
-    r"wsparcie wizow\w*|sponsorowanie wiz\w*|wiza\w*|wizy\b|wiz\b|"
-    r"pozwoleni\w* na prac[eę]|prawo do pracy|"
-    r"v[íi]zum\w*|v[íi]za\b|v[íi]zov\w*|pracovn[íi] povolen[íi]|"
-    r"povolen[íi] k pr[áa]ci|"
-    r"visumsponsring|visumsponsorering|visumsponsing|visum\w*|"
-    r"arbetstillst[åa]nd|arbejdstilladelse|arbeidstillatelse|"
-    r"viisum\w*|ty[öo]lupa\w*|"
-    r"niebiesk\w* kart\w*|modr\w* kart\w*|cart[ãa]o azul|"
-    r"bl[åa][\s-]?kort|sinis\w* kortt?\w*"
+    r"werkvergunning|arbeidsvergunning|permiso de trabajo"
     # FIX P0-53: "we are willing to sponsor the right candidate" carries no
     # visa noun at all, so guard (1) threw away a plainly genuine offer. When
     # the OBJECT of "sponsor" is a PERSON rather than a project, an event or
     # a team, immigration sponsorship is the only thing it can mean in a job
     # ad -- and it still cannot match the Amazon false positive this guard
     # exists for ("sponsoring projects").
-    r"|sponsor\w*\s+(?:the\s+|o\s+|os\s+|a\s+|as\s+)?"
-    r"(?:right\s+|suitable\s+|successful\s+|"
+    r"|sponsor\w*\s+(?:the\s+)?(?:right\s+|suitable\s+|successful\s+|"
     r"eligible\s+|qualified\s+|international\s+|overseas\s+|foreign\s+)?"
     r"(?:candidate|applicant|employee|hire|new\s+joiner|individual|person|"
-    r"professional|talent|worker|you|candidat\w*|funcion[áa]ri\w*|"
-    r"profissional\w*|voc[êe]|t[ée]cnic\w*)s?\b"
-    r"|patrocin\w*\s+(?:o\s+|os\s+|a\s+|as\s+)?"
-    r"(?:candidat\w*|funcion[áa]ri\w*|profissional\w*|voc[êe]|"
-    r"t[ée]cnic\w*)\b", re.I)
+    r"professional|talent|worker|you)s?\b", re.I)
 
 _SUPPORT_EVENT_RE = re.compile(
     r"sponsor\w*.{0,50}\b(event|conference|trade[- ]show|booth|"
@@ -908,14 +1588,9 @@ _SUPPORT_CANDIDATE_OFFER_RE = re.compile(
     r"|\bwe\b[^.;!?]{0,30}\b(?:provide|offer|grant|sponsor\w*|support|assist|"
     r"help|cover|pay|reimburse|arrange|handle|facilitate|secure|obtain|"
     r"bieten|uebernehmen|\u00fcbernehmen|offriamo|forniamo|ofrecemos|"
-    r"proposons|bieden|oferujemy|zapewniamy|nab\u00edz\u00edme|"
-    r"zaji\u0161\u0165ujeme|erbjuder|tillhandah\u00e5ller|tilbyder|yder|"
-    r"tilbyr|tarjoamme|oferecemos|proporcionamos)\b[^.;!?]{0,45}"
-    r"\b(?:visa|work\s+permit|"
+    r"proposons|bieden)\b[^.;!?]{0,45}\b(?:visa|work\s+permit|"
     r"work\s+authori[sz]ation|immigration|blue\s+card|sponsorship|"
-    r"sponsoring|arbeitserlaubnis|werkvergunning|wizow\w*|v\u00edzov\w*|"
-    r"visumsponsring|visumsponsorering|visumsponsing|viisumituki|"
-    r"patroc\u00ednio)\b"
+    r"sponsoring|arbeitserlaubnis|werkvergunning)\b"
     # "visa sponsorship is available / provided / offered / possible"
     r"|\b(?:visa|work\s+permit|work\s+authori[sz]ation|immigration|"
     r"sponsorship)\b[^.;!?]{0,45}\b(?:is|are|can\s+be|will\s+be|may\s+be|"
@@ -2042,7 +2717,7 @@ class ATSScanner:
             clean(f"{raw} {workplace} {description}")) or "Unknown"
         return f"{job_kind} / {mode}"
 
-    def classify_support(self, description, title=""):
+    def classify_support(self, description, title="", company=""):
         """Run the explicit-evidence support detector over the JD text.
         Returns (eu_blue_card, visa, relocation, relocation_required,
                  confidence, evidence, support_flag)."""
@@ -2051,7 +2726,8 @@ class ATSScanner:
         text = self._strip_html(description)
         if not text:
             return ("Unknown", "Unknown", "Unknown", "Unknown", 0.0, "", "Unknown")
-        sup = self.detector.detect(text)
+        _others = self._other_company_names(company)
+        sup = self.detector.detect(text, _others)
         visa = sup["visa"]["verdict"]
         reloc = sup["relocation"]["verdict"]
         # FIX P0-50: the five false-positive guards that used to be inline
@@ -2069,7 +2745,7 @@ class ATSScanner:
         # Blue card is independent of general visa sponsorship.  Uses the same
         # shared classifier as the career scanner (jd_support.detect_blue_card)
         # so both scanners cannot disagree on the same JD text.
-        blue = detect_blue_card(self.detector, text)
+        blue = detect_blue_card(self.detector, text, _others)
         flag = "Unknown"
         if visa == VERDICT_YES or reloc == VERDICT_YES:
             flag = "Y"
@@ -2335,12 +3011,155 @@ class ATSScanner:
             return True
         return False
 
-    def valid_title(self, title):
+    def _other_company_names(self, company):
+        """FIX P73: every OTHER company on the ATS seed list, for evidence
+        scoping. Identical discipline to career_scanner._other_company_names:
+        cached, and a read failure degrades to "no scoping", never a crash."""
+        names = getattr(self, "_seed_name_cache", None)
+        if names is None:
+            names = set()
+            try:
+                with open(self.seed_file, newline="", encoding="utf-8-sig") as f:
+                    for row in csv.DictReader(f):
+                        n = (row.get("name") or "").strip()
+                        if n and not n.startswith("#"):
+                            names.add(n)
+            except Exception:
+                names = set()
+            self._seed_name_cache = names
+        return tuple(n for n in names if n != company)
+
+    def _clean_rescued_location(self, raw):
+        """FIX P79 (run 20261016T173850): a raw location rescued from a detail
+        page ("Munich Hybrid (NavVis GmbH)") used to reach Raw Location
+        verbatim while Job Location stayed "Unknown" -- only the insert-time
+        country derivation ever saw it. Strip the company parenthetical and
+        the work-mode token and keep the place if the resolver accepts it.
+        """
+        v = re.sub(r"\s+", " ", str(raw or "")).strip()
+        if not v:
+            return ""
+        core = re.sub(r"\([^)]*\)", " ", v)
+        core = re.sub(r"(?i)\b(remote|hybrid|on-?site|telework|"
+                      r"work\s+from\s+home)\b", " ", core)
+        core = re.sub(r"\s+", " ", core).strip(" \t,;|-")
+        # A title glued to a place ("Franchise Partner - Specialty Foods
+        # from Austria, Lower Austria Region") is not a location string;
+        # neither is a whole sentence.
+        if not core or len(core) < 2 or len(core) > 48 or " - " in core \
+                or " \u2013 " in core:
+            return ""
+        try:
+            from sponsorscout.core.location_country import country_from_location
+            if (country_from_location(core) or "").strip():
+                return core
+            # FIX 8r (run 20261016T203031): legal-entity strings carry the
+            # country INSIDE the parenthetical ("BASF (China) Company Ltd."),
+            # so the stripped core resolves to nothing. If the raw as written
+            # names a country, that country is the location as stated.
+            _c = (country_from_location(v) or "").strip()
+            if _c:
+                return _c
+        except Exception:
+            return ""
+        return ""
+
+    def _slug_is_title(self, url, title):
+        """FIX 8t: the last path segment IS the title, separator-free."""
+        try:
+            segs = [x for x in urlparse(url).path.split("/") if x]
+        except Exception:
+            return False
+        if not segs:
+            return False
+        t = re.sub(r"[^a-z0-9]+", "", (title or "").casefold())
+        return bool(t) and t == re.sub(
+            r"[^a-z0-9]+", "", segs[-1].casefold())
+
+    def _page_looks_like_listing(self, html, page_url):
+        """FIX 8t: a category page LINKS to jobs; a job page carries an
+        apply affordance. Three-plus same-host job-shaped anchors and no
+        apply marker in any language we seed = taxonomy, not a vacancy.
+        """
+        if not html:
+            return False
+        try:
+            pnet = urlparse(page_url).netloc
+            ppath = urlparse(page_url).path.rstrip("/")
+        except Exception:
+            return False
+        joblike = set()
+        for h in re.findall(r'href="([^"]+)"', html):
+            absu = urljoin(page_url, unescape(h.strip()))
+            try:
+                pu = urlparse(absu)
+            except Exception:
+                continue
+            if pu.netloc != pnet or pu.path.rstrip("/") == ppath:
+                continue
+            if self.valid_job_url(absu) or is_ats_detail_url(absu):
+                joblike.add(absu)
+            if len(joblike) >= 3:
+                break
+        if len(joblike) < 3:
+            return False
+        return not re.search(
+            r"(?i)(apply\b|application\b|bewerben|bewerbung|candidat|"
+            r"sollicit|postuler|requestid=|job_application)", html)
+
+    def _detail_page_is_listing(self, url):
+        """FIX 8t: one budgeted static GET to settle a suspected category
+        page whose slug equals its role-word title (/jobs/devops).
+        """
+        if not url or not url.startswith("http"):
+            return False
+        cap = max(0, int(os.environ.get(
+            "SPONSORSCOUT_LISTING_CHECK_MAX") or 150))
+        with self._title_rescue_lock:
+            used = getattr(self, "_listing_check_used", 0)
+            if used >= cap:
+                return False
+            self._listing_check_used = used + 1
+        try:
+            req = urllib.request.Request(url, headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                              "AppleWebKit/537.36 Chrome/126.0.0.0 "
+                              "Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+            })
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                html = resp.read(2_000_000).decode("utf-8", "replace")
+        except Exception:
+            return False
+        return self._page_looks_like_listing(html, url)
+
+    def valid_title(self, title, url=""):
         title = clean(title)
         title = self._split_title_place(title)[0]
+        title = strip_glued_remote_tail(title)
         low = title.lower()
         if not title or len(title) > 180:
             return False
+        # FIX P73 (run 20261016T140013): identical rule to career -- a title
+        # with no role word that equals the last slug segment(s) of its own
+        # URL is an aggregator category page, not a vacancy.
+        _segs = [x for x in urlparse(url).path.split("/") if x] if url else []
+        _facet_tail = bool(_segs) and re.sub(
+            r"[^a-z0-9]+", "", _segs[-1].casefold()) in _SUPPORT_FACET_SEGS
+        # FIX P78: over a facet-listing URL the role-word exemption is dropped
+        # ("Blockchain", "Testing" are taxonomy there); elsewhere it still
+        # protects real one-word titles like "Barista".
+        if url and len(title.split()) <= 4 and (
+                _facet_tail or not _ROLE_WORD_RE.search(title)):
+            _tslug = re.sub(r"[^a-z0-9]+", " ", low).strip()
+            if _tslug:
+                _sslugs = {re.sub(r"[^a-z0-9]+", " ", x).strip() for x in _segs[-2:]}
+                # compare with AND without separators: the URL slug
+                # "visasponsorship" must match the title "Visa Sponsorship"
+                if (_tslug in _sslugs
+                        or _tslug.replace(" ", "")
+                        in {x.replace(" ", "") for x in _sslugs}):
+                    return False
         # G1 fix: location stubs used as titles ("Milano, MI", "Wetzlar, DE").
         # make_row() quarantines invalid titles with a clear reason.
         if self._title_is_pure_location(title):
@@ -2628,6 +3447,13 @@ class ATSScanner:
         # FIX P0-41: recover an unlisted town / name the country from the
         # posting's host BEFORE the scope test, so an enriched row is judged
         # on its real location instead of being quarantined as "unknown".
+        # FIX P79 (run 20261016T173850): a raw location read off the page
+        # ("Munich Onsite (NavVis GmbH)") outranks both the address regex and
+        # the seed-host ccTLD guess -- run it FIRST, not as a last resort.
+        if not location or location in ("Not Specified", "Unknown"):
+            _resc = self._clean_rescued_location(raw_location)
+            if _resc:
+                location, location_source = _resc, "detail"
         if not location or location in ("Not Specified", "Unknown"):
             _town = (self._town_from_address(raw_location)
                      or self._town_from_address(description))
@@ -2663,7 +3489,7 @@ class ATSScanner:
         reason = None
         if not self.valid_job_url(url):
             reason = "invalid_or_application_only_url"
-        elif not self.valid_title(title):
+        elif not self.valid_title(title, url):
             reason = "invalid_generic_or_department_title"
         elif (self.SCOPE_FILTER
               and (target.get("scope_policy") or "global").lower() == "job_location"
@@ -2689,7 +3515,7 @@ class ATSScanner:
             "Sponsorship History Score": target.get("sponsorship_history", ""),
             "English Friendly Score": target.get("english_friendly", ""),
             "Remote Score": target.get("remote_score", ""),
-            "Job Title": title,
+            "Job Title": strip_glued_remote_tail(title),
             "Raw Job Title": title,
             # FIX P0-49 (S-09/S-04): gate the value, same rule as career.
             "Job Location": self._sanitize_job_location(
@@ -2709,6 +3535,9 @@ class ATSScanner:
             # and is the same weak-evidence mistake that inflated the
             # dashboard Remote tile to 589 (P9).
             "Work Mode": classify_work_mode(
+                f"{title} {job_type or ''} {raw_location or ''} {location or ''}"),
+            # FIX P74: the evidence behind the verdict, same as career.
+            "Work Mode Evidence": work_mode_evidence(
                 f"{title} {job_type or ''} {raw_location or ''} {location or ''}"),
             "Job URL": url,
             "Canonical Job ID": self.canonical_job_id(
@@ -2744,7 +3573,7 @@ class ATSScanner:
             "Scanned At": now,
         }
         # Support detection from explicit JD evidence only.
-        blue, visa, reloc, reloc_req, conf, evidence, flag = self.classify_support(description, title)
+        blue, visa, reloc, reloc_req, conf, evidence, flag = self.classify_support(description, title, target["name"])
         rec["EU Blue Card"] = blue
         rec["Visa Sponsorship"] = visa
         rec["Relocation Support"] = reloc
@@ -3264,7 +4093,7 @@ class ATSScanner:
                 continue
             seen.add(url)
             title = clean(job.get("title"))
-            if not self.valid_job_url(url) or not self.valid_title(title):
+            if not self.valid_job_url(url) or not self.valid_title(title, url):
                 continue
             desc = clean(job.get("text"))
             row = self.make_row(

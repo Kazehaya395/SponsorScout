@@ -10,7 +10,7 @@ import urllib.parse
 import urllib.request
 import json
 from urllib.parse import urljoin, urlparse, parse_qsl, urlencode, urlunparse
-from html import unescape  # FIX P0-30: JD HTML -> plain text
+from html import escape, unescape  # FIX P0-30: JD HTML -> plain text
 from html.parser import HTMLParser
 try:
     from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
@@ -506,19 +506,34 @@ def _host_free_mb():
             avail = None
     return avail
 
-# Measured peak RSS of one headless Chromium with a real job board loaded.
-_BROWSER_RSS_MB = 600
-# Leave this much for the OS, the user's other apps, and this process.
-_RESERVE_MB = 1200
+from sponsorscout.scanning.common import recommended_workers as _common_recommended_workers
 
 
-# FIX P0-36 (completed 2026-10-09): this module carried its OWN
-# recommended_workers (an RSS-based formula) plus an _apply_worker_override
-# env knob (REBASE R3), so the same machine was sized differently than by
-# the ATS scanner and the pipeline. The knob now lives IN
-# common.recommended_workers and this module imports the single shared
-# implementation (see the sponsorscout.scanning.common import below) --
-# pinned by test_sponsorship_detection.py with `is` identity.
+# REBASE 2026-10-03 (R3): identical knob to ats_scanner.py so the two
+# scanners still size themselves the same way. common.recommended_workers only
+# ever clamps downward; SPONSORSCOUT_MAX_WORKERS / SPONSORSCOUT_HTTP_WORKERS is
+# the one way to raise it, opt-in, hard-capped.
+#
+# MERGE FIX (v0.2.0): the stand-alone local sizer is DELETED. It was a
+# NameError-rescue re-implementation that shadowed the shared one and sized
+# the HTTP pool from stale heuristics (6 fetchers on a 2-core box on top of a
+# Chromium) -- exactly the divergence
+# test_career_scanner_uses_the_shared_worker_sizer pins against. Delegation
+# keeps the R3 knob and makes common the single source of sizing truth,
+# same pattern as ats_scanner.py.
+def recommended_workers(kind="browser", requested=None):
+    n = _common_recommended_workers(kind, requested)
+    raw = os.environ.get("SPONSORSCOUT_MAX_WORKERS" if kind == "browser"
+                         else "SPONSORSCOUT_HTTP_WORKERS")
+    if not raw:
+        return n
+    try:
+        want = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return n
+    if want < 1:
+        return n
+    return min(want, 8 if kind == "browser" else 24)
 
 
 def describe_host_budget():
@@ -588,13 +603,16 @@ def install_page_resource_blocking(target, block_types=None, block_hosts=True):
 
 
 # Chromium flags that cut memory and CPU without changing rendered DOM.
-# FIX P0-29b: BROWSER_ARGS was referenced at detail-enrichment launch
-# sites but never defined -- an unguarded NameError. (Historical note.)
-# 2026-10-09: this was a SECOND, 18-flag copy of the launch flags while
-# common.py carries the canonical 23-flag list ("Keeping one definition
-# here means a flag added for the ATS phase can never be missing from
-# the career phase"), so import it -- pinned with `is` identity by
-# test_sponsorship_detection.py.
+# FIX P0-29b: BROWSER_ARGS was referenced at two detail-enrichment launch
+# sites (see below) but never defined anywhere in this file — an unguarded
+# NameError that would abort detail enrichment the first time it ran.
+# It is now an alias of the low-resource arg list.
+# MERGE FIX (v0.2.0): the local P0-29b flag list is DELETED — common's
+# wave-era list is a strict superset of it (adds imagesEnabled=false,
+# phishing/default-apps/sync/translate kills) and the pre-merge pin
+# test_career_scanner_uses_the_shared_worker_sizer demands ONE source:
+# career.BROWSER_ARGS is common.BROWSER_ARGS.  Same delegation pattern as
+# recommended_workers above and ats_scanner.
 from sponsorscout.scanning.common import BROWSER_ARGS, LOW_RESOURCE_BROWSER_ARGS
 
 # ───────────────────────── CONFIG ──────────────────────────────
@@ -779,6 +797,17 @@ class ProductionScannerConfig:
         r"play\.google|apps\.apple|mailto:|tel:)",
         re.IGNORECASE,
     )
+    #: FIX P70 (2026-10-08): an unambiguous job-DETAIL path -- a recognised
+    #: detail marker, a slug, then a trailing numeric job id. Avature builds
+    #: /careers/JobDetail/<title-slug>/<id>. Narrow on purpose: /pricing,
+    #: /blog and /values have neither a detail marker nor a numeric id, so
+    #: they are still rejected by URL_EXCLUSION_PATTERN exactly as before.
+    _JOB_DETAIL_WITH_ID_RE = re.compile(
+        r"/(?:jobdetail|job-detail|jobposting|job-posting|"
+        r"stellenangebot|stellenanzeige|offredetail|jobopening)/"
+        r"[^/?#]+/\d{2,}(?:[/?#]|$)",
+        re.IGNORECASE)
+
     CATEGORY_PATH_INDICATORS = re.compile(
         # FIX P0-1d: category LISTING pages (…/careers/disciplines/engineering,
         # …/careers/departments/sales) are not jobs. Anchored mid-path, not just
@@ -1633,7 +1662,6 @@ from sponsorscout.scanning.common import (
     ScanCancelled,
     check_cancelled,
     check_control,
-    recommended_workers,
     sleep_interruptible,
 )
 
@@ -1669,25 +1697,240 @@ _CONTENT_CONTAINER_RES = (
                r"""[^"']*["'][^>]*>(.*?)</div>"""),
 )
 
+# FIX P0-30: EXPERIENCE REQUIREMENT EXTRACTION
+#
+# Adds four output columns:
+#   Experience Required   e.g. "5-8 years", "3+ years", "6 months", "None required"
+#   Experience Min Years  numeric, for sorting/filtering
+#   Experience Level      Internship / Junior / Mid / Senior / Lead / Executive
+#   Experience Source     api_field > api_description > card_context > title_inference
+#
+# Design rules (mirrors the visa detector's evidence discipline):
+#   • Sentence-scoped, never keyword-alone. A number counts only when its own
+#     clause is about work experience (_EXP_ANCHOR) AND no disqualifier sits
+#     within +/-45 chars (_EXP_BLOCK_NEAR). That window is what keeps
+#     "at least 18 years old", "founded 25 years ago", "fixed-term contract of
+#     2 years", "visa valid for 3 years" and "notice period of 3 months" out.
+#   • Numeric years are reported ONLY when explicitly written. The LEVEL may be
+#     inferred from the job title; "Experience Source" always records which
+#     happened so an inference is never mistaken for a stated fact.
+#   • Multilingual by construction (EN/DE/IT/NL/FR/ES/PT). The Career seed is
+#     heavily Italian/German, so an English-only matcher would under-report.
+#   • Title inference beats year-band inference: a "Senior Consultant" asking
+#     for 4 years is Senior, not Mid.
 # ─────────────────────────────────────────────────────────────────────────────
-# FIX P0-30: EXPERIENCE REQUIREMENT EXTRACTION — canonical engine now lives in
-# sponsorscout/core/experience.py (single source of truth). The two scanners
-# previously carried identical copies "kept in sync" by hand, and they had
-# already drifted: only the ATS copy had FIX P0-46 ("or more years"), so the
-# same JD scored differently per engine. Imported here so both engines and
-# all existing call sites (career_mod.extract_experience, ...) work unchanged.
-# ─────────────────────────────────────────────────────────────────────────────
-from sponsorscout.core.experience import (
-    _EXP_ATS_LEVEL,
-    _EXP_SOURCE_RANK,
-    _exp_level_from_text,
-    _exp_level_from_years,
-    _exp_num,
-    _exp_scan_numbers,
-    _jd_plain,
-    apply_experience_to_record,
-    extract_experience,
-)
+
+_EXP_WORD_NUM = {
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
+    "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12,
+    "a": 1, "an": 1,
+    "ein": 1, "eine": 1, "eins": 1, "zwei": 2, "drei": 3, "vier": 4,
+    "fuenf": 5, "fünf": 5, "sechs": 6, "sieben": 7, "acht": 8, "neun": 9,
+    "zehn": 10, "elf": 11, "zwoelf": 12, "zwölf": 12,
+    "uno": 1, "due": 2, "tre": 3, "quattro": 4, "cinque": 5, "sei": 6,
+    "sette": 7, "otto": 8, "nove": 9, "dieci": 10,
+    "een": 1, "twee": 2, "drie": 3, "vijf": 5, "zes": 6, "zeven": 7,
+    "negen": 9, "tien": 10,
+    "un": 1, "une": 1, "deux": 2, "trois": 3, "cinq": 5, "sept": 7,
+    "huit": 8, "neuf": 9, "dix": 10,
+    "dos": 2, "cuatro": 4, "cinco": 5, "siete": 7, "ocho": 8, "nueve": 9,
+    "diez": 10,
+}
+_EXP_WORD_ALT = "|".join(sorted((re.escape(w) for w in _EXP_WORD_NUM),
+                                key=len, reverse=True))
+
+_EXP_YEAR_UNIT = (r"(?:years?|yrs?\.?|jahre?n?|anni|anno|jaar|jaren|"
+                  r"ans|an|a[nñ]os|a[nñ]o)")
+_EXP_MONTH_UNIT = (r"(?:months?|mon\.?|monate?n?|mesi|mese|maanden|maand|"
+                   r"mois|meses|mes)")
+
+# The number must sit in a clause genuinely about work experience.
+_EXP_ANCHOR = re.compile(
+    r"experien|berufserfahrung|erfahrung|praxis|esperienz|ervaring|"
+    r"exp[ée]rien|experienc|experienci|"
+    r"similar role|comparable role|equivalent role|relevant|professional|"
+    r"requirements?|qualif\w*|must[- ]haves?|anforderungen|"
+    r"voraussetzungen|requisiti|requisitos|vereisten|wer du bist|"
+    r"what you|das bringen|nous recherchons|buscamos|"
+    r"hands[-\s]?on|proven|track record|background in|working (?:in|with|as)|"
+    r"seniority|vergleichbarer? (?:position|rolle)|einschl[äa]gig|"
+    r"ruolo simile|ambito|settore|soortgelijke|vergelijkbare|"
+    r"poste similaire|puesto similar|en el (?:sector|[áa]rea)",
+    re.I)
+
+_EXP_YEARS_IN = re.compile(r"(?:\d{1,2}|" + _EXP_WORD_ALT + r")\s*(?:\+|plus)?\s*(?:years?|yrs?|months?)\s+(?:in|of|as)\s+[A-Za-z]", re.I)
+
+# Disqualifiers, checked in a tight window around the number so a sentence
+# that merely also mentions a degree is not discarded wholesale.
+_EXP_BLOCK_NEAR = re.compile(
+    r"\b(?:old|of age|age of|ago|"
+    r"last|past|next|recent|"
+    r"founded|established|since|anniversar|"
+    r"fixed[-\s]?term|befristet|tempo determinato|"
+    r"contract|vertrag|contratto|duur|dur[ée]e|duration|"
+    r"visa|permit|warrant|guarantee|garantie|"
+    r"degree|bachelor|master|phd|doctora|studi|studium|laurea|"
+    r"we(?:'|\s)?(?:ve|have)\s+(?:over|more than|than|nearly|almost|\d)|"
+    r"our (?:company|team|group|history|story|brand)|"
+    r"the company (?:has|was|is|been)|nous (?:avons|existons)|"
+    r"abbiamo|la nostra azienda|im unternehmen|in the company|"
+    r"in azienda|chez nous|ons bedrijf|wij bestaan|"
+    r"universit|school|apprenticeship duration|"
+    r"notice period|k[üu]ndigungsfrist|preavviso|"
+    # FIX P16 (2026-10-04): PERKS AND TENURE ARE NOT EXPERIENCE.
+    # LOOP (run 20261003T233023) wrote "Experience Required = 1 years" on 13
+    # of its 17 rows. The JD says "EXPERIENCE  Experienced" -- no number
+    # anywhere. The phantom came from the benefits copy:
+    #   "4-day Workweek At LOOP you can choose between a 5-day or a 4-day
+    #    workweek AFTER ONE YEAR WITH US"
+    # a <=100-char fragment, so the weak tier scanned it, and nothing in the
+    # +/-45 window disqualified it. Perk, loyalty and probation wording now
+    # does. "with us" / "bei uns" / "da noi" is the giveaway: it describes
+    # time SPENT AT THE EMPLOYER, never experience brought to the job.
+    r"with us\b|bei uns|da noi|chez nous|bij ons|con nosotros|"
+    r"workweek|work week|working week|arbeitswoche|settimana lavorativa|"
+    r"holiday|vacation|urlaub|ferien|vakantie|vacanze|cong[ée]s|"
+    r"sabbatical|probation|probezeit|periodo di prova|proeftijd|"
+    r"bonus|pension|insurance|versicherung|assicurazione|"
+    r"anniversary|jubil[äa]um|loyalty|tenure|betriebszugeh[öo]rigkeit|"
+    r"once a year|per year|every year|annually|j[äa]hrlich|ogni anno|"
+    r"pay ri[sz]e|salary review|gehaltserh[öo]hung)\b", re.I)
+
+_EXP_NONE = re.compile(
+    r"(no (?:prior |previous |work |professional )?experience (?:is )?"
+    r"(?:required|necessary|needed)|"
+    r"without (?:prior |previous )?experience|"
+    r"keine (?:berufserfahrung|vorkenntnisse)|ohne (?:vor)?erfahrung|"
+    r"nessuna esperienza (?:richiesta|necessaria)|senza esperienza|"
+    r"geen ervaring (?:vereist|nodig)|"
+    r"aucune exp[ée]rience (?:requise|n[ée]cessaire)|"
+    r"sin experiencia (?:previa)?|no se requiere experiencia|"
+    r"entry[-\s]?level|no experience)", re.I)
+
+_EXP_LEVEL_PATTERNS = [
+    ("Internship", re.compile(
+        r"\b(intern(?:ship)?|internship|praktikum|praktikant|werkstudent|"
+        r"working student|stage(?:air)?|stagiaire|stagista|tirocini|"
+        r"becari|pr[áa]cticas|alternance|apprentice|apprendist|"
+        r"ausbildung|azubi|lehrling|summer analyst)\b", re.I)),
+    ("Executive", re.compile(
+        r"\b(chief|c[etofi]o\b|cxo|vp\b|vice[-\s]president|svp|evp|"
+        r"managing director|general manager|gesch[äa]ftsf[üu]hrer|"
+        r"head of|leiter(?:in)?\b|direttore|directeur|director\b|"
+        # "Partner" alone matched "Partner Solution Architect", "Partner
+        # Manager" and "HR Business Partner" — none are executives.
+        r"(?:managing|equity|founding|general)\s+partner\b|"
+        r"amministratore)\b", re.I)),
+    ("Lead", re.compile(
+        r"\b(lead\b|leader\b|principal\b|"
+        r"staff(?:\s+\w+){0,2}\s+(?:engineer|scientist|designer|developer|"
+        r"researcher|analyst)|architect\b|team ?lead|tech ?lead|"
+        r"capo(?:squadra)?|responsabile|teamleiter)\b", re.I)),
+    ("Senior", re.compile(
+        r"\b(senior|sr\.?\b|snr\b|experienced|expert(?:e)?\b|"
+        r"esperto|senior[-\s]?level|erfahrene[rn]?)\b", re.I)),
+    ("Mid", re.compile(
+        r"\b(mid[-\s]?(?:level|weight)|intermediate|regular\b|"
+        r"medior|confirm[ée]\b)\b", re.I)),
+    ("Junior", re.compile(
+        r"\b(junior|jr\.?\b|graduate|grad\b|entry[-\s]?level|entry\b|"
+        r"einsteiger|berufseinsteiger|absolvent|neolaureat|"
+        r"d[ée]butant|reci[ée]n titulad|starter|trainee|"
+        r"associate\b|assistant\b)\b", re.I)),
+]
+
+# "Senior Care Assistant" is not a senior role; a role that TALKS TO senior
+# people is not itself senior.
+_EXP_LEVEL_FALSE = re.compile(
+    r"\b(senior (?:care|living|citizen|home|school|resident|manager of care)|"
+    r"junior (?:school|college|suite)|"
+    r"director of (?:nursing|care)|seniorenheim|seniorenbetreuung|"
+    r"(?:with|to|for|among|across|manage|managing|engage|engaging|"
+    r"influence|influencing|present(?:ing)? to|report(?:ing)? to|"
+    r"partner(?:ing)? with|work(?:ing)? with|liais(?:e|ing) with)\s+"
+    r"(?:our\s+|the\s+|various\s+|multiple\s+|key\s+|"
+    r"internal\s+|external\s+|c-level\s+)*"
+    r"senior\s+(?:stakeholder|leader|management|leadership|executive|"
+    r"colleague|team|member|client|partner|sponsor|manager)s?|"
+    r"senior\s+(?:stakeholder|leadership|management)\b)", re.I)
+
+# A seniority word in body text only counts when the sentence is about the
+# person being hired. Without this, "you will lead a team for the next 2
+# years" scored the row as a Lead role.
+_EXP_HIRING_CUE = re.compile(
+    r"(we are (?:looking|seeking|hiring)|are you an?|you are an?|"
+    r"looking for an?|seeking an?|hiring an?|join us as|as an?\s|"
+    r"the role|this role|position of|role of|vacancy|opening for|"
+    r"wir suchen|du bist|sie sind|als\s|stelle als|"
+    r"cerchiamo|sei un|ricerchiamo|posizione di|"
+    r"wij zoeken|je bent|functie van|"
+    r"nous recherchons|vous [êe]tes|poste de|"
+    r"buscamos|eres un|puesto de)", re.I)
+
+_EXP_SENT_SPLIT = re.compile(r"(?<=[.!?;:])\s+|[\n\r]+|\s*[•·▪▸–—]\s+")
+
+# --- Requirements-section awareness (bare requirement fragments) ----------
+# _EXP_SENT_SPLIT breaks at ':', bullets and newlines, so "Requirements: 3-5
+# years" can arrive as the bare fragment "3-5 years" with the anchor word
+# stranded in the header. These headers re-open the gate: a fragment under a
+# requirements/qualifications heading, or any short fragment (a list bullet,
+# <=100 chars), may be scanned even without an anchor. Disqualifiers and all
+# numeric rules still apply; a strong (anchored) hit always wins.
+_EXP_REQ_HEADER = re.compile(
+    r"^(?:experience|requirements?|qualifications?|must[- ]haves?|"
+    r"what you(?:'?ll)? (?:bring|need|have)|what we(?:'?re| are) looking for|"
+    r"about you|your (?:profile|background|skills|experience)|"
+    r"profil(?:e)?|we expect|ideal candidate|key (?:skills|qualifications)|"
+    r"minimum (?:qualifications?|requirements?)|preferred qualifications?|"
+    r"skills required|about the role|role requirements|who you are|"
+    r"anforderungen|voraussetzungen|wer du bist|das erwarten wir|"
+    r"das bringen sie mit|berufserfahrung|erfahrung|"
+    r"requisiti|profilo|chi cerchiamo|esperienza|"
+    r"ervaring|werkervaring|eisen|vereisten|profiel|"
+    r"nous recherchons|exp[\u00e9e]rience|qu\u00e9 buscas|buscamos|"
+    r"perfil)$",
+    re.I)
+
+# Section headings that end requirements scope - after one of these a relaxed
+# fragment no longer counts, so marketing numbers ("About us: 25 years of
+# experience") stay unclaimed by the weak tier.
+_EXP_SECTION_END = re.compile(
+    r"^(?:about (?:us|the company)|our (?:story|history|mission|values|"
+    r"culture|offer)|what we (?:offer|provide|value)|we (?:offer|provide)|"
+    r"benefits?|perks?|how to apply|apply (?:now|by)|next steps|"
+    r"hiring process|equal opportunit|diversity|privacy|company culture|"
+    r"chi siamo|cosa ti offriamo|la nostra (?:missione|azienda)|"
+    r"wir bieten|[\u00fcu]ber uns|unser angebot|ons aanbod|wij bieden|"
+    r"ce que nous offrons|notre entreprise|qu\u00e9 ofrecemos|nuestra empresa|"
+    r"bewerbung|candidatura)$",
+    re.I)
+
+# Strict experience NOUN - narrower than _EXP_ANCHOR (no 'relevant' /
+# 'professional' / 'working in'): the mention fallback that yields
+# "Mentioned" instead of NA may only fire when the JD actually names
+# experience in some language.
+_EXP_MENTION_NOUN = re.compile(
+    r"experien|berufserfahrung|erfahrung|vorkenntnis|"
+    r"esperienz|exp\u00e9rience|ervaring|experiencia|experi[e\u00ea]nc", re.I)
+
+_EXP_SOURCE_RANK = {"": 0, "none": 0, "title_inference": 1,
+                    "card_context": 2, "api_description": 3, "detail_text": 3,
+                    "api_field": 4}
+
+# ATS-published seniority vocabulary -> canonical level. Employer-set, so it
+# outranks anything inferred from a title or from prose.
+_EXP_ATS_LEVEL = {
+    "internship": "Internship", "intern": "Internship", "student": "Internship",
+    "entry level": "Junior", "entry_level": "Junior", "entry": "Junior",
+    "graduate": "Junior", "junior": "Junior", "associate": "Junior",
+    "mid level": "Mid", "mid-level": "Mid", "intermediate": "Mid",
+    "experienced": "Mid", "professional": "Mid",
+    "mid-senior level": "Senior", "mid_senior_level": "Senior",
+    "senior level": "Senior", "senior": "Senior", "expert": "Senior",
+    "lead": "Lead", "principal": "Lead", "staff": "Lead", "manager": "Lead",
+    "director": "Executive", "executive": "Executive", "vp": "Executive",
+    "c-level": "Executive", "chief": "Executive",
+}
 
 
 class _DeadEndBoard(Exception):
@@ -1697,6 +1940,274 @@ class _DeadEndBoard(Exception):
 class _DetailHttpOnly(Exception):
     """Internal signal: detail enrichment ran over HTTP, no browser needed."""
 
+
+def _jd_plain(raw, limit=20000):
+    """HTML/markup -> plain text for experience extraction.
+
+    Several ATS APIs already return the FULL job description in the same
+    response used for titles (Ashby descriptionPlain, Greenhouse content,
+    Workable description, Lever/Recruitee description). Feeding that straight
+    in costs ZERO extra HTTP requests.
+
+    Greenhouse returns HTML-ESCAPED markup ("&lt;p&gt;"); stripping tags before
+    unescaping would leave every tag in the text, so unescape comes FIRST.
+    """
+    if not raw:
+        return ""
+    txt = str(raw)
+    if "&lt;" in txt or "&gt;" in txt or "&amp;" in txt:
+        txt = unescape(txt)
+    txt = re.sub(r"(?is)<(script|style)[^>]*>.*?</\1>", " ", txt)
+    txt = re.sub(r"(?i)<br\s*/?>|</p>|</li>|</div>|</h[1-6]>", "\n", txt)
+    txt = re.sub(r"<[^>]+>", " ", txt)
+    txt = unescape(txt)
+    txt = re.sub(r"[ \t\xa0]+", " ", txt)
+    txt = re.sub(r"\n\s*\n+", "\n", txt)
+    return txt.strip()[:limit]
+
+
+def _exp_num(tok):
+    tok = (tok or "").strip().lower().rstrip(".")
+    if tok.isdigit():
+        return int(tok)
+    return _EXP_WORD_NUM.get(tok)
+
+
+def _exp_level_from_years(lo, hi):
+    # For a stated range use the midpoint: "5-8 years" is a Senior ask, but
+    # anchoring on the lower bound alone would call it Mid.
+    if lo is not None and hi is not None:
+        v = (lo + hi) / 2.0
+    else:
+        v = lo if lo is not None else hi
+    if v is None:
+        return ""
+    if v <= 0:
+        return "Entry"
+    if v <= 2:
+        return "Junior"
+    if v < 5:
+        return "Mid"
+    if v < 10:
+        return "Senior"
+    return "Lead"
+
+
+def _exp_level_from_text(text):
+    if not text:
+        return ""
+    if _EXP_LEVEL_FALSE.search(text):
+        return ""
+    for level, rx in _EXP_LEVEL_PATTERNS:
+        if rx.search(text):
+            return level
+    return ""
+
+
+def _exp_scan_numbers(text):
+    """Return the strongest explicit experience statement, or None.
+
+    Two tiers, because _EXP_SENT_SPLIT breaks at ':', bullets and newlines
+    and can strand a bare fragment ("Requirements: 3-5 years" arrives as just
+    "3-5 years") away from the anchor words in its header:
+
+    * STRONG - the fragment itself names experience (anchor / years-in).
+      Anchored hits are unambiguous: they always win, lowest minimum first
+      (the historic behaviour).
+    * WEAK - the fragment sits under a requirements/qualifications heading
+      (_EXP_REQ_HEADER, state persists until _EXP_SECTION_END) or is a short
+      list fragment (<=100 chars). Used only when no strong hit exists.
+
+    Every candidate, strong or weak, must clear the +/-45 char disqualifier
+    window, so ages, contract durations and company-tenure marketing never
+    become experience requirements.
+    """
+    strong_best = None
+    weak_best = None
+    in_req = False
+    for sent in _EXP_SENT_SPLIT.split(text or ""):
+        sent = (sent or "").strip()
+        if not sent:
+            continue
+        probe = sent.strip(" *#>_:-")
+        if _EXP_REQ_HEADER.match(probe):
+            in_req = True
+            continue
+        if _EXP_SECTION_END.match(probe):
+            in_req = False
+            continue
+        if len(sent) > 600:
+            continue
+        strong = bool(_EXP_ANCHOR.search(sent) or _EXP_YEARS_IN.search(sent))
+        if not strong and not (in_req or len(sent) <= 100):
+            continue
+        num = rf"(?:\d{{1,2}}|{_EXP_WORD_ALT})"
+        unit = rf"(?:{_EXP_YEAR_UNIT}|{_EXP_MONTH_UNIT})"
+        rx = re.compile(
+            rf"(?<![\w.,/-])({num})\s*(?:\+|plus)?\s*"
+            rf"(?:(?:-|–|—|\bto\b|\bbis\b|\ba\b|\btot\b|\b[àa]\b|\bund\b|"
+            rf"\be\b|\by\b|\bet\b|\bor\b|\bof\b)\s*"
+            rf"({num})\s*(?:\+|plus)?\s*)?"
+            rf"({unit})\b", re.I)
+        for m in rx.finditer(sent):
+            lo, hi = _exp_num(m.group(1)), _exp_num(m.group(2))
+            u = m.group(3).lower()
+            if lo is None:
+                continue
+            # "a month-end close process" / "year-end reporting": the unit is
+            # part of a compound noun, not a duration.
+            if re.match(r"\s*[-\u2010-\u2015](?:end|on-end|round)", sent[m.end():]):
+                continue
+            # A bare article is only a real quantity when something
+            # quantifies it, else "a month-end" produces a phantom 1.
+            if m.group(1).strip().lower() in {"a", "an"} and not re.search(
+                    r"\b(?:at least|minimum|min\.|over|more than|within|after|"
+                    r"first|least)\b", sent[:m.start()], re.I):
+                continue
+            win = sent[max(0, m.start() - 45):m.end() + 45]
+            if _EXP_BLOCK_NEAR.search(win):
+                continue
+            months = bool(re.fullmatch(_EXP_MONTH_UNIT, u, re.I))
+            # Word boundaries are mandatory: an unanchored "[üu]ber" matched
+            # inside "K-uber-netes" and turned "6 months" into "6+ months".
+            plus = bool(re.search(
+                r"\+|\b(?:plus|at least|minimum|min\.|mindestens|almeno|"
+                r"minimaal|au moins|al menos|over|more than|[üu]ber|oltre|"
+                r"upwards of|no less than|m[ií]nimo|minimo de|mindest|"
+                r"ten minste|minstens)\b", sent, re.I))
+            if hi is not None and hi < lo:
+                hi = None
+            lo_y = lo / 12.0 if months else float(lo)
+            hi_y = (hi / 12.0 if months else float(hi)) if hi is not None else None
+            if lo_y > 40:
+                continue
+            cand = (lo_y, hi_y, months, plus, lo, hi, sent[:300])
+            # Prefer the lowest stated minimum: "3-5 years" beats a stray "10".
+            # Anchored (strong) candidates are kept apart from relaxed (weak)
+            # ones so a stray bullet can never outrank an explicit statement.
+            if strong:
+                if strong_best is None or lo_y < strong_best[0]:
+                    strong_best = cand
+            elif weak_best is None or lo_y < weak_best[0]:
+                weak_best = cand
+    return strong_best or weak_best
+
+
+def extract_experience(text="", title=""):
+    """Detect required experience from JD text and/or job title.
+
+    Returns a dict: required / min_years / max_years / level / evidence / source.
+    Numeric years appear ONLY when explicitly stated in the text.
+    """
+    out = {"required": "Unknown", "min_years": "", "max_years": "",
+           "level": "Unknown", "evidence": "", "source": "none"}
+    text = text or ""
+    title = title or ""
+
+    hit = _exp_scan_numbers(text)
+    if hit:
+        lo_y, hi_y, months, plus, lo_raw, hi_raw, ev = hit
+        unit = "months" if months else "years"
+        if hi_raw is not None:
+            label = f"{lo_raw}-{hi_raw} {unit}"
+        elif plus:
+            label = f"{lo_raw}+ {unit}"
+        else:
+            label = f"{lo_raw} {unit}"
+        out["required"] = label
+        out["min_years"] = round(lo_y, 2) if months else int(lo_y)
+        if hi_y is not None:
+            out["max_years"] = round(hi_y, 2) if months else int(hi_y)
+        out["level"] = (_exp_level_from_text(title)
+                        or _exp_level_from_years(lo_y, hi_y))
+        out["evidence"] = ev
+        out["source"] = "detail_text"
+        return out
+
+    none_hit = _EXP_NONE.search(text) or _EXP_NONE.search(title)
+    if none_hit:
+        out.update({"required": "None required", "min_years": 0,
+                    "level": _exp_level_from_text(title) or "Entry",
+                    "evidence": none_hit.group(0)[:300],
+                    "source": ("detail_text" if _EXP_NONE.search(text)
+                               else "title_inference")})
+        return out
+
+    lvl = _exp_level_from_text(title)
+    if lvl:
+        out.update({"level": lvl, "source": "title_inference",
+                    "evidence": title[:300]})
+        return out
+
+    for sent in _EXP_SENT_SPLIT.split(text):
+        sent = (sent or "").strip()
+        if not sent or len(sent) > 400:
+            continue
+        if not _EXP_HIRING_CUE.search(sent):
+            continue
+        lvl = _exp_level_from_text(sent)
+        if lvl:
+            out.update({"level": lvl, "source": "detail_text",
+                        "evidence": sent[:300]})
+            return out
+
+    # The JD names experience somewhere but yielded neither a number nor a
+    # seniority word: that is a reference, not an absence - report it as
+    # "Mentioned" so the UI can reserve NA for descriptions that never name
+    # experience at all. Disqualified sentences (company tenure, ages, ...)
+    # are not references.
+    for sent in _EXP_SENT_SPLIT.split(text):
+        sent = (sent or "").strip()
+        if not sent or len(sent) > 400:
+            continue
+        m = _EXP_MENTION_NOUN.search(sent)
+        if not m:
+            continue
+        win = sent[max(0, m.start() - 60):m.end() + 60]
+        if _EXP_BLOCK_NEAR.search(win):
+            continue
+        out.update({"required": "Mentioned", "evidence": sent[:300],
+                    "source": "detail_text"})
+        return out
+    return out
+
+
+def apply_experience_to_record(rec, jd_text="", card_context="", title="",
+                               level_hint="", key_prefix="Experience "):
+    """Fill the four Experience columns on a record, respecting source rank.
+
+    Never downgrades: a weaker source cannot overwrite a stronger one.
+    `level_hint` is an employer-published seniority string (e.g.
+    SmartRecruiters experienceLevel) and outranks every inference.
+    """
+    jd = (jd_text or "").strip()
+    if "&lt;" in jd or ("<" in jd and ">" in jd):
+        # Raw HTML slipped through (some adapters pass markup verbatim);
+        # extraction must always see plain text.
+        jd = _jd_plain(jd)
+    exp = extract_experience(jd or card_context or "", title or "")
+    src = exp["source"]
+    if src == "detail_text":
+        src = "api_description" if jd else "card_context"
+
+    hint = (level_hint or "").strip()
+    if hint:
+        mapped = _EXP_ATS_LEVEL.get(hint.lower())
+        if mapped:
+            exp["level"] = mapped
+            if exp["required"] in ("Unknown", "Mentioned"):
+                src = "api_field"
+
+    cur = rec.get(key_prefix + "Source") or "none"
+    if _EXP_SOURCE_RANK.get(src, 0) < _EXP_SOURCE_RANK.get(cur, 0):
+        return False
+    if exp["required"] == "Unknown" and exp["level"] == "Unknown":
+        return False
+    rec[key_prefix + "Required"] = exp["required"]
+    rec[key_prefix + "Min Years"] = exp["min_years"]
+    rec[key_prefix + "Level"] = exp["level"]
+    rec[key_prefix + "Source"] = src
+    return True
 
 # ─────────────────────────────────────────────────────────────────────────────
 # FIX P0-31: STATIC-HTML FAST PATH (speed, accuracy-preserving)
@@ -1748,7 +2259,12 @@ _STATIC_ANCHOR_RE = re.compile(
 
 
 class _StaticAnchorParser(HTMLParser):
-    """Small, dependency-free anchor parser for server-rendered boards."""
+    """Small, dependency-free anchor parser for server-rendered boards.
+
+    Each finished anchor is (href, text, markup). ``text`` is the visible text
+    (unchanged behaviour); ``markup`` is the anchor's inner HTML, kept so a
+    card's own heading and location element can be read (FIX P95).
+    """
 
     def __init__(self):
         super().__init__(convert_charrefs=True)
@@ -1760,15 +2276,19 @@ class _StaticAnchorParser(HTMLParser):
         tag = tag.lower()
         if tag == "a" and self._anchor is None:
             attrs_map = {str(k).lower(): (v or "") for k, v in attrs}
-            self._anchor = {"href": attrs_map.get("href", ""), "parts": []}
+            self._anchor = {"href": attrs_map.get("href", ""),
+                            "parts": [], "markup": []}
         if self._anchor is not None:
+            self._anchor["markup"].append(self.get_starttag_text() or "")
             self._tag_stack.append(tag)
 
     def handle_startendtag(self, tag, attrs):
         if tag.lower() != "a":
+            if self._anchor is not None:
+                self._anchor["markup"].append(self.get_starttag_text() or "")
             return
         attrs_map = {str(k).lower(): (v or "") for k, v in attrs}
-        self.items.append((attrs_map.get("href", ""), ""))
+        self.items.append((attrs_map.get("href", ""), "", ""))
 
     def handle_endtag(self, tag):
         tag = tag.lower()
@@ -1776,10 +2296,13 @@ class _StaticAnchorParser(HTMLParser):
             return
         # The anchor is complete when its own closing tag arrives.
         if tag == "a":
-            self.items.append((self._anchor["href"], "".join(self._anchor["parts"])))
+            self.items.append((self._anchor["href"],
+                               "".join(self._anchor["parts"]),
+                               "".join(self._anchor["markup"])))
             self._anchor = None
             self._tag_stack = []
             return
+        self._anchor["markup"].append(f"</{tag}>")
         # Pop the most recent nested tag when possible.
         for i in range(len(self._tag_stack) - 1, -1, -1):
             if self._tag_stack[i] == tag:
@@ -1789,17 +2312,21 @@ class _StaticAnchorParser(HTMLParser):
     def handle_data(self, data):
         if self._anchor is not None:
             self._anchor["parts"].append(data)
+            self._anchor["markup"].append(escape(data, quote=False))
 
     def handle_entityref(self, name):
         if self._anchor is not None:
             self._anchor["parts"].append(unescape(f"&{name};"))
+            self._anchor["markup"].append(f"&{name};")
 
     def handle_charref(self, name):
         if self._anchor is not None:
             self._anchor["parts"].append(unescape(f"&#{name};"))
+            self._anchor["markup"].append(f"&#{name};")
 
 
-def _parse_static_anchors(html):
+def _parse_static_anchors_full(html):
+    """-> [(href, visible_text, inner_markup)] for every anchor in ``html``."""
     parser = _StaticAnchorParser()
     try:
         parser.feed(html or "")
@@ -1808,7 +2335,11 @@ def _parse_static_anchors(html):
             return parser.items
     except Exception:
         pass
-    return _STATIC_ANCHOR_RE.findall(html or "")
+    return [(h, i, i) for h, i in _STATIC_ANCHOR_RE.findall(html or "")]
+
+
+def _parse_static_anchors(html):
+    return [(h, t) for h, t, _m in _parse_static_anchors_full(html)]
 
 
 # ── FIX P57 (2026-10-07): "More details" is not a job title ───────────────
@@ -1879,6 +2410,50 @@ def _recover_anchor_title(title, url):
     if _BOILERPLATE_ANCHOR_BARE.match(title):
         return _title_from_url_slug(url)
     return title
+
+
+_STATIC_CARD_HEADING_RE = re.compile(r"(?is)<h[1-6][^>]*>(.*?)</h[1-6]>")
+_STATIC_CARD_LOCATION_RE = re.compile(
+    r'(?is)<[a-z0-9]+[^>]*\bclass="[^"]*\bjob-location\b[^"]*"[^>]*>(.*?)</[a-z0-9]+>')
+
+
+def _static_attr_title(inner_markup, visible):
+    """Clean title from a ``title=""`` attribute inside a card anchor.
+
+    FIX P99 (2026-10-17): Leroy Merlin's Teamtailor cards put the job title in
+    <span title="Addetto/a Casse">, but the visible text also carries the
+    city ("Addetto/a Casse Ancona"), which the title validator rejects. The
+    attribute is used only when the visible text really contains it.
+    """
+    m = re.search(r'\btitle="([^"]{3,200})"', inner_markup or "")
+    if not m:
+        return ""
+    cand = _static_strip_tags(m.group(1))
+    if cand and cand.lower() in _static_strip_tags(visible or "").lower():
+        return cand
+    return ""
+
+
+def _static_card_fields(inner):
+    """Card anchor -> (title, location), read from the card's own markup.
+
+    FIX P95 (2026-10-17): a card-style anchor wraps the WHOLE card (title,
+    company, location, pills, date), so its visible text is not a title.
+    Visa Sponsor Jobs stored "Formulator Vitaquest International West
+    Caldwell, NJ, United States Research and Science H-1B ... Publish date"
+    as the job title and cut the location to "United". When the card carries
+    a heading, the heading is the title and the job-location element is the
+    location. Anchors without a heading keep the old behaviour.
+    """
+    title = ""
+    m = _STATIC_CARD_HEADING_RE.search(inner or "")
+    if m:
+        title = _static_strip_tags(m.group(1))
+    loc = ""
+    m = _STATIC_CARD_LOCATION_RE.search(inner or "")
+    if m:
+        loc = _static_strip_tags(m.group(1))
+    return title, loc
 
 
 def _static_strip_tags(fragment):
@@ -2076,7 +2651,7 @@ def extract_embedded_json_jobs(html, base_url, url_validator=None,
         if absolute:
             if url_validator is not None and not url_validator(absolute):
                 continue
-            if title_validator is not None and not title_validator(title):
+            if title_validator is not None and not title_validator(title, absolute):
                 continue
             jobs.append(payload)
         else:
@@ -2123,6 +2698,112 @@ def _static_accept_language(seed_url):
         q = max(0.55, 1.0 - i * 0.08)
         weights.append(lang if i == 0 else f"{lang};q={q:.2f}")
     return ",".join(weights)
+
+
+# ── FIX P97 (2026-10-17): static boards are paged too ────────────────────
+# The static path read only the first page of a board. Leroy Merlin's
+# Teamtailor list shows 20 of 92 jobs and loads the rest from
+# <a id="show_more_button" href="/jobs/show_more?page=2">Mostra ancora 20</a>.
+# Visa Sponsor Jobs shows 30 cards per page behind "/jobs?page=N" and a "»"
+# link. Both were accepted as complete after page 1. The static path now
+# follows next-page / show-more links, capped at _STATIC_MAX_PAGES (env
+# SPONSORSCOUT_STATIC_MAX_PAGES, default 12) so one
+# huge board cannot hold a company for hours.
+_STATIC_MAX_PAGES = max(1, int(os.environ.get("SPONSORSCOUT_STATIC_MAX_PAGES") or 12))
+_STATIC_ANCHOR_FULL_RE = re.compile(r"<a\b([^>]*)>(.*?)</a>", re.I | re.S)
+_STATIC_NEXT_TEXT_EXACT = {"»", "›", ">", "→", "next", "next page", "successiva",
+                           "pagina successiva", "avanti", "suivant", "siguiente",
+                           "volgende", "weiter", "nächste"}
+_STATIC_MORE_TEXT_PREFIX = ("show more", "load more", "mostra ancora", "carica altri",
+                            "carica altro", "mostra altri", "mostra altro")
+
+
+# FIX P98 (2026-10-17): navigation is not a job. Static anchors without a card
+# heading were accepted from any same-host link: Leroy Merlin's footer
+# ("Politica sui Cookie", "Dati e privacy", "Mostra ancora 20" -> /jobs/show_more),
+# Visa's industry filters ("/jobs/health-and-care-industry") and its pager
+# ("2", "3"). A card that carries its own heading is still trusted.
+_STATIC_NONJOB_PATH_RE = re.compile(
+    r"(?i)(?:/pages?(?:/|$)|/departments?(?:/|$)|/cookie|privacy|/sso(?:[/_-]|$)|"
+    r"/login|/about(?:/|$)|/advertise(?:/|$)|/resources(?:/|$)|/terms(?:/|$)|"
+    r"/conditions(?:/|$)|show_more|load_more|-industry(?:/|$|\?)|/industry/|"
+    r"/category/|/categories/|/contact(?:/|$)|/blog(?:/|$)|/news(?:/|$)|"
+    r"/careers?/?$|/jobs?/?$|-country(?:/|$|\?))")
+_STATIC_SOCIAL_HOST_RE = re.compile(
+    r"(?i)(?:^|\.)(?:facebook|instagram|tiktok|linkedin|twitter|x|youtube|youtu|"
+    r"whatsapp|wa|t)\.(?:com|be|me|it)$")
+_STATIC_NAV_TITLE_RE = re.compile(
+    r"(?i)(?:home|jobs?|about|advertise|resources|connect|contact|blog|news|[«»‹›→←<>]|"
+    r"visita il nostro.*|passa ai contenuti principali|skip to (?:main )?content|"
+    r"accedi.*|log ?in|sign ?in)")
+
+
+def _static_is_navigation(absolute, title, has_card_heading):
+    if has_card_heading:
+        return False
+    if re.fullmatch(r"\d{1,3}", (title or "").strip()):
+        return True  # pager number
+    if _STATIC_NAV_TITLE_RE.fullmatch((title or "").strip()):
+        return True
+    p = urlparse(absolute)
+    if _STATIC_SOCIAL_HOST_RE.search(p.hostname or ""):
+        return True
+    if p.path in ("", "/"):
+        return True  # the homepage link, not a listing
+    return bool(_STATIC_NONJOB_PATH_RE.search(p.path + ("?" + p.query if p.query else "")))
+
+
+def _static_attr(attrs, name):
+    m = re.search(r"\b%s\s*=\s*[\"']([^\"']*)[\"']" % name, attrs or "", re.I)
+    return unescape(m.group(1)) if m else ""
+
+
+def _static_next_page_url(html, base_url):
+    """URL of the next page of a static board, or "" when there is none.
+
+    Order: rel="next", then a load-more control recognised by its id/class/href,
+    then visible text. Text matching is exact for next-page words, so a job
+    titled "Next Generation Engineer" is never treated as a pager.
+    """
+    rel_next = more_struct = more_text = ""
+    for m in _STATIC_ANCHOR_FULL_RE.finditer(html or ""):
+        attrs, inner = m.group(1), m.group(2)
+        href = _static_attr(attrs, "href").strip()
+        if not href or href.startswith(("#", "javascript:", "mailto:")):
+            continue
+        if not rel_next and "next" in _static_attr(attrs, "rel").lower().split():
+            rel_next = href
+        blob = " ".join((_static_attr(attrs, "id"), _static_attr(attrs, "class"), href))
+        if not more_struct and re.search(r"show_more|load_more|loadmore|load-more", blob, re.I):
+            more_struct = href
+        text = _static_strip_tags(inner).lower()
+        if not more_text and (text in _STATIC_NEXT_TEXT_EXACT
+                              or text.startswith(_STATIC_MORE_TEXT_PREFIX)):
+            more_text = href
+    found = rel_next or more_struct or more_text
+    return urljoin(base_url, found) if found else ""
+
+
+def _static_fetch_html(url, timeout_sec, lang):
+    try:
+        req = urllib.request.Request(url, headers={
+            "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                           "AppleWebKit/537.36 Chrome/126.0.0.0 Safari/537.36"),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": lang,
+        })
+        with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
+            ctype = (resp.headers.get("Content-Type") or "").lower()
+            if "html" not in ctype and "xml" not in ctype:
+                return ""
+            raw = resp.read(4_000_000)
+        charset = "utf-8"
+        m = re.search(r"charset=([\w-]+)", ctype)
+        if m:
+            charset = m.group(1)
+        return raw.decode(charset, "replace")
+    except Exception:
+        return ""
 
 
 def fetch_static_jobs(seed_url, timeout_sec=15, min_jobs=None,
@@ -2191,38 +2872,68 @@ def fetch_static_jobs(seed_url, timeout_sec=15, min_jobs=None,
 
     jobs = []
     seen = set()
-    for href, inner in _parse_static_anchors(html):
-        href = unescape(href.strip())
-        if not href or href.lower().startswith(("javascript:", "mailto:", "tel:")):
-            continue
-        absolute = urljoin(seed_url, href)
-        if absolute in seen:
-            continue
-        title = _static_strip_tags(inner)
-        if not title:
-            continue
-        if url_validator is not None and not url_validator(absolute):
-            continue
-        # FIX P57: the anchor text may be a screen-reader label, not a title.
-        title = _recover_anchor_title(title, absolute)
-        if not title:
-            continue
-        if title_validator is not None and not title_validator(title):
-            continue
-        seen.add(absolute)
-        jobs.append({
-            "job_title": title,
-            "job_url": absolute,
-            "location_hint": "",
-            "card_context": "",
-            "extraction_method": "static_html",
-        })
+
+    def _collect(page_html, page_url):
+        added = 0
+        for href, inner, inner_markup in _parse_static_anchors_full(page_html):
+            href = unescape(href.strip())
+            if not href or href.lower().startswith(("javascript:", "mailto:", "tel:")):
+                continue
+            absolute = urljoin(page_url, href)
+            if absolute in seen:
+                continue
+            card_title, card_loc = _static_card_fields(inner_markup)
+            title = (card_title or _static_attr_title(inner_markup, inner)
+                     or _static_strip_tags(inner))
+            if not title:
+                continue
+            if _static_is_navigation(absolute, title, bool(card_title)):
+                continue
+            if url_validator is not None and not url_validator(absolute):
+                continue
+            # FIX P57: the anchor text may be a screen-reader label, not a title.
+            title = _recover_anchor_title(title, absolute)
+            if not title:
+                continue
+            if title_validator is not None and not title_validator(title, absolute):
+                continue
+            seen.add(absolute)
+            added += 1
+            jobs.append({
+                "job_title": title,
+                "job_url": absolute,
+                "location_hint": card_loc,
+                "card_context": "",
+                "extraction_method": "static_html",
+            })
+        return added
+
+    _collect(html, seed_url)
+    _lang = _static_accept_language(seed_url)
+    _visited = {seed_url}
+    _page_html, _page_url = html, seed_url
+    _pages = 1
+    while _pages < _STATIC_MAX_PAGES:
+        _next = _static_next_page_url(_page_html, _page_url)
+        if not _next or _next in _visited:
+            break
+        _visited.add(_next)
+        _page_html = _static_fetch_html(_next, timeout_sec, _lang)
+        if not _page_html:
+            break
+        _pages += 1
+        if _collect(_page_html, _next) == 0:
+            break  # a repeat or empty page: nothing more to read
+        _page_url = _next
 
     if len(jobs) < min_jobs:
         # Not trustworthy — discard and let the browser handle it.
         return [], (f"static: only {len(jobs)} job link(s) "
                     f"(<{min_jobs}); using browser")
-    return jobs, f"static HTML: {len(jobs)}"
+    _more = ""
+    if _pages >= _STATIC_MAX_PAGES and _static_next_page_url(_page_html, _page_url):
+        _more = f"; page cap {_STATIC_MAX_PAGES} reached, board has more pages"
+    return jobs, f"static HTML: {len(jobs)} ({_pages} page(s){_more})"
 
 
 # ── FIX P37 (2026-10-06): a COMPANY NAME is not a town ────────────────────
@@ -2426,6 +3137,16 @@ def is_redirector_job_url(url):
         return False
 
 
+# FIX P78 (run 20261016T173850): a trailing support-facet slug
+# (/jobs/<category>/visasponsorship, .../relocation, .../remote) marks a
+# FACET LISTING over a category, not a job detail page. Jaabz shipped 15 such
+# rows ("Blockchain", "Testing", "Graphic Design"...) as accepted jobs.
+_SUPPORT_FACET_SEGS = {
+    "visasponsorship", "relocation", "remote", "hybrid", "onsite",
+    "workfromhome",
+}
+
+
 def is_category_facet_url(url):
     """P33: /jobs/<Department>, /jobs/<COUNTRY-City> and friends."""
     seg = _url_last_segment(url)
@@ -2435,6 +3156,11 @@ def is_category_facet_url(url):
         segs = [x for x in urlparse(url).path.split("/") if x]
     except Exception:
         return False
+    if len(segs) >= 2 and re.sub(
+            r"[^a-z0-9]+", "", seg.casefold()) in _SUPPORT_FACET_SEGS:
+        # FIX P78: /jobs/<category>/<visasponsorship|relocation|remote> is a
+        # facet listing over a category, whichever word sits in segment -2.
+        return True
     if len(segs) < 2 or segs[-2].lower() not in (
             "job", "jobs", "career", "careers", "vacancy", "vacancies",
             "offerte", "stellenangebote", "empleo", "emploi"):
@@ -3074,14 +3800,7 @@ _LABEL_LOC_WORDS = (
     r"arbeitsort|einsatzort|dienstort|ort|lieu|lieu de travail|localisation|"
     r"ubicaci[oó]n|localizaci[oó]n|lugar|luogo|sede|localit[aà]|locatie|"
     r"plaats|werklocatie|miejsce pracy|lokalizacja|sijainti|plats|ciudad|"
-    r"citt[aà]|stadt|ville|city|office|b[üu]ro|"
-    # FIX LOCEXP-11 (2026-10-09): PT/CS/Nordic label words + "place of work".
-    # Only unambiguous compounds — bare "local"/"sted"/"ort"-class words are
-    # too noisy even in label position. Backtracking covers the ordering
-    # ("sede" before "sede di lavoro" still matches the longer form).
-    r"local de trabalho|místo výkonu práce|centro de trabajo|sede di lavoro|"
-    r"place of work|workplace|localiza[çc][ãa]o|pracovi[šs]t[ěe]|lokalita|"
-    r"placeringsort|arbejdssted|arbeidssted|toimipaikka"
+    r"citt[aà]|stadt|ville|city|office|b[üu]ro"
 )
 _LABEL_LOC_TAGS = r"span|dt|dd|th|td|div|p|strong|b|em|h[1-6]|label|li"
 # FIX P58: guard against echoing the label back as the value.
@@ -3157,34 +3876,17 @@ _SUPPORT_VISA_KEYWORD_RE = re.compile(
     r"blue card|carta blu|blaue karte|blauwe kaart|carte bleue|"
     r"tarjeta azul|skilled (migrant|worker)|aufenthaltstitel|"
     r"arbeitserlaubnis|permesso di soggiorno|permis de travail|"
-    r"werkvergunning|arbeidsvergunning|permiso de trabajo|"
-    # PT/PL/CS/SV/DA/NO/FI (2026-10-09): without these nouns guard (1)
-    # silently downgrades every new-language true Yes to Unknown.
-    r"visto de trabalho|patroc[íi]nio|autoriza[çc][ãa]o de trabalho|"
-    r"wsparcie wizow\w*|sponsorowanie wiz\w*|wiza\w*|wizy\b|wiz\b|"
-    r"pozwoleni\w* na prac[eę]|prawo do pracy|"
-    r"v[íi]zum\w*|v[íi]za\b|v[íi]zov\w*|pracovn[íi] povolen[íi]|"
-    r"povolen[íi] k pr[áa]ci|"
-    r"visumsponsring|visumsponsorering|visumsponsing|visum\w*|"
-    r"arbetstillst[åa]nd|arbejdstilladelse|arbeidstillatelse|"
-    r"viisum\w*|ty[öo]lupa\w*|"
-    r"niebiesk\w* kart\w*|modr\w* kart\w*|cart[ãa]o azul|"
-    r"bl[åa][\s-]?kort|sinis\w* kortt?\w*"
+    r"werkvergunning|arbeidsvergunning|permiso de trabajo"
     # FIX P0-53: "we are willing to sponsor the right candidate" carries no
     # visa noun at all, so guard (1) threw away a plainly genuine offer. When
     # the OBJECT of "sponsor" is a PERSON rather than a project, an event or
     # a team, immigration sponsorship is the only thing it can mean in a job
     # ad -- and it still cannot match the Amazon false positive this guard
     # exists for ("sponsoring projects").
-    r"|sponsor\w*\s+(?:the\s+|o\s+|os\s+|a\s+|as\s+)?"
-    r"(?:right\s+|suitable\s+|successful\s+|"
+    r"|sponsor\w*\s+(?:the\s+)?(?:right\s+|suitable\s+|successful\s+|"
     r"eligible\s+|qualified\s+|international\s+|overseas\s+|foreign\s+)?"
     r"(?:candidate|applicant|employee|hire|new\s+joiner|individual|person|"
-    r"professional|talent|worker|you|candidat\w*|funcion[áa]ri\w*|"
-    r"profissional\w*|voc[êe]|t[ée]cnic\w*)s?\b"
-    r"|patrocin\w*\s+(?:o\s+|os\s+|a\s+|as\s+)?"
-    r"(?:candidat\w*|funcion[áa]ri\w*|profissional\w*|voc[êe]|"
-    r"t[ée]cnic\w*)\b", re.I)
+    r"professional|talent|worker|you)s?\b", re.I)
 
 _SUPPORT_EVENT_RE = re.compile(
     r"sponsor\w*.{0,50}\b(event|conference|trade[- ]show|booth|"
@@ -3251,14 +3953,9 @@ _SUPPORT_CANDIDATE_OFFER_RE = re.compile(
     r"|\bwe\b[^.;!?]{0,30}\b(?:provide|offer|grant|sponsor\w*|support|assist|"
     r"help|cover|pay|reimburse|arrange|handle|facilitate|secure|obtain|"
     r"bieten|uebernehmen|\u00fcbernehmen|offriamo|forniamo|ofrecemos|"
-    r"proposons|bieden|oferujemy|zapewniamy|nab\u00edz\u00edme|"
-    r"zaji\u0161\u0165ujeme|erbjuder|tillhandah\u00e5ller|tilbyder|yder|"
-    r"tilbyr|tarjoamme|oferecemos|proporcionamos)\b[^.;!?]{0,45}"
-    r"\b(?:visa|work\s+permit|"
+    r"proposons|bieden)\b[^.;!?]{0,45}\b(?:visa|work\s+permit|"
     r"work\s+authori[sz]ation|immigration|blue\s+card|sponsorship|"
-    r"sponsoring|arbeitserlaubnis|werkvergunning|wizow\w*|v\u00edzov\w*|"
-    r"visumsponsring|visumsponsorering|visumsponsing|viisumituki|"
-    r"patroc\u00ednio)\b"
+    r"sponsoring|arbeitserlaubnis|werkvergunning)\b"
     # "visa sponsorship is available / provided / offered / possible"
     r"|\b(?:visa|work\s+permit|work\s+authori[sz]ation|immigration|"
     r"sponsorship)\b[^.;!?]{0,45}\b(?:is|are|can\s+be|will\s+be|may\s+be|"
@@ -3511,8 +4208,14 @@ def classify_work_mode(blob: str) -> str:
     strong = bool(_WORK_MODE_STRONG_REMOTE.search(low))
     hybrid = bool(_WORK_MODE_HYBRID.search(low))
     remote = strong or bool(_WORK_MODE_REMOTE.search(low))
+    # FIX P74 (run 20261016T140013): a strong-remote phrase no longer outranks
+    # an explicit hybrid. The card-level classifier already returned
+    # "Remote/Hybrid" for the same evidence, so the two passes disagreed and
+    # the detail pass won: a DocuSign JD that says hybrid plus one remote-first
+    # boilerplate sentence stored "Remote" (user-confirmed wrong on screen).
+    # One evidence set, one verdict, in both passes and both scanners.
     if remote and hybrid:
-        return "Remote" if strong else "Remote/Hybrid"
+        return "Remote/Hybrid"
     if hybrid:
         return "Hybrid"
     if remote:
@@ -3520,6 +4223,29 @@ def classify_work_mode(blob: str) -> str:
     if _WORK_MODE_ONSITE.search(low):
         return "Onsite"
     return "Unknown"
+
+
+def work_mode_evidence(blob, limit=3) -> str:
+    """FIX P74 (run 20261016T140013): the snippets a work-mode verdict came from.
+
+    Sponsorship and Blue Card verdicts ship with quoted evidence; Work Mode did
+    not, which is exactly why a hybrid row stored as "remote" could not be
+    audited from the run output. Same windowing discipline as the support
+    evidence: the match plus a little context, never the whole JD.
+    """
+    text = str(blob or "")
+    low = text.lower()
+    out: list[str] = []
+    for pat in (_WORK_MODE_STRONG_REMOTE, _WORK_MODE_HYBRID,
+                _WORK_MODE_REMOTE, _WORK_MODE_ONSITE):
+        for m in pat.finditer(low):
+            a, b = max(0, m.start() - 40), min(len(text), m.end() + 40)
+            snip = re.sub(r"\s+", " ", text[a:b]).strip()
+            if snip and snip not in out:
+                out.append(snip)
+            if len(out) >= limit:
+                return "; ".join(out)
+    return "; ".join(out)
 
 
 class CareerPortalScanner:
@@ -3543,9 +4269,17 @@ class CareerPortalScanner:
             # is honoured as given (capped at 8) instead of being clamped down
             # to the heuristic.
             self.max_workers = (min(8, max(1, int(max_workers))) if max_workers
-                                else recommended_workers("browser"))
+                                else self._company_pool())
         except (TypeError, ValueError):
-            self.max_workers = recommended_workers("browser")
+            self.max_workers = self._company_pool()
+        # FIX RUNTIME-2 (run 20261016T140013): the memory guard belongs on
+        # resident Chromium SESSIONS, not on company threads. A 2-core box
+        # sized the company pool to 1 and scanned 108 seeds at ~1.3x serial
+        # speed although most seeds never open a browser. Long-lived sessions
+        # (company crawl, detail pass) take this semaphore; short utility
+        # launches normally reuse a session handed in by the caller.
+        self._browser_sem = threading.Semaphore(
+            max(1, recommended_workers("browser")))
         self.detail_scan = detail_scan or ProductionScannerConfig.ENABLE_DETAIL_SCAN
         self.resume = bool(resume)
         # J1: retained for API compatibility but no longer gates anything —
@@ -3941,6 +4675,43 @@ class CareerPortalScanner:
                         backoff, self.cancel_event, self.pause_event):
                     raise ScanCancelled()
         raise last_exc
+
+    def _other_company_names(self, company):
+        """FIX P73: every OTHER company on the seed list, for evidence scoping.
+
+        Cached once per scanner. Reading the seed directly (rather than a
+        loaded frame) keeps this independent of whichever seed path the run
+        resolved, and a failure degrades to "no scoping", never to a crash.
+        """
+        names = getattr(self, "_seed_name_cache", None)
+        if names is None:
+            names = set()
+            try:
+                with open(self.input_csv, newline="", encoding="utf-8-sig") as f:
+                    for row in csv.DictReader(f):
+                        n = (row.get("name") or "").strip()
+                        if n and not n.startswith("#"):
+                            names.add(n)
+            except Exception:
+                names = set()
+            self._seed_name_cache = names
+        return tuple(n for n in names if n != company)
+
+    def _company_pool(self):
+        """FIX RUNTIME-2: company-level concurrency is I/O-bound.
+
+        An explicit SPONSORSCOUT_MAX_WORKERS is honoured (capped at 8) exactly
+        as before; otherwise the host's HTTP profile sizes the pool, capped at
+        4 so a worst case of four companies reaching a browser at once stays
+        near the old hard-coded pool of three Chromium contexts.
+        """
+        raw = os.environ.get("SPONSORSCOUT_MAX_WORKERS")
+        if raw:
+            try:
+                return min(8, max(1, int(raw)))
+            except ValueError:
+                pass
+        return max(2, min(4, recommended_workers("http")))
 
     def read_seed_file(self):
         """Read and validate the v7 seed schema.
@@ -4774,6 +5545,19 @@ class CareerPortalScanner:
         r"titre\s+du\s+poste|functietitel)\s*[:\-\u2013\u2014]?\s*"
         r"(?=\S.{2,})")
 
+    #: FIX P69: a BARE label -- "Position: Engineer", "Role - Analyst" -- with
+    #: no word like "title" after it, which the pattern above deliberately
+    #: requires. Stricter on purpose: the separator is MANDATORY, and a bare
+    #: dash only counts when surrounded by spaces. So "Role-Play Therapist"
+    #: and "Position Trader" keep their first word while a scraped form label
+    #: is stripped. 0 of the 60,057 titles in the shipped runs match this, so
+    #: it closes a latent gap rather than an active one; pinned in the battery
+    #: both ways so the guard cannot quietly widen.
+    _FIELD_LABEL_BARE_RE = re.compile(
+        r"(?i)^\s*(?:position|role|vacancy|job|stelle|functie|poste|"
+        r"posici[oó]n|posizione|cargo|plaats)\s*"
+        r"(?::|\s[\-\u2013\u2014]\s)\s*(?=\S.{2,})")
+
     def clean_job_title(self, title):
         """Conservative, multilingual title normalization.
 
@@ -4785,6 +5569,8 @@ class CareerPortalScanner:
             return ""
         # FIX P65 (A4) -- strip a scraped form LABEL before anything else.
         title = self._FIELD_LABEL_PREFIX_RE.sub("", str(title), count=1)
+        # FIX P69 -- then a BARE label ("Position: ..."), separator mandatory.
+        title = self._FIELD_LABEL_BARE_RE.sub("", title, count=1)
         title = self.fix_encoding(str(title))
         lines = [re.sub(r"\s+", " ", x).strip() for x in re.split(r"[\r\n]+", title) if x.strip()]
         if not lines:
@@ -4812,6 +5598,18 @@ class CareerPortalScanner:
         # Innsbruck"); the place itself is recovered separately as a location
         # hint by _split_title_place, so nothing is lost.
         title, _ = self._split_title_place(title)
+        # FIX P75 (run 20261016T140013): Shopify publishes the location welded
+        # onto the title -- "Senior Lead, Federal Government Affairs (US)Remote
+        # - Americas", "...Engineering & Technical ContentRemote - America".
+        # The glue is in the SOURCE markup (Raw == stored), so no earlier step
+        # saw it. Strip a trailing "Remote - <region>" tail, including a
+        # directly glued closing paren. "(Full-time, Remote)" is untouched:
+        # space before Remote, no dash after it.
+        # a parenthesised place glued straight onto "Remote" goes with it:
+        # "(US)Remote - Americas" is one location block, not a title suffix.
+        _glued = re.sub(r"\s*(?:\([^)]*\)|\))?Remote\s*[-–—][^\n]*$", "", title, flags=re.I)
+        if _glued and len(_glued) >= 6 and re.search(r"[a-z]", _glued, re.I):
+            title = _glued.strip(" \t-–—|•,")
         return title[:200].rstrip()
 
     def _is_postal_stub(self, segs) -> bool:
@@ -5174,7 +5972,42 @@ class CareerPortalScanner:
             return True
         return False
 
-    def is_valid_job_title(self, title, company=""):
+    def _clean_rescued_location(self, raw):
+        """FIX P79 (run 20261016T173850): a raw location rescued from a detail
+        page ("Munich Hybrid (NavVis GmbH)") used to reach Raw Location
+        verbatim while Job Location stayed "Unknown" -- only the insert-time
+        country derivation ever saw it. Strip the company parenthetical and
+        the work-mode token and keep the place if the resolver accepts it.
+        """
+        v = re.sub(r"\s+", " ", str(raw or "")).strip()
+        if not v:
+            return ""
+        core = re.sub(r"\([^)]*\)", " ", v)
+        core = re.sub(r"(?i)\b(remote|hybrid|on-?site|telework|"
+                      r"work\s+from\s+home)\b", " ", core)
+        core = re.sub(r"\s+", " ", core).strip(" \t,;|-")
+        # A title glued to a place ("Franchise Partner - Specialty Foods
+        # from Austria, Lower Austria Region") is not a location string;
+        # neither is a whole sentence.
+        if not core or len(core) < 2 or len(core) > 48 or " - " in core \
+                or " \u2013 " in core:
+            return ""
+        try:
+            from sponsorscout.core.location_country import country_from_location
+            if (country_from_location(core) or "").strip():
+                return core
+            # FIX 8r (run 20261016T203031): legal-entity strings carry the
+            # country INSIDE the parenthetical ("BASF (China) Company Ltd."),
+            # so the stripped core resolves to nothing. If the raw as written
+            # names a country, that country is the location as stated.
+            _c = (country_from_location(v) or "").strip()
+            if _c:
+                return _c
+        except Exception:
+            return ""
+        return ""
+
+    def is_valid_job_title(self, title, company="", url=""):
         if not title:
             return False
         t = re.sub(r"\s+", " ", title).strip()
@@ -5214,6 +6047,30 @@ class CareerPortalScanner:
         # "Alle Jobs anzeigen" all shipped as job titles.
         if self._is_nav_title(t):
             return False
+        # FIX P73 (run 20261016T140013): an aggregator CATEGORY page is not a
+        # vacancy. jaabz.com shipped "/jobs/visasponsorship" as a job titled
+        # "Visa Sponsorship" and "/jobs/programming/relocation" as one titled
+        # "Programming" -- twelve such rows, each collecting site-wide
+        # boilerplate as sponsorship evidence. A real title without any role
+        # word whose text equals the last slug segment(s) of its own URL is
+        # taxonomy, not a posting.
+        _segs = [x for x in urlparse(url).path.split("/") if x] if url else []
+        _facet_tail = bool(_segs) and re.sub(
+            r"[^a-z0-9]+", "", _segs[-1].casefold()) in _SUPPORT_FACET_SEGS
+        # FIX P78: over a facet-listing URL the role-word exemption is dropped
+        # ("Blockchain", "Testing" are taxonomy there); elsewhere it still
+        # protects real one-word titles like "Barista".
+        if url and len(t.split()) <= 4 and (
+                _facet_tail or not self.config.ROLE_WORD_PATTERN.search(t)):
+            _tslug = re.sub(r"[^a-z0-9]+", " ", low).strip()
+            if _tslug:
+                _sslugs = {re.sub(r"[^a-z0-9]+", " ", x).strip() for x in _segs[-2:]}
+                # compare with AND without separators: the URL slug
+                # "visasponsorship" must match the title "Visa Sponsorship"
+                if (_tslug in _sslugs
+                        or _tslug.replace(" ", "")
+                        in {x.replace(" ", "") for x in _sslugs}):
+                    return False
         # A title that is nothing but a place. _title_is_pure_location only
         # consults a ~190-entry list, which has Amsterdam but not Antwerpen;
         # the full location parser and the country resolver know both.
@@ -5428,6 +6285,15 @@ class CareerPortalScanner:
                     if (/^\d{1,3}$/.test(t) && Number(t)>1) hasPager=true;
                 }
             }
+            // FIX P96 (2026-10-17): a load-more control is recognised by its
+            // structure too. Teamtailor boards render <a id="show_more_button"
+            // href="/jobs/show_more?page=2">Mostra ancora 20</a> outside any
+            // nav element, so the text/nav scan above never saw it and the
+            // company stopped at page 1 (Leroy Merlin: 21 of 92 jobs).
+            const structural = document.querySelector(
+                '[id*="show_more" i], [id*="load_more" i], [class*="load-more" i], '
+                + '[class*="loadmore" i], a[href*="show_more" i], a[href*="load_more" i]');
+            if (structural && visible(structural)) hasLoadMore = true;
             return {hasNext,hasLoadMore,hasPager};
         }"""
         try:
@@ -5539,7 +6405,17 @@ class CareerPortalScanner:
             # are specific jobs, not generic apply links.
             if not self.has_job_identifier_query(url):
                 return False
-        if self.config.URL_EXCLUSION_PATTERN.search(url):
+        # FIX P70: a job-DETAIL URL whose slug merely CONTAINS a marketing word
+        # is a real job, not a marketing page. Deloitte Digital's "Pricing &
+        # Commercial Strategy & Analytics (Senior) Consultant" is served by
+        # Avature as /careers/JobDetail/Pricing-Commercial-Strategy-Analytics-
+        # Senior-Consultant/10509, and the blacklist rejected it for the
+        # "/Pricing" segment -- one real vacancy lost out of 238. The exemption
+        # needs BOTH a detail marker and a numeric job id, so /pricing, /blog
+        # and /values still fail. Applied to this check only; the asset,
+        # ATS-furniture and category-facet rules are untouched.
+        if (not self.config._JOB_DETAIL_WITH_ID_RE.search(urlparse(url).path or "")
+                and self.config.URL_EXCLUSION_PATTERN.search(url)):
             return False
         if "#job=" in url.lower():
             return True
@@ -6173,9 +7049,9 @@ class CareerPortalScanner:
             with open(path, "r", newline="", encoding="utf-8-sig") as f:
                 rows = list(csv.DictReader(f))
         except FileNotFoundError:
-            return 0
+            return 0, {}
         if len(rows) < 2:
-            return 0
+            return 0, {}
 
         def _u(r):
             u = (r.get("Job URL") or "").strip()
@@ -6200,12 +7076,14 @@ class CareerPortalScanner:
                 if r is not best:
                     drop.add(id(r))
         if not drop:
-            return 0
+            return 0, {}
         keep, moved = [], []
+        seed_counts = collections.Counter()
         for r in rows:
             if id(r) in drop:
                 r["Record Status"] = "quarantine"
                 r["Quarantine Reason"] = "duplicate_url_cross_seed"
+                seed_counts[r.get("Seed Name") or ""] += 1
                 moved.append(r)
             else:
                 keep.append(r)
@@ -6218,7 +7096,7 @@ class CareerPortalScanner:
             w = csv.DictWriter(f, fieldnames=columns)
             for r in moved:
                 w.writerow({k: r.get(k, "") for k in columns})
-        return len(moved)
+        return len(moved), dict(seed_counts)
 
     def _sanitize_job_location(self, value, company=""):
         """FIX P0-49: last gate before a value is written to Job Location.
@@ -8294,6 +9172,102 @@ class CareerPortalScanner:
         return jobs, (f"jobsinnetwork API: {len(jobs)} of {total} "
                       f"({with_text} with JD text)")
 
+    # ── FIX P68 (2026-10-08): Avature had no adapter at all ────────────────
+    # Deloitte Digital (deloittebe.avature.net) produced 229 rows in run
+    # 20261008T085006 and EVERY ONE was quarantined
+    # `outside_or_unproven_target_country` -- 228 with Location Source `none`
+    # and Job Location `Unknown`. Generic DOM scraping latched onto each row's
+    # "Apply" button (.../ApplicationMethods?jobId=13024) instead of the
+    # title's real URL (.../JobDetail/<slug>/13024), and never read the
+    # <strong>Location:</strong><span>Zaventem</span> sitting in the same <tr>.
+    # Avature's SearchJobs listing is server-rendered plain HTML, so this needs
+    # neither a browser nor an API key. Verified live 2026-10-08: 14 pages,
+    # 238 jobs, 238 located (Zaventem 204, Ghent 13, Antwerp 8, Charleroi 6,
+    # Hasselt 4, Roeselare 1, Liege 1, Watermael-Boitsfort 1).
+    # The board also advertises an RSS feed, but it is a 775-byte stub with
+    # zero <item> elements, and `jobRecordsPerPage` is ignored (always 18), so
+    # HTML rows walked via the paginationNextLink chain is the only route.
+    _AVATURE_ROW_RE = re.compile(
+        r"<tr[^>]*class=\"[^\"]*card--box[^\"]*\"[^>]*>(.*?)</tr>",
+        re.S | re.I)
+    _AVATURE_TITLE_RE = re.compile(
+        r"<h3[^>]*article__header__text__title[^>]*>\s*"
+        r"<a[^>]+href=\"([^\"]+)\"[^>]*>(.*?)</a>", re.S | re.I)
+    _AVATURE_LOC_RE = re.compile(
+        r"<strong>\s*Location\s*:?\s*</strong>\s*<span>(.*?)</span>",
+        re.S | re.I)
+    _AVATURE_FIELD_RE = re.compile(
+        r"<strong>\s*(Field of Interest|Industry)\s*:?\s*</strong>\s*"
+        r"<span>(.*?)</span>", re.S | re.I)
+    _AVATURE_NEXT_RE = re.compile(
+        r"class=\"[^\"]*paginationNextLink[^\"]*\"\s+href=\"([^\"]+)\"",
+        re.S | re.I)
+
+    @staticmethod
+    def _avature_text(fragment):
+        """'<span>Zaventem</span>' -> 'Zaventem' (tags out, entities decoded)."""
+        return re.sub(r"\s+", " ",
+                      unescape(re.sub(r"<[^>]+>", " ", fragment or ""))).strip()
+
+    def _fetch_avature_jobs(self, target_row):
+        """Avature career-site SearchJobs listing (server-rendered HTML).
+
+        Returns (jobs, diagnostic) with the same contract as every other
+        provider adapter: job_title / job_url / location_hint / card_context /
+        extraction_method.
+        """
+        seed = (target_row.get("careers_url") or "").strip()
+        headers = {"User-Agent": "Mozilla/5.0 Chrome/126 Safari/537.36",
+                   "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+                   "Accept-Language": "en-GB,en;q=0.9"}
+        jobs, seen = [], set()
+        url = seed
+        pages = 0
+        cap = int(os.environ.get("SPONSORSCOUT_AVATURE_PAGES", "40") or 40)
+        while url and pages < cap:
+            check_cancelled(self.cancel_event)
+            pages += 1
+            body = self._http_fetch_with_retry(url, headers, parse_json=False) or ""
+            fresh = 0
+            for row in self._AVATURE_ROW_RE.findall(body):
+                m = self._AVATURE_TITLE_RE.search(row)
+                if not m:
+                    continue
+                job_url = unescape(m.group(1)).strip()
+                title = self._avature_text(m.group(2))
+                if not title or not job_url or job_url in seen:
+                    continue
+                seen.add(job_url)
+                fresh += 1
+                lm = self._AVATURE_LOC_RE.search(row)
+                loc = self._avature_text(lm.group(1)) if lm else ""
+                # Each row carries the field grid TWICE (a desktop "list"
+                # variant and a mobile "card" variant), so the pairs are
+                # de-duplicated or the 400-char context budget is spent
+                # saying "Field of Interest: Technology" twice.
+                pairs = []
+                for k, v in self._AVATURE_FIELD_RE.findall(row):
+                    item = f"{self._avature_text(k)}: {self._avature_text(v)}"
+                    if item not in pairs:
+                        pairs.append(item)
+                ctx = " | ".join(pairs)[:400]
+                jobs.append({"job_title": title,
+                             "job_url": urljoin(seed, job_url),
+                             "location_hint": loc,
+                             "card_context": ctx,
+                             "extraction_method": "avature_html"})
+            nm = self._AVATURE_NEXT_RE.search(body)
+            if not nm or not fresh:
+                break
+            nxt = unescape(nm.group(1)).strip()
+            if not nxt:
+                break
+            nxt = urljoin(seed, nxt)
+            if nxt == url or nxt in seen:
+                break
+            url = nxt
+        return jobs, f"avature HTML: {len(jobs)} in {pages} page(s)"
+
     def _fetch_provider_jobs(self, target_row):
         """Provider APIs first. Returns (jobs, diagnostic)."""
         provider = (target_row.get("provider") or "auto").lower()
@@ -8309,6 +9283,24 @@ class CareerPortalScanner:
             except Exception as exc:
                 return [], (f"jobsinnetwork API failed: "
                             f"{type(exc).__name__}: {exc}")
+        # FIX P68: Avature listing. Host-detected, exactly like jobsinnetwork
+        # above, so a `provider=auto` seed is covered without a seed edit.
+        if provider == "avature" or re.search(r"\.avature\.(?:net|com)$", _host):
+            try:
+                _av_jobs, _av_diag = self._fetch_avature_jobs(target_row)
+            except Exception as exc:
+                _av_jobs = []
+                _av_diag = f"avature listing failed: {type(exc).__name__}: {exc}"
+            if _av_jobs:
+                return _av_jobs, _av_diag
+            # Zero rows: do NOT report a hard failure. The caller sets
+            # `provider_success = bool(api_jobs)` and only then falls back to
+            # the static-HTML and browser paths, so returning nothing is what
+            # lets a board that changed its markup still be crawled -- "no job
+            # should be missed at any cost". The diagnostic is carried forward
+            # as _provider_note so the scan log still says why.
+            target_row = dict(target_row)
+            target_row["_provider_note"] = _av_diag
         if provider in ("pam", "digitalrecruiters"):
             # Batch N phase 2a: custom adapters with own fetch/filter logic.
             try:
@@ -9002,7 +9994,7 @@ class CareerPortalScanner:
                     /carica altro/i, /mehr laden/i, /meer laden/i,
                     // FIX P0-5: Italian/ES/FR load-more phrasings. 23% of the
                     // seed is Italy and only "carica altro" was covered.
-                    /carica altri/i, /carica ancora/i, /mostra altri/i,
+                    /carica altri/i, /carica ancora/i, /mostra altri/i, /mostra ancora/i,
                     /mostra di pi[ùu]/i, /vedi altri/i, /altre offerte/i,
                     /altri risultati/i, /altre posizioni/i, /visualizza altri/i,
                     /weitere laden/i, /mehr anzeigen/i, /mehr jobs/i, /weitere stellen/i,
@@ -9371,6 +10363,7 @@ class CareerPortalScanner:
                     name, title, "", url)
                 rec["Job Type"] = job_type2
                 rec["Work Mode"] = classify_work_mode(f"{title} {url}")
+                rec["Work Mode Evidence"] = work_mode_evidence(f"{title} {url}")
                 for k in ("Experience Required", "Experience Min Years",
                           "Experience Level", "Experience Source"):
                     rec.pop(k, None)
@@ -9764,7 +10757,8 @@ class CareerPortalScanner:
         rec=next((r for r in company_jobs.values() if r.get("Job URL","").casefold()==url.casefold()),None)
         if rec is None or not desc:
             return "skipped"
-        sup=self.detector.detect(desc)
+        sup=self.detector.detect(
+            desc, self._other_company_names(rec.get("Company Name") or ""))
         visa=sup["visa"]["verdict"]
         reloc=sup["relocation"]["verdict"]
         # FIX P0-50 (S-01): this site published the raw verdict.
@@ -10132,6 +11126,76 @@ class CareerPortalScanner:
                     return loc_str
         return ""
 
+    def _slug_is_title(self, url, title):
+        """FIX 8t: the last path segment IS the title, separator-free."""
+        try:
+            segs = [x for x in urlparse(url).path.split("/") if x]
+        except Exception:
+            return False
+        if not segs:
+            return False
+        t = re.sub(r"[^a-z0-9]+", "", (title or "").casefold())
+        return bool(t) and t == re.sub(
+            r"[^a-z0-9]+", "", segs[-1].casefold())
+
+    def _page_looks_like_listing(self, html, page_url):
+        """FIX 8t: a category page LINKS to jobs; a job page carries an
+        apply affordance. Three-plus same-host job-shaped anchors and no
+        apply marker in any language we seed = taxonomy, not a vacancy.
+        """
+        if not html:
+            return False
+        try:
+            pnet = urlparse(page_url).netloc
+            ppath = urlparse(page_url).path.rstrip("/")
+        except Exception:
+            return False
+        joblike = set()
+        for h in re.findall(r'href="([^"]+)"', html):
+            absu = urljoin(page_url, unescape(h.strip()))
+            try:
+                pu = urlparse(absu)
+            except Exception:
+                continue
+            if pu.netloc != pnet or pu.path.rstrip("/") == ppath:
+                continue
+            if self.config.JOB_URL_PATTERN.search(absu) or \
+                    is_ats_detail_url(absu):
+                joblike.add(absu)
+            if len(joblike) >= 3:
+                break
+        if len(joblike) < 3:
+            return False
+        return not re.search(
+            r"(?i)(apply\b|application\b|bewerben|bewerbung|candidat|"
+            r"sollicit|postuler|requestid=|job_application)", html)
+
+    def _detail_page_is_listing(self, url):
+        """FIX 8t: one budgeted static GET to settle a suspected category
+        page whose slug equals its role-word title (/jobs/devops).
+        """
+        if not url or not url.startswith("http"):
+            return False
+        cap = max(0, int(os.environ.get(
+            "SPONSORSCOUT_LISTING_CHECK_MAX") or 150))
+        with self._title_rescue_lock:
+            used = getattr(self, "_listing_check_used", 0)
+            if used >= cap:
+                return False
+            self._listing_check_used = used + 1
+        try:
+            req = urllib.request.Request(url, headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                              "AppleWebKit/537.36 Chrome/126.0.0.0 "
+                              "Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+            })
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                html = resp.read(2_000_000).decode("utf-8", "replace")
+        except Exception:
+            return False
+        return self._page_looks_like_listing(html, url)
+
     def _title_from_detail_page(self, url, company=""):
         """FIX P42 (2026-10-06): read a job's real title off its own page.
 
@@ -10200,7 +11264,7 @@ class CareerPortalScanner:
             if _PAGE_FURNITURE_TITLE_RE.search(text):
                 continue
             cleaned = self.clean_job_title(text)
-            if cleaned and self.is_valid_job_title(cleaned, company):
+            if cleaned and self.is_valid_job_title(cleaned, company, url):
                 return cleaned
         return ""
 
@@ -10761,10 +11825,11 @@ class CareerPortalScanner:
         """
         if not desc:
             return False
-        sup = self.detector.detect(desc)
+        _others = self._other_company_names(rec.get("Company Name") or "")
+        sup = self.detector.detect(desc, _others)
         if not sup["visa"]["evidence"] and not sup["relocation"]["evidence"]:
             # Blue Card is independent of the general visa verdict.
-            blue = detect_blue_card(self.detector, desc)
+            blue = detect_blue_card(self.detector, desc, _others)
             if blue and blue != VERDICT_UNKNOWN:
                 rec["EU Blue Card"] = blue
                 return True
@@ -10791,7 +11856,7 @@ class CareerPortalScanner:
             rec["Relocation/Visa Support"] = "N"
         else:
             rec["Relocation/Visa Support"] = "Unknown"
-        rec["EU Blue Card"] = detect_blue_card(self.detector, desc)
+        rec["EU Blue Card"] = detect_blue_card(self.detector, desc, _others)
         _ev = ""
         for sent in self.detector.split_sentences(desc):
             if re.search(r"\b(?:eu[- ]?)?blue[- ]?card|blaue[nr]? karte"
@@ -11103,7 +12168,7 @@ class CareerPortalScanner:
             visa = (r.get("Relocation/Visa Support") or "").strip()
 
             new_title = self.clean_job_title(old_title)
-            if not new_title or not self.is_valid_job_title(new_title, name):
+            if not new_title or not self.is_valid_job_title(new_title, name, url):
                 stats["title_rejected"] += 1
                 continue
             if new_title != old_title:
@@ -11366,6 +12431,40 @@ class CareerPortalScanner:
         with open(path, "w", newline="", encoding="utf-8-sig") as f:
             csv.DictWriter(f, fieldnames=_ERROR_COLUMNS).writeheader()
 
+    def _bump_scan_log_csv_quarantined(self, scan_log_csv, counts):
+        """FIX P80 (run 20261016T234806): add late-known quarantines (cross-seed
+        duplicates) to the per-seed ``Quarantined`` counters INSIDE the
+        scan_log CSV -- the file the pipeline later ingests into the DB and
+        the file the user downloads. Returns rows updated.
+        """
+        if not counts:
+            return 0
+        import csv as _csv
+        try:
+            with open(scan_log_csv, newline="", encoding="utf-8-sig") as fh:
+                reader = _csv.DictReader(fh)
+                fields = list(reader.fieldnames or [])
+                rows = list(reader)
+        except Exception:
+            return 0
+        updated = 0
+        for r in rows:
+            n = counts.get((r.get("Seed Name") or "").strip())
+            if n and (r.get("Run ID") or "").strip() == self.run_id:
+                r["Quarantined"] = str(int(r.get("Quarantined") or 0) + int(n))
+                updated += 1
+        if not updated:
+            return 0
+        try:
+            with open(scan_log_csv, "w", newline="", encoding="utf-8-sig") as fh:
+                w = _csv.DictWriter(fh, fieldnames=fields,
+                                    lineterminator="\r\n")
+                w.writeheader()
+                w.writerows(rows)
+        except Exception:
+            return 0
+        return updated
+
     def _clear_recovered_dns_errors(self, scan_log_csv):
         """Delete DNS error rows for companies the retry sweep recovered.
 
@@ -11584,7 +12683,7 @@ class CareerPortalScanner:
             "Job Title", "Raw Job Title", "Job Location", "Raw Location", "Job Type",
             "Job URL", "Canonical Job ID", "Provider", "Extraction Method",
             "EU Blue Card", "Blue Card Evidence", "Relocation/Visa Support",
-            "Work Mode", "Scope Confidence",
+            "Work Mode", "Work Mode Evidence", "Scope Confidence",
             # FIX P0-30
             "Experience Required", "Experience Min Years", "Experience Level",
             "Experience Source",
@@ -11693,6 +12792,7 @@ class CareerPortalScanner:
                     "Blue Card Evidence": "",
                     "Relocation/Visa Support": "Unknown",
                     "Work Mode": "Unknown",
+                    "Work Mode Evidence": "",
                     "Scope Confidence": "n/a",
                     # FIX P0-30
                     "Experience Required": "Unknown",
@@ -11752,11 +12852,11 @@ class CareerPortalScanner:
                     quarantine_job(raw_title, raw_url, raw_location, "self_listing_url", method)
                     return False
                 clean_title = self.clean_job_title(raw_title)
-                if not self.is_valid_job_title(clean_title, name):
+                if not self.is_valid_job_title(clean_title, name, clean_url):
                     # J2: try the URL slug before quarantining (button labels
                     # like "Show job" / chips like "Full time" on real job URLs).
                     rescued = self._title_from_url_slug(clean_url)
-                    if rescued and self.is_valid_job_title(rescued, name):
+                    if rescued and self.is_valid_job_title(rescued, name, clean_url):
                         clean_title = rescued
                         method = f"{method}+slug_title"
                     else:
@@ -11766,10 +12866,20 @@ class CareerPortalScanner:
                         if rescued:
                             clean_title = rescued
                             method = f"{method}+detail_title"
-                    if not self.is_valid_job_title(clean_title, name):
+                    if not self.is_valid_job_title(clean_title, name, clean_url):
                         stats["rejected_title"] += 1
                         quarantine_job(raw_title, raw_url, raw_location, "invalid_generic_or_department_title", method)
                         return False
+                # FIX 8t (residual of P78): /jobs/devops titled "Devops" --
+                # the slug equals a role-word title, so the gate exempts it.
+                # One budgeted fetch settles whether the page is a listing.
+                if self._slug_is_title(clean_url, clean_title) and \
+                        self.config.ROLE_WORD_PATTERN.search(clean_title) and \
+                        self._detail_page_is_listing(clean_url):
+                    stats["rejected_url"] += 1
+                    quarantine_job(raw_title, raw_url, raw_location,
+                                   "category_or_department_link", method)
+                    return False
                 # W3-1: "Designer (m/w/d) Jobs in Innsbruck" -> the title
                 # keeps the role, the place becomes a location candidate
                 # (lowest priority: only used if nothing else resolves).
@@ -11872,6 +12982,15 @@ class CareerPortalScanner:
                 # its country overwritten from the seed's scope. A real
                 # country read off the page outranks a preset one, so that
                 # case is now left alone.
+                # FIX P79 (run 20261016T173850): a raw location read off the
+                # page but never sanitized left Job Location "Unknown" while
+                # the country resolver happily read it at insert time.
+                if (out_location in ("", "Unknown")
+                        or self._location_is_site_derived(loc_source)) \
+                        and raw_location:
+                    _resc = self._clean_rescued_location(raw_location)
+                    if _resc:
+                        out_location, loc_source = _resc, "detail"
                 if target_row.get("target_country") == "Italy" and out_location == "Milan, MI":
                     out_location, loc_source = "Milan, Italy", "seed_scope+card"
                 # J1: same job as an accepted row but in the other URL form
@@ -11945,8 +13064,9 @@ class CareerPortalScanner:
                 # FIX P0-12: split work mode out of Job Location. "Remote"
                 # inside a location string is ambiguous for a sponsorship tool
                 # (remote-from-anywhere vs remote-within-country differ legally).
-                work_mode = classify_work_mode(
-                    f"{clean_title} {combined_context} {out_location}")
+                _wm_blob = f"{clean_title} {combined_context} {out_location}"
+                work_mode = classify_work_mode(_wm_blob)
+                work_mode_ev = work_mode_evidence(_wm_blob)
                 rec = base_record(raw_title, clean_title, raw_location, clean_url)
                 _policy = (target_row.get("scope_policy") or "global").lower()
                 _tc = (target_row.get("target_country") or "Global").strip()
@@ -11977,6 +13097,7 @@ class CareerPortalScanner:
                 rec.update({
                     "Job Location": out_location,
                     "Work Mode": work_mode,
+                    "Work Mode Evidence": work_mode_ev,
                     "Scope Confidence": ("pending_location" if _scope_pending
                                          else _scope_conf),
                     "Job Type": job_type,
@@ -12129,7 +13250,7 @@ class CareerPortalScanner:
                         )
                     _crawl_locale, _crawl_accept_language = self._preferred_browser_locales(target_row, seed_url)
                     diagnostics.append(f"browser locale: {_crawl_locale}; Accept-Language: {_crawl_accept_language}")
-                    with sync_playwright() as pw:
+                    with self._browser_sem, sync_playwright() as pw:
                         browser = pw.chromium.launch(
                             headless=True,
                             args=BROWSER_ARGS
@@ -12226,7 +13347,7 @@ class CareerPortalScanner:
                             if _dead_for > self.config.DEAD_END_ABORT_SEC:
                                 diagnostics.append(
                                     f"dead end: no job cards after "
-                                    f"{_dead_for:.0f}s (DEAD_END_ABORT_SEC="
+                                    f"{_dead_for:.0f}s since company start (DEAD_END_ABORT_SEC="
                                     f"{self.config.DEAD_END_ABORT_SEC}); "
                                     f"skipping scroll/pagination")
                                 raise _DeadEndBoard()
@@ -12371,7 +13492,7 @@ class CareerPortalScanner:
                             f"{_pw_reason})")
                         self._run_detail_pipeline(None, name, company_jobs)
                         raise _DetailHttpOnly()
-                    with sync_playwright() as pw:
+                    with self._browser_sem, sync_playwright() as pw:
                         browser = pw.chromium.launch(headless=True, args=BROWSER_ARGS)
                         ctx = browser.new_context(viewport={"width": 1280, "height": 800})
                         # FIX P0-29 (restored from _org): the detail pass visits
@@ -12723,11 +13844,49 @@ class CareerPortalScanner:
             # FIX P65 (A5): same URL reached under two different SEEDS.
             _xs = 0
             for _p in (self.output_csv, recruiter_csv):
-                _xs += self._dedupe_same_url_across_seeds(
+                _n, _cnt = self._dedupe_same_url_across_seeds(
                     _p, quarantine_csv, columns)
+                _xs += _n
+                if _cnt:
+                    # FIX P76: the per-seed scan_log "Quarantined" counter is
+                    # written while each seed runs; cross-seed duplicates are
+                    # only known at the end of the run, so they never reached
+                    # it (81 logged vs 89 rows in run 20261016T140013).
+                    # FIX P80 (run 20261016T234806): the scan_log CSV is the
+                    # SOURCE the pipeline ingests into the DB afterwards --
+                    # bumping the DB here ran before those rows existed and
+                    # never reached the file the user reads. Patch the CSV.
+                    try:
+                        _req = sum(int(n) for n in _cnt.values() if n)
+                        _upd = self._bump_scan_log_csv_quarantined(
+                            scan_log_csv, _cnt)
+                        print(f"  [P80] scan_log quarantine bump: {_req} late "
+                              f"row(s) across {len(_cnt)} seed(s), {_upd} "
+                              f"scan_log row(s) updated in the CSV"
+                              + ("" if _upd else f" -- NONE matched in {scan_log_csv}"))
+                    except Exception as _bexc:
+                        print(f"  [warn] scan_log quarantine bump skipped: "
+                              f"{type(_bexc).__name__}: {_bexc}")
             if _xs:
                 print(f"  Cross-seed duplicate URLs moved to quarantine: {_xs} "
                       f"(two seeds pointing at the same board)")
+            try:
+                import csv as _csvmod
+                with open(scan_log_csv, newline="", encoding="utf-8-sig") as _fh:
+                    _sum = sum(int(_r.get("Quarantined") or 0)
+                               for _r in _csvmod.DictReader(_fh)
+                               if (_r.get("Run ID") or "").strip() == self.run_id)
+                with open(quarantine_csv, encoding="utf-8-sig",
+                          newline="") as _fh:
+                    _qrows = sum(
+                        1 for _r in _csvmod.DictReader(_fh)
+                        if (_r.get("Run ID") or "").strip() == self.run_id)
+                if _sum != _qrows:
+                    print(f"  [P80] reconcile: scan_log quarantined {_sum} vs "
+                          f"quarantine CSV {_qrows} for run {self.run_id}")
+            except Exception as _rexc:
+                print(f"  [warn] scan_log reconcile skipped: "
+                      f"{type(_rexc).__name__}: {_rexc}")
         except Exception as _dexc:
             print(f"  [warn] cross-source dedupe skipped: "
                   f"{type(_dexc).__name__}: {_dexc}")

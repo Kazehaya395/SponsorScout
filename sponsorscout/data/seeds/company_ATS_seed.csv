@@ -64,3 +64,19 @@ Wolters Kluwer,https://wk.wd3.myworkdayjobs.com/External,workday,wk/External,dir
 Catawiki,https://job-boards.greenhouse.io/catawiki,greenhouse,catawiki,direct_employer,Global,global,E-Commerce,75,85,60,moved 2026-10-03 from career seed to ATS seed: this is a real greenhouse API board
 Spendesk,https://spendesk.jobs.personio.com,personio,spendesk,direct_employer,Global,global,Fintech,75,85,65,moved 2026-10-03 from career seed to ATS seed: this is a real personio API board
 Smartly.io,https://job-boards.greenhouse.io/smartlyio,greenhouse,smartlyio,direct_employer,Finland,seed_url,Unknown,,,,added 2026-09 batch; scores unset; moved 2026-10-03 from career seed to ATS seed: this is a real greenhouse API board
+Broadcom,https://broadcom.wd1.myworkdayjobs.com/External_Career,workday,External_Career,direct_employer,Global,job_location,Unknown,,,,VMware portfolio posts here post-acquisition (B7)
+Zauber,https://jobs.ashbyhq.com/zauber,ashby,zauber,direct_employer,Germany,job_location,AI / Logistics,,,,"Zauber Technology GmbH, Berlin (Ashby board); scores unset (2026-10-17 fill from job listings)"
+Lightspeed,https://jobs.ashbyhq.com/lightspeed,ashby,Lightspeed,direct_employer,Global,global,SaaS,80,85,65,
+Scorewarrior,https://jobs.ashbyhq.com/scorewarrior/,ashby,scorewarrior,direct_employer,Global,global,Gaming,75,85,70,
+Babbel,https://jobs.ashbyhq.com/babbel,ashby,Babbel,direct_employer,Global,global,EdTech,80,85,60,seed v2 2026-09-13: kept user URL edit
+Buena,https://jobs.ashbyhq.com/buena,ashby,Buena,direct_employer,Global,global,PropTech,70,80,55,
+Choco,https://jobs.ashbyhq.com/choco?utm_source,ashby,Choco,direct_employer,Global,global,Food Tech,80,85,60,
+KONUX,https://job-boards.greenhouse.io/konux,greenhouse,KONUX,direct_employer,Global,global,Industrial IoT,75,85,45,
+Pitch,https://apply.workable.com/pitch-software/,workable,pitch-software,direct_employer,Global,global,SaaS,80,90,85,
+Bynder,https://jobs.ashbyhq.com/bynder,ashby,Bynder,direct_employer,Global,global,SaaS,75,90,70,
+Rows,https://jobs.ashbyhq.com/rowspace,ashby,Rowspace,direct_employer,Global,global,SaaS,75,90,80,
+Appodeal,https://job-boards.greenhouse.io/appodeal,greenhouse,appodeal,direct_employer,Global,global,AdTech,70,80,55,
+Planhat,https://jobs.ashbyhq.com/planhat,ashby,Planhat,direct_employer,Global,global,SaaS,70,90,70,
+Teamtailor,https://career.teamtailor.com/jobs,teamtailor,,direct_employer,Global,global,HR Tech,75,90,65,
+Notion,https://jobs.ashbyhq.com/notion,ashby,notion,direct_employer,Global,global,Productivity,80,95,85,
+Airbyte,https://airbyte.com/company/careers#open-roles,ashby,airbyte,direct_employer,Global,global,Data,80,95,80,

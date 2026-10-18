@@ -17,7 +17,7 @@ on your own computer.
 - [Screenshots](#-screenshots)
 - [What It Does](#-what-it-does)
 - [Quick Start](#-quick-start)
-- [The Five Tabs](#-the-five-tabs)
+- [The Six Tabs](#-the-six-tabs)
 - [Scanning](#-scanning)
 - [Where Your Data Lives](#-where-your-data-lives)
 - [Troubleshooting](#-troubleshooting)
@@ -29,7 +29,7 @@ on your own computer.
 
 ## 📥 Download
 
-Installers are on the [GitHub Releases page](https://github.com/Kazake95/SponsorScout/releases):
+Installers are on the [GitHub Releases page](https://github.com/Kazehaya395/SponsorScout/releases):
 
 | Platform | File |
 |----------|------|
@@ -73,6 +73,9 @@ entry; the bundled Chromium is used automatically.
 **Custom Scan - Custom job search portals selection**
 <img src="assets/custom_portal_selection.png" alt="SponsorScout Data Management tab: ATS portals and career portals seed editor with Add, Edit, Delete, Save to CSV, Reload and Reset to bundled defaults" width="860">
 
+**AI Tailoring — job description, AI prompt, CV and cover letter, copied in one go**
+<img src="assets/AI_tailoring_setup.png" alt="SponsorScout AI Tailoring tab: selected job and JD URL, editable job description, AI prompt, CV and cover letter boxes with Save buttons, and a Copy prompt + JD + CV + CL button" width="860">
+
 ---
 
 ## ✨ What It Does
@@ -101,7 +104,7 @@ entry; the bundled Chromium is used automatically.
 
 ---
 
-## 🗂 The Five Tabs
+## 🗂 The Six Tabs
 
 ### 1. Dashboard
 Totals for companies, verified jobs, sponsored, remote and EU Blue Card jobs,
@@ -118,6 +121,9 @@ The main job browser.
   text fields.
 - **Dropdowns always show every value found in your data** — never narrowed by
   the current selection, so you can switch to any other value directly.
+- **Run** narrows results to a single scan (the dropdown lists every run,
+  newest first); the default **All** shows the jobs of all saved runs
+  together.
 - **Filter values and table values are identical** and stay in one fixed
   (untranslated) form in both languages, so filters never break when you switch
   language. Only labels, headers and buttons are translated.
@@ -166,8 +172,24 @@ Your pipeline. Select a saved job to set its status and add notes.
 Edit the company lists that get scanned (**ATS portals** and **Career
 portals**). Changes apply on the next scan; **Reset to bundled defaults**
 restores the original lists.
+**Recomendation** - Always prefer to add ATS portal job list of a company is available for quick results.
 
 <img src="assets/backend_data_management.png" alt="Data Management tab: ATS portals and career portals seed editor with Save to CSV, Reload and Reset actions" width="780">
+
+### 6. AI Tailoring
+Build one message for any AI chatbot.
+
+- **Selected job** shows the job you picked in **Search**. Press **Load JD** to
+  fill the job description. If you paste a link in **or JD URL**, that link is
+  read instead.
+- **Job description** can be edited and is kept for the current session only.
+  If a page cannot be read, you get a message and can paste the text yourself.
+- **AI prompt**, **CV** and **Cover letter** are saved with their own **Save**
+  buttons and kept between sessions. The cover letter is optional.
+- **Copy prompt + JD + CV + CL** copies all of it in full, in that order, ready
+  to paste into ChatGPT, Gemini, Claude or any other AI.
+
+<img src="assets/AI_tailoring_setup.png" alt="AI Tailoring tab: job description, AI prompt, CV and cover letter boxes, Load JD and Copy prompt + JD + CV + CL buttons" width="780">
 
 ---
 
@@ -196,10 +218,14 @@ just edited. Custom runs appear as `custom` in Scan History.
    job-board API.
 2. **Career pages** — every company is also crawled through its own career page,
    so career-page-only companies are never skipped.
-3. **Detail pages** — each job is checked for location, sponsorship,
+3. **Category-link check** — a link that leads to a department or category
+   listing instead of a real job ad (its page shows more job links and no
+   apply button) is detected and dropped, so only actual postings reach the
+   database.
+4. **Detail pages** — each job is checked for location, sponsorship,
    relocation, Blue Card evidence and experience. Verdicts are only set from
    explicit evidence, and weaker sources never overwrite stronger ones.
-4. Results are saved to the local database and appear immediately.
+5. Results are saved to the local database and appear immediately.
 
 Progress shows live (`ATS 12/46`, `Career 88/162`). A company with no open
 roles counts as done.
@@ -383,7 +409,7 @@ MIT — see [LICENSE](LICENSE).
 - [Schermate](#-schermate)
 - [Cosa Fa](#-cosa-fa)
 - [Avvio Rapido](#-avvio-rapido)
-- [Le Cinque Schede](#-le-cinque-schede)
+- [Le Sei Schede](#-le-sei-schede)
 - [Scansione](#-scansione)
 - [Dove Sono i Tuoi Dati](#-dove-sono-i-tuoi-dati)
 - [Risoluzione Problemi](#-risoluzione-problemi)
@@ -395,7 +421,7 @@ MIT — see [LICENSE](LICENSE).
 
 ## 📥 Scarica
 
-Gli installer sono nella [pagina GitHub Releases](https://github.com/Kazake95/SponsorScout/releases):
+Gli installer sono nella [pagina GitHub Releases](https://github.com/Kazehaya395/SponsorScout/releases):
 
 | Piattaforma | File |
 |-------------|------|
@@ -440,6 +466,9 @@ automaticamente.
 **Scansione personalizzata - Selezione dei portali di ricerca lavoro personalizzati**
 <img src="assets/custom_portal_selection.png" alt="SponsorScout Data Management tab: ATS portals and career portals seed editor with Add, Edit, Delete, Save to CSV, Reload and Reset to bundled defaults" width="860">
 
+**Adattamento IA — descrizione del lavoro, prompt IA, CV e lettera di presentazione in una sola copia**
+<img src="assets/AI_tailoring_setup.png" alt="Scheda Adattamento IA di SponsorScout: lavoro selezionato e URL JD, descrizione del lavoro modificabile, riquadri prompt IA, CV e lettera di presentazione con pulsanti Salva, e pulsante Copia prompt + JD + CV + CL" width="860">
+
 ---
 
 ## ✨ Cosa Fa
@@ -471,7 +500,7 @@ automaticamente.
 
 ---
 
-## 🗂 Le Cinque Schede
+## 🗂 Le Sei Schede
 
 ### 1. Pannello
 Totali di aziende, lavori verificati, sponsorizzati, remoti e con Carta Blu
@@ -490,6 +519,9 @@ Il browser principale dei lavori.
 - **I menu a tendina mostrano sempre tutti i valori** presenti nei tuoi dati,
   mai ridotti alla selezione corrente: puoi passare direttamente a qualsiasi
   altro valore.
+- **Run** limita i risultati a una singola scansione (il menu elenca tutte le
+  esecuzioni, dalla più recente); il valore predefinito **All** mostra
+  insieme i lavori di tutte le scansioni salvate.
 - **I valori dei filtri coincidono con quelli della tabella** e restano in una
   forma fissa (non tradotta) in entrambe le lingue, così i filtri non si
   rompono cambiando lingua. Solo etichette, intestazioni e pulsanti vengono
@@ -550,6 +582,23 @@ Modifica gli elenchi di aziende che vengono scansionati (**Portali ATS** e
 
 <img src="assets/backend_data_management.png" alt="Scheda Gestione Dati: editor dei seed Portali ATS e Portali Career con Salva su CSV, Ricarica e Ripristino predefiniti" width="780">
 
+### 6. Adattamento IA
+Crea un unico messaggio per qualsiasi chatbot IA.
+
+- **Lavoro selezionato** mostra l'annuncio scelto nella scheda **Cerca**.
+  Premi **Carica JD** per caricare la descrizione del lavoro. Se incolli un
+  link in **oppure URL JD**, viene letto quel link.
+- **Descrizione del lavoro** si può modificare e resta solo per la sessione
+  corrente. Se una pagina non può essere letta, ricevi un messaggio e puoi
+  incollare il testo a mano.
+- **Prompt IA**, **CV** e **Lettera di presentazione** vengono salvati con i
+  rispettivi pulsanti **Salva** e restano anche alla riapertura. La lettera è
+  facoltativa.
+- **Copia prompt + JD + CV + CL** copia tutto per intero e nell'ordine indicato,
+  pronto da incollare in ChatGPT, Gemini, Claude o in qualsiasi altra IA.
+
+<img src="assets/AI_tailoring_setup.png" alt="Scheda Adattamento IA: riquadri descrizione del lavoro, prompt IA, CV e lettera di presentazione, pulsanti Carica JD e Copia prompt + JD + CV + CL" width="780">
+
 ---
 
 ## 🔍 Scansione
@@ -580,11 +629,15 @@ esecuzioni personalizzate compaiono come `custom` nella Cronologia Scansioni.
 2. **Pagine carriera** — ogni azienda viene esplorata anche sulla propria
    pagina carriera, quindi le aziende con la sola pagina carriera non vengono
    saltate.
-3. **Pagine di dettaglio** — ogni lavoro viene verificato per località,
+3. **Controllo link di categoria** — un link che porta a un elenco di reparto
+   o categoria invece che a un vero annuncio (la pagina mostra altri link a
+   lavori e nessun pulsante di candidatura) viene riconosciuto e scartato,
+   così nel database entrano solo gli annunci reali.
+4. **Pagine di dettaglio** — ogni lavoro viene verificato per località,
    sponsorizzazione, trasferimento, Carta Blu UE ed esperienza. I verdetti
    vengono impostati solo con evidenze esplicite e le fonti più deboli non
    sovrascrivono mai quelle più forti.
-4. I risultati vengono salvati nel database locale e compaiono subito.
+5. I risultati vengono salvati nel database locale e compaiono subito.
 
 L'avanzamento è live (`ATS 12/46`, `Carriere 88/162`). Un'azienda senza
 posizioni aperte conta come completata.

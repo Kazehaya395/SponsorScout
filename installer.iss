@@ -12,7 +12,7 @@
 
 #define MyAppName      "SponsorScout"
 #ifndef MyAppVersion
-  #define MyAppVersion "0.1.1"
+  #define MyAppVersion "0.2.0"
 #endif
 #define MyAppPublisher "SponsorScout"
 #define MyAppURL       "https://github.com/Kazehaya395/SponsorScout"
@@ -43,7 +43,7 @@ UninstallDisplayName={#MyAppName}
 ArchitecturesInstallIn64BitMode=x64compatible
 ArchitecturesAllowed=x64compatible
 PrivilegesRequired=admin
-Compression=lzma2
+Compression=lzma2/ultra64
 SolidCompression=yes
 ShowTasksTreeLines=yes
 DisableFinishedPage=no

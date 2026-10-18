@@ -74,6 +74,12 @@ def get_user_data_dir() -> Path:
 
 
 USER_DATA_DIR = get_user_data_dir()
+
+# MERGE FIX (v0.2.0): career_scanner resolves provider_cache.json via
+# ``from sponsorscout.paths import DATA_DIR`` — a name the REG-1-era
+# reconstruction invented and the wave-era scanner kept.  The original
+# module only ever exported USER_DATA_DIR; alias it so both trees agree.
+DATA_DIR = USER_DATA_DIR
 DB_PATH = Path(os.environ.get(DB_PATH_ENV, "")).expanduser() if os.environ.get(DB_PATH_ENV) else USER_DATA_DIR / "sponsorscout.db"
 
 # Per-user, user-editable copy of the seed CSVs.  Bundled seeds in

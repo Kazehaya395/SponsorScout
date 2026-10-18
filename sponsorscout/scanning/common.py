@@ -9,7 +9,6 @@ host-adaptive pool sizing (``recommended_workers``) and the pause/stop gate
 next to the code that uses them, preserving the pipeline's 39-column jobs
 output and 15-column scan log.
 """
-import os
 
 def check_control(cancel_event, pause_event=None, poll_sec: float = 0.1) -> bool:
     """Wait out a pause, then report whether the scan must stop.
@@ -34,54 +33,6 @@ def check_control(cancel_event, pause_event=None, poll_sec: float = 0.1) -> bool
                 return True
             pause_event.wait(poll_sec)
     return cancel_event is not None and cancel_event.is_set()
-
-
-class ScanCancelled(Exception):
-    """Raised to unwind a scan phase immediately after Stop is pressed.
-
-    Caught at the per-company / per-phase boundary (never in the UI): the
-    partial rows already written stay on disk and the pipeline still writes
-    its checkpoint, so Resume keeps working exactly as before.  It exists so
-    a Stop pressed mid-company does not wait for the rest of that company's
-    pages, retries and sleeps to finish.
-    """
-
-
-def check_cancelled(cancel_event) -> None:
-    """Raise :class:`ScanCancelled` when the Stop event is set (no-op if None)."""
-    if cancel_event is not None and cancel_event.is_set():
-        raise ScanCancelled()
-
-
-def sleep_interruptible(seconds: float, cancel_event=None,
-                         pause_event=None, poll_sec: float = 0.1) -> bool:
-    """Sleep up to ``seconds`` but return early on Stop/Pause changes.
-
-    Returns ``True`` when the full sleep elapsed (scan may continue),
-    ``False`` when Stop was pressed (caller must abort) or the sleep was cut
-    short by a Pause that later cleared.  Pause is still honoured via
-    ``check_control`` so backoff sleeps never busy-spin through a pause.
-    """
-    if seconds is None or seconds <= 0:
-        return not (cancel_event is not None and cancel_event.is_set())
-    import time as _time
-
-    deadline = _time.monotonic() + max(0.0, float(seconds))
-    step = max(0.02, min(poll_sec, 0.25))
-    while True:
-        if check_control(cancel_event, pause_event, poll_sec=step):
-            return False
-        remaining = deadline - _time.monotonic()
-        if remaining <= 0:
-            return True
-        _wait = pause_event.wait if pause_event is not None else None
-        try:
-            if _wait is not None:
-                _wait(min(step, remaining))
-            else:
-                _time.sleep(min(step, remaining))
-        except Exception:
-            _time.sleep(min(step, remaining))
 
 
 #: Absolute memory floor for pool sizing (2 GiB).  Sizing reads AVAILABLE RAM,
@@ -169,12 +120,6 @@ def recommended_workers(kind: str = "browser", requested: int | None = None) -> 
     ``requested`` caps the result without ever raising it, so a caller that
     knows a tighter budget (or a test) can clamp it.
 
-    The ``SPONSORSCOUT_MAX_WORKERS`` (browser) / ``SPONSORSCOUT_HTTP_WORKERS``
-    (http) environment variables are the only way to go ABOVE the heuristic:
-    opt-in, hard-capped (8 browser / 24 http), applied after the ``requested``
-    clamp. Moved here from the scanners' local wrappers on 2026-10-09 so both
-    scanners and the pipeline share one sizing formula (FIX P0-36).
-
     Returned values are always >= 1 and deliberately conservative; the scans
     stay correct at any concurrency, they are merely slower.
     """
@@ -202,20 +147,6 @@ def recommended_workers(kind: str = "browser", requested: int | None = None) -> 
             n = max(1, min(int(requested), n))
         except (TypeError, ValueError):
             pass
-    # REBASE 2026-10-03 (R3), moved here 2026-10-09: both sizers only ever
-    # clamp downward, so a user who knows their machine could not raise the
-    # pool. Verbatim the knob the scanners used to wrap around this function;
-    # applied AFTER the `requested` clamp (an explicit opt-in wins), still
-    # hard-capped so 8 Chromiums cannot thrash a laptop.
-    raw = os.environ.get("SPONSORSCOUT_MAX_WORKERS" if kind == "browser"
-                         else "SPONSORSCOUT_HTTP_WORKERS")
-    if raw:
-        try:
-            want = int(str(raw).strip())
-        except (TypeError, ValueError):
-            want = 0
-        if want >= 1:
-            return min(want, 8 if kind == "browser" else 24)
     return n
 
 
@@ -256,3 +187,22 @@ BROWSER_ARGS = [
 # here means a flag added for the ATS phase can never be missing from the
 # career phase.
 LOW_RESOURCE_BROWSER_ARGS = BROWSER_ARGS
+
+# ── test stand-ins for the cancellation API the app provides (2026-10-06) ──
+# The installed career_scanner imports these at module level; a loud
+# ImportError is correct in production, so the HARNESS must supply them.
+class ScanCancelled(Exception):
+    """Raised when the UI's Stop button aborts a scan."""
+
+
+def check_cancelled(cancel_event=None):
+    if cancel_event is not None and getattr(cancel_event, "is_set", lambda: False)():
+        raise ScanCancelled("scan cancelled")
+    return False
+
+
+def sleep_interruptible(seconds, cancel_event=None, pause_event=None):
+    import time as _t
+    check_cancelled(cancel_event)
+    _t.sleep(min(float(seconds or 0), 0.05))
+    return False

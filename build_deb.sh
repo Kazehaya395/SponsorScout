@@ -162,8 +162,26 @@ mkdir -p "$APP_DIR" "$DEBIAN_DIR" "$DIST_DIR"
   --exclude-module lxml \
   --exclude-module tkinter \
   --exclude-module pytest \
+  --exclude-module PySide6.QtQuick \
+  --exclude-module PySide6.QtQuickWidgets \
+  --exclude-module PySide6.QtQuickControls2 \
+  --exclude-module PySide6.QtQuickTest \
+  --exclude-module PySide6.QtQml \
+  --exclude-module PySide6.QtQmlFeatures \
+  --exclude-module PySide6.QtDesigner \
+  --exclude-module PySide6.QtHelp \
+  --exclude-module PySide6.QtSql \
+  --exclude-module PySide6.QtSvg \
+  --exclude-module PySide6.QtSvgWidgets \
+  --exclude-module PySide6.QtOpenGL \
+  --exclude-module PySide6.QtOpenGLWidgets \
+  --exclude-module PySide6.QtUiTools \
+  --exclude-module PySide6.QtXml \
+  --exclude-module PySide6.QtTest \
+  --exclude-module PySide6.QtConcurrent \
   sponsorscout/main.py
 
+mkdir -p "$APP_DIR"
 cp -a "dist/$APP_NAME/"* "$APP_DIR/"
 
 # ── Size reduction: remove caches only ──────────────────────────────────────
@@ -195,6 +213,15 @@ find "$APP_DIR" -type d -name "locale" -exec rm -rf {} + 2>/dev/null || true
 find "$APP_DIR" -type d \( -name "tests" -o -name "test" -o -name "testing" \) \
   -not -path "*/sponsorscout/tests" -exec rm -rf {} + 2>/dev/null || true
 
+# ── Qt slimming: the app uses only QtCore/QtGui/QtWidgets ─────────────────────
+# Plugin folders the app never loads: image formats (all icons are PNG), Qt's
+# own TLS (HTTPS goes through requests), network-info, generic input, and SQL
+# drivers. Qt translation files are KEPT on purpose so Qt's stock dialogs show
+# in Italian as well as English (the app's own strings are EN + IT).
+for p in imageformats tls networkinformation generic sqldrivers; do
+  find "$APP_DIR" -type d -path "*/PySide6/Qt/plugins/$p" -prune -exec rm -rf {} + 2>/dev/null || true
+done
+
 # ── Bundled Playwright Chromium ──────────────────────────────────────────────
 # Install Chromium DIRECTLY into the package's `_playwright` directory so it
 # ships inside the .deb and sponsorscout/paths.py (exe_dir/_playwright) and
@@ -203,7 +230,7 @@ find "$APP_DIR" -type d \( -name "tests" -o -name "test" -o -name "testing" \) \
 # ~/.cache/ms-playwright only, so the installed app had no browser at all and
 # every `provider=auto` career target failed with "Executable doesn't exist".
 echo "Installing Playwright Chromium into bundle ($APP_DIR/_playwright)…"
-PLAYWRIGHT_BROWSERS_PATH="$APP_DIR/_playwright" "$PYTHON" -m playwright install chromium
+PLAYWRIGHT_BROWSERS_PATH="$APP_DIR/_playwright" "$PYTHON" -m playwright install chromium --only-shell
 if [ ! -d "$APP_DIR/_playwright" ]; then
   echo "ERROR: Playwright browsers were NOT installed into $APP_DIR/_playwright —" >&2
   echo "the packaged app could not scan SPA career portals. Aborting build." >&2
@@ -308,7 +335,7 @@ Section: utils
 Priority: optional
 Architecture: $DEB_ARCH
 Maintainer: SponsorScout <sponsorscout@localhost>
-Depends: libc6, libgcc-s1, libstdc++6
+Depends: libc6, libgcc-s1, libstdc++6, libasound2t64, libatk-bridge2.0-0t64, libatk1.0-0t64, libatspi2.0-0t64, libcairo2, libcups2t64, libdbus-1-3, libdrm2, libgbm1, libglib2.0-0t64, libnspr4, libnss3, libpango-1.0-0, libx11-6, libxcb1, libxcomposite1, libxdamage1, libxext6, libxfixes3, libxkbcommon0, libxrandr2, libxcb-cursor0, libxcb-icccm4, libxcb-image0, libxcb-keysyms1, libxcb-render-util0, libxcb-util1, libxcb-xkb1, libxkbcommon-x11-0
 Installed-Size: $(du -sk "$BUILD_DIR" | cut -f1)
 Description: Job sponsorship search application
  A local desktop app for finding jobs with visa sponsorship signals.
@@ -525,17 +552,17 @@ fi
 # A compressor is only usable if both the dpkg and the matching tool exist
 # (xz needs xz-utils, zstd needs dpkg >= 1.21.18), so try them in order.
 probe_compression() {
-  dpkg-deb "${DEB_FLAGS[@]+"${DEB_FLAGS[@]}"}" -Z "$1" -S "$2" \
+  dpkg-deb "${DEB_FLAGS[@]+"${DEB_FLAGS[@]}"}" -Z "$1" -z "$2" \
        --build "$PROBE_DIR" "$PROBE_ROOT/probe-$1.deb" >/dev/null 2>&1
 }
 
 COMPRESS_ARGS=()
 COMPRESS_LABEL="dpkg default"
 if probe_compression xz 1; then
-  COMPRESS_ARGS=(-Z xz -S 1)
+  COMPRESS_ARGS=(-Z xz -z 1)
   COMPRESS_LABEL="xz -1"
 elif probe_compression gzip 1; then
-  COMPRESS_ARGS=(-Z gzip -S 1)
+  COMPRESS_ARGS=(-Z gzip -z 1)
   COMPRESS_LABEL="gzip -1"
 fi
 echo "Compression: ${COMPRESS_LABEL}"
@@ -543,7 +570,7 @@ echo "Compression: ${COMPRESS_LABEL}"
 if [ "${DEB_COMPRESSION:-auto}" != "auto" ]; then
   DEB_COMPRESSION_LEVEL="${DEB_COMPRESSION_LEVEL:-3}"
   if probe_compression "$DEB_COMPRESSION" "$DEB_COMPRESSION_LEVEL"; then
-    COMPRESS_ARGS=(-Z "$DEB_COMPRESSION" -S "$DEB_COMPRESSION_LEVEL")
+    COMPRESS_ARGS=(-Z "$DEB_COMPRESSION" -z "$DEB_COMPRESSION_LEVEL")
     COMPRESS_LABEL="$DEB_COMPRESSION -$DEB_COMPRESSION_LEVEL"
   else
     echo "WARNING: -Z $DEB_COMPRESSION is not available here; keeping $COMPRESS_LABEL." >&2
