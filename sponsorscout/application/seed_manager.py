@@ -111,6 +111,81 @@ def _row_key(row: dict) -> tuple:
             (row.get("careers_url") or "").casefold())
 
 
+# Bump this string whenever the shipped seeds are replaced wholesale.
+# On the next scan, each user copy is backed up and the bundled rows are
+# applied over it once (see _sync_to_revision). Rows you added yourself,
+# whose names are not in the bundled seed, are kept.
+SEED_REVISION = "2026-10-19-r4"
+
+
+def _sync_to_revision(log_fn=print) -> dict:
+    """One-time replacement of bundled rows in the user copies.
+
+    merge_bundled_seeds() only appends missing rows, so a company whose URL
+    changed in the shipped seed (Moss: Personio -> Ashby) kept its old URL on
+    every existing install. This applies the new bundled row over any user row
+    with the same name, keeps user-only rows, and backs up the old file first.
+    """
+    marker = SEEDS_DIR / ".seed_revision"
+    try:
+        if marker.exists() and marker.read_text(encoding="utf-8").strip() == SEED_REVISION:
+            return {"ats": 0, "career": 0}
+    except OSError:
+        pass
+    ensure_user_seeds()
+    from datetime import datetime
+    backup = SEEDS_DIR / "backup" / datetime.now().strftime("%Y%m%d_%H%M%S")
+    result = {"ats": 0, "career": 0}
+    for label, bundled, user in (
+        ("ats", bundled_ats_path(), user_ats_path()),
+        ("career", bundled_career_path(), user_career_path()),
+    ):
+        b = read_seed_rows(bundled)
+        u = read_seed_rows(user)
+        backup.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(user, backup / user.name)
+        bundled_list = [r for r in b["rows"] if not is_comment_row(r) and r.get("name")]
+        name_counts = {}
+        for r in bundled_list:
+            k = (r.get("name") or "").casefold()
+            name_counts[k] = name_counts.get(k, 0) + 1
+        used, merged, replaced = set(), [], 0
+        for r in u["rows"]:
+            if is_comment_row(r) or not r.get("name"):
+                merged.append(r)
+                continue
+            name_key = r["name"].casefold()
+            exact = [i for i, br in enumerate(bundled_list)
+                     if i not in used and _row_key(br) == _row_key(r)]
+            if exact:
+                idx = exact[0]
+            elif name_counts.get(name_key) == 1:
+                # Same company, URL moved in the shipped seed (e.g. Moss).
+                idx = next((i for i, br in enumerate(bundled_list)
+                            if i not in used and br["name"].casefold() == name_key), None)
+            else:
+                idx = None
+            if idx is None:
+                merged.append(r)  # user-only row (or ambiguous name): keep
+                continue
+            used.add(idx)
+            merged.append(dict(bundled_list[idx]))
+            replaced += 1
+        added = [br for i, br in enumerate(bundled_list) if i not in used]
+        merged.extend(added)
+        cols = list(u["columns"])
+        for c in b["columns"]:
+            if c not in cols:
+                cols.append(c)
+        write_seed_rows(user, cols, merged)
+        result[label] = replaced + len(added)
+        log_fn(f"Seed revision {SEED_REVISION}: {label} updated {replaced} rows, "
+               f"added {len(added)}; previous file backed up to {backup}")
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(SEED_REVISION, encoding="utf-8")
+    return result
+
+
 def merge_bundled_seeds(log_fn=print) -> dict:
     """Reconcile bundled seeds with the user's mutable copies.
 
@@ -129,6 +204,9 @@ def merge_bundled_seeds(log_fn=print) -> dict:
     """
     ensure_user_seeds()
     added = {"ats": 0, "career": 0}
+    _synced = _sync_to_revision(log_fn=log_fn)
+    for _k in added:
+        added[_k] += _synced.get(_k, 0)
     seeds = {}
     for label, bundled, user in (
         ("ats", bundled_ats_path(), user_ats_path()),

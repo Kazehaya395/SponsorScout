@@ -1,6 +1,9 @@
 # Runtime dependencies actually imported by the shipped sponsorscout package.
 # Representational ordered-requests HTTP client with retries/bot handling.
 requests>=2.31.0,<3.0.0
+# Use the OS certificate store (Windows/macOS) for HTTPS, so sites whose
+# intermediate CA is only in the OS store (Spendesk, 2026-10-19) verify.
+truststore>=0.9.0
 # JS-rendered career-portal crawling / DOM fallback + per-job detail scan.
 playwright>=1.49.0,<2.0.0
 # PySide6 desktop GUI (QtCore/QtGui/QtWidgets). Use the Essentials package:

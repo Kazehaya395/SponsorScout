@@ -584,7 +584,12 @@ def test_verdict_guards_accept_both_spellings():
 # ── B14: a multi-country board must not be pinned to one country ─────────────
 
 def test_a2g_seed_is_scoped_global():
-    """The bundled seed must not pin a two-country employer to one of them."""
+    """The bundled seed scopes A2G to its recruiting office (Netherlands).
+
+    Updated 2026-10-19 to the current decision (P0-58, 2026-10-03): the
+    recruiting office is Eindhoven NL, so the scope is Netherlands with
+    job_location. The February "Global" expectation is superseded.
+    """
     import csv as _csv
     from pathlib import Path
     path = (Path(__file__).resolve().parent.parent / "data" / "seeds"
@@ -597,26 +602,29 @@ def test_a2g_seed_is_scoped_global():
     with open(path, encoding="utf-8-sig", newline="") as fh:
         rows = {_r["name"]: _r for _r in _csv.DictReader(fh)}
     a2g = rows["A2G Technologies"]
-    assert (a2g.get("target_country") or "").strip().casefold() == "global", \
-        "A2G posts in both NL and IN; a single-country scope loses half of it"
+    assert (a2g.get("target_country") or "").strip().casefold() == "netherlands", \
+        "A2G recruits from its Eindhoven office; scope to NL"
+    assert (a2g.get("scope_policy") or "").strip() == "job_location"
 
 
 def test_seed_repair_converges_every_historical_a2g_value():
-    """Installs may still hold any value we ever shipped; all must converge."""
+    """Installs may still hold any value we ever shipped; all must converge.
+
+    Updated 2026-10-19: the repair target is Netherlands (P0-58)."""
     from sponsorscout.application import seed_manager as sm
     url = "https://a2gtechnologies.com/jobs"
-    for stale in ("Netherlands", "India"):
+    for stale in ("India", "Global"):
         row = {"name": "A2G Technologies", "careers_url": url,
                "target_country": stale, "notes": "whatever"}
         sm._apply_repairs_to_rows("career", [row], log_fn=lambda _m: None)
-        assert row["target_country"] == "Global", \
-            f"a seed still carrying {stale!r} must be repaired to Global"
+        assert row["target_country"] == "Netherlands", \
+            f"a seed still carrying {stale!r} must be repaired to Netherlands"
 
 
 def test_seed_repair_never_clobbers_a_deliberate_user_edit():
     """Only the exact stale values we shipped may be rewritten."""
     from sponsorscout.application import seed_manager as sm
-    for keep in ("Global", "Germany"):
+    for keep in ("Germany", "Belgium"):  # not stale values: Global is a repair source
         row = {"name": "A2G Technologies",
                "careers_url": "https://a2gtechnologies.com/jobs",
                "target_country": keep, "notes": "user edited this"}

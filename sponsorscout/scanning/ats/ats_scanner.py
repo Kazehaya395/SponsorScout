@@ -22,6 +22,7 @@
 import csv
 import json
 import logging
+import threading
 import os
 import re
 import urllib.request          # fetch_static_jobs uses urllib.request.* by name
@@ -46,6 +47,7 @@ except ModuleNotFoundError as _pw_exc:
 # Desktop UI Stop/Pause. Imported, not reimplemented, so both scanners obey
 # the same control protocol.
 from sponsorscout.scanning.common import check_control
+from sponsorscout.scanning.common import tls_context as _tls_context
 
 # Real-time logging: flush prints during long runs.
 import builtins as _builtins
@@ -308,7 +310,8 @@ def fetch_static_jobs(seed_url, timeout_sec=15, min_jobs=None,
             # serve localised markup, and the titles must survive.
             "Accept-Language": "en-US,en;q=0.9,it;q=0.8,de;q=0.8,nl;q=0.7,fr;q=0.7,es;q=0.7",
         })
-        with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
+        with urllib.request.urlopen(req, timeout=timeout_sec,
+                                    context=_tls_context()) as resp:
             ctype = (resp.headers.get("Content-Type") or "").lower()
             if "html" not in ctype and "xml" not in ctype:
                 return [], f"static: non-HTML content-type ({ctype[:40]})"
@@ -1347,7 +1350,8 @@ _ROLE_NOUNS_RE = re.compile(
     r"nurse|physician|doctor|surgeon|teacher|professor|lecturer|researcher|"
     r"writer|editor|accountant|recruiter|buyer|planner|driver|chef|"
     r"receptionist|secretary|intern|trainee|apprentice|agent|broker|trader|"
-    r"banker|representative|executive|president|founder|owner)s?\b",
+    r"banker|representative|executive|president|founder|owner|"
+    r"franchisee|franchisor|franchise partner)s?\b",
     re.IGNORECASE,
 )
 
@@ -1390,7 +1394,6 @@ KNOWN_BOARD_ISSUES = {
     "Ecosia": "Ashby board 'ecosia.org' currently returns 0 jobs (genuine hiring freeze; board verified live 2026-09-11)",
     "Dbt Labs": "Greenhouse board 'dbtlabsinc' returns 404 (board taken private)",
     "Crealytics": "Personio board currently returns 0 positions",
-    "Moss": "Personio board currently returns 0 positions",
 }
 
 # ───────────────────────── SHARED HELPERS ────────────────────────────────────
@@ -1561,12 +1564,24 @@ _SUPPORT_FUNCTION_TITLE_RE = re.compile(
     r"\b(?:global|international)\s+mobility\b|\bimmigration\b|\brelocation\b", re.I)
 _SUPPORT_FUNCTION_ROLE_RE = re.compile(
     r"\b(manager|specialist|coordinator|officer|lead|director|program|"
-    r"administrator|consultant|partner|hr)\b", re.I)
+    r"administrator|consultant|partner|hr|expert|advisor|adviser|analyst|assistant|counsel|lawyer|agent)\b", re.I)
 
 _SUPPORT_DUTY_RE = re.compile(
     r"\b(track(?:ing)?|manag(?:e|ing)|oversee(?:ing)?|administer(?:ing)?|"
     r"process(?:ing)?|handle(?:ing)?|coordinat(?:e|ing))\s+(?:of\s+)?"
-    r"(work\s+permits?|visas?|immigration\s+cases?)\b", re.I)
+    r"(work\s+permits?|visas?|immigration\s+cases?)\b"
+    # 2026-10-19: duties worded as advice or request handling. "Provided advice
+    # about visas or passports" (Delivery Hero travel desk) and "Handle
+    # immigration requests, work permits" (Mistral HR) were both booked as Yes.
+    r"|\badvice\s+(?:about|on|regarding)\s+(?:visas?|passports?|immigration)\b"
+    r"|\b(?:handl\w*|process\w*|manag\w*)\s+(?:all\s+)?(?:immigration|visa)\s+"
+    r"(?:requests?|applications?|queries|questions|cases?)\b", re.I)
+
+# 2026-10-19: a restriction is not an offer. "Location & work authorization: this
+# internship is available only in France" is a limit on who may apply, not
+# sponsorship. Vetoed unless a candidate-facing offer is also present.
+_SUPPORT_RESTRICTION_RE = re.compile(
+    r"\b(?:available|open|eligible|limited|restricted)\s+only\s+(?:in|to|for)\b", re.I)
 
 # A candidate-FACING offer vetoes the duty/travel downgrades: "we will cover
 # your visa" is support even inside a paragraph about travel admin. A bare
@@ -1621,6 +1636,25 @@ def _guard_hit(name):
         pass
 
 
+# Guard (6): a sentence that offers sponsorship and then hedges it ("We do sponsor
+# visas! However, we aren't able to sponsor visas for every role") is not a
+# sponsorship offer to this candidate. Demote to Unknown, never to No.
+_SUPPORT_HEDGE_RE = re.compile(
+    r"(?i)\b(?:however|unable|not able|aren'?t able|are not able|cannot|can'?t|"
+    r"not every|for every|not all|not always|only in certain|in some cases)\b")
+_SUPPORT_SPONSOR_WORD_RE = re.compile(r"(?i)\bsponsor\w*")
+
+
+_VERDICT_POSSIBLE = "Possible"
+
+
+def _sponsorship_hedged(text):
+    for sentence in re.split(r"[.!?;\n]+", text or ""):
+        if _SUPPORT_SPONSOR_WORD_RE.search(sentence) and _SUPPORT_HEDGE_RE.search(sentence):
+            return True
+    return False
+
+
 def apply_support_fp_guards(visa, reloc, text, title=""):
     """Downgrade visa/relocation YES verdicts that are not offers to the hire.
 
@@ -1630,6 +1664,12 @@ def apply_support_fp_guards(visa, reloc, text, title=""):
     untouched, so this can never invent a verdict.
     """
     text = text or ""
+    # (6) hedged sponsorship offer ("we do sponsor visas, however ...") ->
+    #     Possible. Decided 2026-10-19: not a Yes, and not an Unknown either,
+    #     because the offer exists but its terms are conditional.
+    if visa == VERDICT_YES and _sponsorship_hedged(text):
+        visa = _VERDICT_POSSIBLE
+        _guard_hit("6_hedged_sponsorship")
     # (1) "sponsorship" alone is ambiguous (event/brand/partnership). A visa
     #     "Yes" needs an actual visa/immigration/work-authorization keyword.
     if visa == VERDICT_YES and not _SUPPORT_VISA_KEYWORD_RE.search(text):
@@ -1675,6 +1715,16 @@ def apply_support_fp_guards(visa, reloc, text, title=""):
         if not _SUPPORT_CANDIDATE_OFFER_RE.search(text):
             visa = VERDICT_UNKNOWN
             _guard_hit("5_duty_not_benefit")
+    # (7) restriction-only text: "available only in France" with no offer.
+    if visa == VERDICT_YES and _SUPPORT_RESTRICTION_RE.search(text):
+        # Judge the offer only on sentences that do not carry the restriction:
+        # "work authorization: this internship is available" otherwise matches
+        # the offer pattern across the colon.
+        _rest = " ".join(_s for _s in re.split(r"[.;!?\n]+", text)
+                         if not _SUPPORT_RESTRICTION_RE.search(_s))
+        if not _SUPPORT_CANDIDATE_OFFER_RE.search(_rest):
+            visa = VERDICT_UNKNOWN
+            _guard_hit("7_restriction_not_offer")
     return visa, reloc
 
 
@@ -1724,6 +1774,41 @@ _WORKMODE_QUALIFIER_RE = re.compile(
     r"(?i)^(?:remote[\s\-]?friendly|hybrid[\s\-]?friendly|office[\s\-]?based"
     r"|flexible|travel[\s\-]?required)(?:\s*\([^)]*\))?$")
 
+_TITLE_PLACES_RE = re.compile(
+    r"\b(?:in|based in|located in)\s+"
+    r"([A-Z][\w'\-]+(?:\s*,\s*[A-Z][\w'\-]+|\s+(?:or|and)\s+[A-Z][\w'\-]+)+)")
+
+
+def title_place_conflict(title, location):
+    """2026-10-19: a title that names its places ("Internship in Paris or London")
+    cannot sit in a location in neither place or their countries. Mistral's
+    "Applied Scientist (Internship in Paris or London)" was scraped as Seoul.
+
+    Returns the conflict text, or "" when there is no conflict or no evidence.
+    Only the title is read: the description has too many incidental places.
+    """
+    from sponsorscout.core.location_country import country_from_location
+    m = _TITLE_PLACES_RE.search(title or "")
+    loc = (location or "").strip()
+    if not m or not loc or loc.lower() in ("unknown", "not specified"):
+        return ""
+    places = [p for p in re.split(r"\s*,\s*|\s+(?:or|and)\s+", m.group(1)) if p]
+    if len(places) < 2:
+        return ""
+    loc_low = loc.lower()
+    for p in places:
+        if re.search(r"\b" + re.escape(p.lower()) + r"\b", loc_low):
+            return ""
+    loc_country = country_from_location(loc) or ""
+    if not loc_country:
+        return ""  # unproven location: the scope rules decide, not this check
+    place_countries = {country_from_location(p) or "" for p in places}
+    place_countries.discard("")
+    if not place_countries or loc_country in place_countries:
+        return ""
+    return f"title names {' / '.join(places)}; location {loc}"
+
+
 def _location_confidence(location, loc_source):
     """How much a Job Location can be trusted (FIX W2-8, shared rule).
 
@@ -1752,6 +1837,122 @@ def _location_confidence(location, loc_source):
 def _location_is_site_derived(loc_source):
     """True when the country came from the web host, not from the posting."""
     return "site" in (loc_source or "").strip().lower()
+
+
+# Two-letter ISO codes used as a prefix in Workday/Leonardo style strings
+# ("IT - Venegono Superiore", "GB - Yeovil - Lysander Rd").
+_WD_ISO2_CODES = {
+    "IT", "GB", "PL", "DE", "FR", "ES", "NL", "AT", "BE", "CH", "SE", "NO", "DK",
+    "FI", "IE", "PT", "CZ", "RO", "HU", "GR", "BG", "HR", "SK", "SI", "LT", "LV",
+    "EE", "LU", "US", "CA", "IN", "JP", "CN", "KR", "SG", "AU", "NZ", "BR", "MX",
+    "AR", "CL", "ZA", "AE", "EG", "IL", "TR", "UA", "RU",
+}
+_STREET_WORD_RE = re.compile(
+    r"\b(rue|strasse|stra(?:ss|ß)e|road|rd|street|avenue|via|calle|blvd|boulevard|"
+    r"drive|lane|weg|allee|platz|route|chemin)\b|\d", re.I)
+_WD_SITE_COUNTRY_CODES = {
+    "USA", "IND", "CAN", "GBR", "DEU", "FRA", "ESP", "ITA", "NLD", "JPN", "CHN",
+    "SGP", "AUS", "BRA", "MEX", "POL", "IRL", "CZE", "ROU", "MYS", "PHL", "KOR",
+    "TWN", "ISR", "FIN", "SWE", "NOR", "DNK", "CHE", "AUT", "BEL", "PRT", "HUN",
+    "ARG", "CHL", "COL", "EGY", "ARE", "ZAF", "NZL", "IDN", "VNM", "THA", "HKG",
+    "TUR", "GRC", "UKR",
+}
+
+
+_BUSINESS_HEAD_RE = re.compile(
+    r"\b(affairs|delivery|capacity|center|centre|relations|operations|services|"
+    r"solutions|engineering|development|programme|program|partnerships?|policy|"
+    r"strategy|legal|finance|sales|marketing|talent|research)\b", re.I)
+
+
+# ── HTTP: per-host gate and keep-alive connections (2026-10-19) ─────────────
+# Many companies share one host (every Workday tenant is a myworkdayjobs.com
+# subdomain, SmartRecruiters and Personio are single hosts). Unlimited parallel
+# requests to one host were the next bottleneck after the serial detail fix.
+# The gate caps in-flight requests per host; the pool reuses TLS connections
+# per thread instead of paying a new handshake for every posting.
+# Redirects and anything unusual go through urlopen, so behaviour is unchanged
+# except for speed.
+_HOST_GATES = {}
+_HOST_GATES_LOCK = threading.Lock()
+_CONN_LOCAL = threading.local()
+
+
+def _host_gate(netloc):
+    """Per-host semaphore. SPONSORSCOUT_HOST_CONCURRENCY (default 3)."""
+    try:
+        limit = max(1, min(16, int(os.environ.get(
+            "SPONSORSCOUT_HOST_CONCURRENCY") or 3)))
+    except ValueError:
+        limit = 3
+    with _HOST_GATES_LOCK:
+        gate = _HOST_GATES.get(netloc)
+        if gate is None:
+            gate = threading.BoundedSemaphore(limit)
+            _HOST_GATES[netloc] = gate
+        return gate
+
+
+def _keepalive_request(url, method, data, headers, timeout):
+    """Return (status, payload_bytes) over a reused connection, or None when the
+    response needs urlopen (redirects). Raises HTTPError for 4xx/5xx and
+    URLError for transport failures, matching urlopen's shapes."""
+    import http.client
+    import io
+    import ssl
+    import urllib.error
+    from urllib.parse import urlsplit
+
+    parts = urlsplit(url)
+    key = (parts.scheme, parts.netloc)
+    pool = getattr(_CONN_LOCAL, "pool", None)
+    if pool is None:
+        pool = _CONN_LOCAL.pool = {}
+    path = (parts.path or "/") + (("?" + parts.query) if parts.query else "")
+
+    def _make():
+        if parts.scheme == "https":
+            return http.client.HTTPSConnection(
+                parts.netloc, timeout=timeout, context=_tls_context())
+        return http.client.HTTPConnection(parts.netloc, timeout=timeout)
+
+    def _send(conn):
+        conn.request(method, path, body=data, headers=headers)
+        resp = conn.getresponse()
+        return resp, resp.read()
+
+    conn = pool.pop(key, None)
+    reused = conn is not None
+    if conn is None:
+        conn = _make()
+    try:
+        try:
+            resp, payload = _send(conn)
+        except (http.client.HTTPException, OSError):
+            conn.close()
+            if not reused:
+                raise
+            # A kept-alive socket the server already closed: retry once, fresh.
+            conn = _make()
+            resp, payload = _send(conn)
+    except (http.client.HTTPException, OSError) as exc:
+        try:
+            conn.close()
+        except Exception:
+            pass
+        raise urllib.error.URLError(exc)
+
+    if 300 <= resp.status < 400:
+        conn.close()
+        return None
+    if not resp.will_close:
+        pool[key] = conn
+    else:
+        conn.close()
+    if resp.status >= 400:
+        raise urllib.error.HTTPError(url, resp.status, resp.reason,
+                                     resp.headers, io.BytesIO(payload))
+    return resp.status, payload
 
 
 class ATSScanner:
@@ -1828,8 +2029,15 @@ class ATSScanner:
                     "Accept": "application/json,text/xml,*/*",
                     "Content-Type": "application/json",
                 })
-                with urlopen(req, timeout=timeout) as resp:
-                    return resp.read().decode("utf-8-sig", errors="replace")
+                gate = _host_gate(urlparse(url).netloc)
+                with gate:
+                    direct = _keepalive_request(
+                        url, method, data, dict(req.header_items()), timeout)
+                    if direct is None:
+                        with urlopen(req, timeout=timeout,
+                                     context=_tls_context()) as resp:
+                            return resp.read().decode("utf-8-sig", errors="replace")
+                return direct[1].decode("utf-8-sig", errors="replace")
             except Exception as exc:
                 import urllib.error
                 if isinstance(exc, urllib.error.HTTPError):
@@ -2150,8 +2358,13 @@ class ATSScanner:
     # ── Normalization ────────────────────────────────────────────────────────
     @staticmethod
     def _strip_html(text):
-        text = re.sub(r"<[^>]+>", " ", text or "")
-        return clean(text)
+        # Block tags become line breaks so list items and paragraphs keep their
+        # boundaries (Workday JDs are <p>/<li> HTML; flattening them ran the
+        # sentences together and hid the visa wording from the classifier).
+        text = re.sub(r"(?i)<\s*(br|/?p|/?li|/?ul|/?ol|/?div|/?h[1-6]|/?tr)\b[^>]*>", "\n", text or "")
+        text = re.sub(r"<[^>]+>", " ", text)
+        lines = [clean(ln) for ln in text.split("\n")]
+        return "\n".join(ln for ln in lines if ln)
 
 
     # ── W3-2 (P6): supplementary gazetteer ───────────────────────────────
@@ -2649,6 +2862,28 @@ class ATSScanner:
         remote_hint = clean(remote_hint or "").lower()
         if not location:
             return ("Remote" if "remote" in remote_hint else "Unknown")
+        # Workday site codes: "USA-Colorado-Fort Collins-4380 Ziegler Road",
+        # "USA-CA San Jose Innovation Drive", "IND-Hyderabad 115 IT Park".
+        # The city is read only where it is clearly delimited by dashes;
+        # otherwise the country code alone is returned (never a guessed city).
+        # "IT - Venegono Superiore", "NLD - Alphen Aan Den Rijn": ISO prefix with
+        # spaced dash. The first segment is the city unless it reads as a street.
+        spaced = re.match(r"^([A-Z]{2,3})\s+-\s+(.+)$", location)
+        if spaced and (spaced.group(1) in _WD_SITE_COUNTRY_CODES
+                       or spaced.group(1) in _WD_ISO2_CODES):
+            cc = spaced.group(1)
+            city = re.split(r"\s+-\s+", spaced.group(2))[0].strip()
+            city = re.sub(r"\s+(S\.p\.A\.|S\.A\.|Loc\.?)\s*$", "", city).strip()
+            if city and not _STREET_WORD_RE.search(city):
+                return f"{city}, {cc}"
+            return cc
+        wd = re.match(r"^([A-Z]{3})-(.+)$", location)
+        if wd and wd.group(1) in _WD_SITE_COUNTRY_CODES:
+            cc = wd.group(1)
+            cm = re.match(r"^[A-Za-z]+\s*-\s*([A-Za-z][A-Za-z .']*?)\s*-", wd.group(2))
+            if cm:
+                return f"{cm.group(1).strip()}, {cc}"
+            return cc
         # Collapse multi-line / pipe-separated location lists to the first value
         parts = [clean(p) for p in re.split(r"[;\n|]+", location) if clean(p)]
         # FIX P36: skip leading work-mode qualifiers so the real place, which
@@ -2850,8 +3085,16 @@ class ATSScanner:
         # bare ISO-2, which collides with words like "UK" in "Sales, UK")
         # plus no role noun => address, even when the town is unknown to the
         # gazetteer ("ITA, PI, Pisa", "Pisa, Italy").
+        # Relaxed 2026-10-18 (Anthropic "Data Center Capacity Delivery, Canada",
+        # "External Affairs, South Korea" are real roles): a head segment with
+        # 3+ words or a business-function word is a job name, not a place.
+        _head_business = [
+            x for x in segs
+            if x and not _is_country_token(x)
+            and (len(x.split()) >= 3 or _BUSINESS_HEAD_RE.search(x))]
         if (any(len(s.strip()) >= 3 and _is_country_token(s) for s in segs)
                 and not any(_has_role_noun(s.lower()) for s in segs)
+                and not _head_business
                 and all(len(s.split()) <= 4 for s in segs if s)):
             return True
         _head = [s for s in segs[:-1] if s]
@@ -3127,7 +3370,8 @@ class ATSScanner:
                               "Safari/537.36",
                 "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
             })
-            with urllib.request.urlopen(req, timeout=8) as resp:
+            with urllib.request.urlopen(req, timeout=8,
+                                        context=_tls_context()) as resp:
                 html = resp.read(2_000_000).decode("utf-8", "replace")
         except Exception:
             return False
@@ -3206,8 +3450,9 @@ class ATSScanner:
         # complete entry-level titles below, which are legitimate on their own
         # ("Intern", "Apprentice", "Trainee" describe the role fully, unlike
         # a truncated "Director" or "Engineer").
+        # Decided 2026-10-19: "Manager" and "Director" are accepted as whole titles.
         if low in {"senior", "junior", "associate", "principal", "lead",
-                   "manager", "director", "expert", "owner", "officer",
+                   "expert", "owner", "officer",
                    "specialist", "analyst", "engineer",
                    "full time", "part time", "contract"}:
             return False
@@ -3491,6 +3736,9 @@ class ATSScanner:
             reason = "invalid_or_application_only_url"
         elif not self.valid_title(title, url):
             reason = "invalid_generic_or_department_title"
+        elif title_place_conflict(title, location):
+            # 2026-10-19: Mistral's Paris/London internship scraped as Seoul.
+            reason = "location_conflicts_with_title"
         elif (self.SCOPE_FILTER
               and (target.get("scope_policy") or "global").lower() == "job_location"
               and _location_is_site_derived(location_source)):
@@ -3798,7 +4046,24 @@ class ATSScanner:
         slug = self._seed_slug(target) or (host.split(".")[0] if host else "")
         if not slug:
             return []
-        raw = self._fetch(f"https://{slug}.jobs.personio.de/xml?language=en")
+        try:
+            raw = self._fetch(f"https://{slug}.jobs.personio.de/xml?language=en")
+        except Exception as pers_exc:
+            # Some company career sites are not Personio boards at all (Spendesk
+            # moved to Teamtailor, 2026-10-18). When the Personio feed is missing,
+            # try the site's own Teamtailor JSON feed before reporting an error.
+            # 2026-10-19 (round 10c): if the Teamtailor feed also fails, report
+            # BOTH causes. Before, its error replaced the Personio one.
+            try:
+                tt_rows = self.scan_teamtailor(target)
+            except Exception as tt_exc:
+                raise RuntimeError(
+                    f"personio feed failed ({type(pers_exc).__name__}: {pers_exc}); "
+                    f"teamtailor feed failed ({type(tt_exc).__name__}: {tt_exc})"
+                ) from tt_exc
+            if tt_rows:
+                return tt_rows
+            raise pers_exc
         root = ET.fromstring(raw)
         rows = []
         for pos in root.findall(".//position"):
@@ -3847,7 +4112,19 @@ class ATSScanner:
         slug = self._seed_slug(target) or (path_seg[0] if path_seg else "")
         if not slug:
             return []
-        data = self._get_json(f"https://www.workable.com/api/accounts/{slug}?details=true")
+        # 2026-10-19: the www.workable.com endpoint now answers with a Cloudflare
+        # 302, so the widget endpoint on apply.workable.com is tried first. It
+        # carries the per-job description (the www payload did too); the www URL
+        # stays as the fallback.
+        data = {}
+        for _url in (f"https://apply.workable.com/api/v1/widget/accounts/{slug}?details=true",
+                     f"https://www.workable.com/api/accounts/{slug}?details=true"):
+            try:
+                data = self._get_json(_url) or {}
+            except Exception:
+                data = {}
+            if data.get("jobs"):
+                break
         rows = []
         for job in data.get("jobs", []):
             loc_parts = [x for x in [job.get("city"), job.get("country")] if x]
@@ -3974,81 +4251,131 @@ class ATSScanner:
         api = f"https://{tenant}.{wd}.myworkdayjobs.com/wday/cxs/{tenant}/{site}/jobs"
         try:
             detail_budget = [int(os.environ.get(
-                "SPONSORSCOUT_WORKDAY_DETAILS", "150"))]
+                "SPONSORSCOUT_WORKDAY_DETAILS", "2000"))]
         except ValueError:
-            detail_budget = [150]
+            detail_budget = [2000]
         rows = []
         offset = 0
         limit = 20  # Workday API rejects limit > 20 (HTTP 400)
         total = None
-        while True:
-            data = self._post_json(api, {
-                "appliedFacets": {}, "limit": limit, "offset": offset,
-                "searchText": "",
-            })
-            # Workday only reports `total` on the FIRST page; later pages return 0.
-            if total is None:
-                total = data.get("total") or 0
-            jobs = data.get("jobPostings", [])
-            if not jobs:
-                break
-            for job in jobs:
-                title = job.get("title", "")
-                ext = job.get("externalPath", "")
-                # FIX W1-1b: the public URL is /<site><externalPath>; without
-                # the site segment the link does not resolve to the posting.
-                job_url = f"https://{host}/{site}{ext}" if ext else ""
-                location = self.format_location(job.get("locationsText") or "")
-                req = ""
-                bf = job.get("bulletFields") or []
-                for b in bf:
-                    if re.match(r"^R\d+$", str(b)):
-                        req = str(b)
-                        break
-                # FIX W1-1b: the Workday LIST response carries no JD, so
-                # every Workday company (11 seeds: Zalando, Philips, NXP,
-                # Autodesk, Leonardo, SimCorp, SOTI, Zendesk, EMBL, Prysmian,
-                # Wolters Kluwer) reported Unknown for sponsorship, Blue Card
-                # and relocation. The CXS detail endpoint returns the full
-                # description for one extra GET; budgeted like BambooHR.
-                desc = ""
-                if ext and detail_budget[0] > 0:
-                    try:
-                        d = self._get_json(
-                            f"https://{tenant}.{wd}.myworkdayjobs.com"
-                            f"/wday/cxs/{tenant}/{site}{ext}")
-                        info = (d or {}).get("jobPostingInfo") or {}
-                        desc = self._strip_html(info.get("jobDescription") or "")
-                        if desc:
-                            detail_budget[0] -= 1
-                    except Exception:
-                        desc = ""
-                job_type = self.classify_job_type(
-                    "", job.get("remoteType") or "", desc)
-                row = self.make_row(
-                    target, title, job_url, location,
-                    job.get("locationsText") or "", job_type, desc,
-                    "workday_api")
-                if req:
-                    row["Canonical Job ID"] = (
-                        f"{target['name'].casefold()}|workday|{req.casefold()}")
-                rows.append(row)
-            offset += len(jobs)
-            if total and offset >= total:
-                break
-            if len(jobs) < limit:
-                break
+        # 2026-10-19: detail GETs were serial (~0.8 s each). Leonardo has 824
+        # postings, so one company spent ~11 min on details with no output and
+        # looked hung. Details now run in a small pool, one page at a time, and
+        # the description budget is still decided in list order.
+        try:
+            workers = max(1, min(8, int(os.environ.get(
+                "SPONSORSCOUT_WORKDAY_WORKERS", "6"))))
+        except ValueError:
+            workers = 6
+        seen = 0
+        from concurrent.futures import ThreadPoolExecutor
+
+        def _detail(ext_path):
+            try:
+                d = self._get_json(
+                    f"https://{tenant}.{wd}.myworkdayjobs.com"
+                    f"/wday/cxs/{tenant}/{site}{ext_path}")
+                return (d or {}).get("jobPostingInfo") or {}
+            except Exception:
+                return None
+
+        pool = ThreadPoolExecutor(max_workers=workers) if workers > 1 else None
+        try:
+            while True:
+                data = self._post_json(api, {
+                    "appliedFacets": {}, "limit": limit, "offset": offset,
+                    "searchText": "",
+                })
+                # Workday only reports `total` on the FIRST page; later pages return 0.
+                if total is None:
+                    total = data.get("total") or 0
+                jobs = data.get("jobPostings", [])
+                if not jobs:
+                    break
+
+                # Decide per job, in list order, whether a detail GET is needed.
+                plan = []
+                for job in jobs:
+                    ext = job.get("externalPath", "")
+                    loc_text = job.get("locationsText") or ""
+                    # Blank or "N Locations" list locations need the detail for
+                    # the real site (EMBL visitor programmes, Autodesk).
+                    multi_site = (not loc_text.strip()) or bool(
+                        re.fullmatch(r"\s*\d+\s+locations?\s*", loc_text, re.I))
+                    want_desc = detail_budget[0] > 0
+                    if want_desc:
+                        detail_budget[0] -= 1
+                    need = bool(ext) and (want_desc or multi_site)
+                    plan.append((job, ext if need else "", want_desc, multi_site))
+
+                ext_list = [p[1] for p in plan if p[1]]
+                if pool is not None and len(ext_list) > 1:
+                    infos = list(pool.map(_detail, ext_list))
+                else:
+                    infos = [_detail(e) for e in ext_list]
+                info_iter = iter(infos)
+
+                for job, ext, want_desc, multi_site in plan:
+                    seen += 1
+                    if seen % 100 == 0:
+                        logging.info("Workday %s: %d/%s postings processed",
+                                     target.get("name", tenant), seen, total)
+                    title = job.get("title", "")
+                    # FIX W1-1b: the public URL is /<site><externalPath>; without
+                    # the site segment the link does not resolve to the posting.
+                    job_url = f"https://{host}/{site}{job.get('externalPath', '')}" \
+                        if job.get("externalPath") else ""
+                    location = self.format_location(job.get("locationsText") or "")
+                    req = ""
+                    for b in job.get("bulletFields") or []:
+                        if re.match(r"^R\d+$", str(b)):
+                            req = str(b)
+                            break
+                    # FIX W1-1b: the Workday LIST response carries no JD, so the
+                    # CXS detail endpoint supplies the description.
+                    desc = ""
+                    loc_text = job.get("locationsText") or ""
+                    if ext:
+                        info = next(info_iter) or {}
+                        if multi_site:
+                            # Primary site first, then any additional sites.
+                            sites = [info.get("location") or ""] + [
+                                x for x in (info.get("additionalLocations") or [])
+                                if isinstance(x, str)]
+                            sites = [x for x in sites if x.strip()]
+                            if sites:
+                                loc_text = sites[0]
+                                location = self.format_location(loc_text)
+                        if want_desc:
+                            desc = self._strip_html(info.get("jobDescription") or "")
+                    job_type = self.classify_job_type(
+                        "", job.get("remoteType") or "", desc)
+                    row = self.make_row(
+                        target, title, job_url, location,
+                        loc_text, job_type, desc,
+                        "workday_api")
+                    if req:
+                        row["Canonical Job ID"] = (
+                            f"{target['name'].casefold()}|workday|{req.casefold()}")
+                    rows.append(row)
+                offset += len(jobs)
+                if total and offset >= total:
+                    break
+                if len(jobs) < limit:
+                    break
+        finally:
+            if pool is not None:
+                pool.shutdown(wait=True)
         return rows
 
     def browser_fallback(self, target):
         """Last-resort DOM scrape for ATS types without a public API."""
         if sync_playwright is None:
-            logging.error(
-                "Playwright required for %s (%s)",
-                target["url"],
-                _playwright_unavailable_reason(),
-            )
-            return []
+            reason = _playwright_unavailable_reason()
+            logging.error("Playwright required for %s (%s)", target["url"], reason)
+            # 2026-10-19: raise instead of returning [], so the scan log shows an
+            # error with the reason rather than an unexplained "empty" company.
+            raise RuntimeError(f"browser fallback unavailable: {reason}")
         rows = []
         try:
             with sync_playwright() as p:
@@ -4085,7 +4412,10 @@ class ATSScanner:
             self._record_error(target.get("name", "?"), "browser_fallback",
                                type(exc).__name__, str(exc),
                                target.get("url", ""))
-            return []
+            # 2026-10-19 (round 10c): raise, so the company's scan-log row carries
+            # the cause instead of reading as an empty board.
+            raise RuntimeError(
+                f"browser fallback failed ({type(exc).__name__}: {exc})") from exc
         seen = set()
         for job in jobs:
             url = clean(job.get("href"))
@@ -4258,6 +4588,49 @@ class ATSScanner:
             start += 50
         return rows
 
+    def scan_teamtailor(self, target):
+        """Teamtailor career sites (custom domain or *.teamtailor.com).
+
+        The site publishes a JSON Feed at /jobs.json. Each item carries a
+        schema.org JobPosting (``_jobposting``) with the full HTML description
+        and ``jobLocation`` (city + ISO country code). Added 2026-10-18 for
+        Spendesk (career.spendesk.com), which the Personio adapter could not read.
+        """
+        import json as _json
+        parsed = urlparse(target["url"])
+        base = f"{parsed.scheme or 'https'}://{parsed.netloc}"
+        import urllib.error as _ue
+        try:
+            data = _json.loads(self._fetch(f"{base}/jobs.json"))
+        except _ue.HTTPError as exc:
+            if exc.code == 404:
+                # No JSON Feed on this site: a real "no feed", not a failure.
+                self._note(f"teamtailor: no /jobs.json feed (HTTP 404)")
+                return []
+            raise  # 403/429/5xx: a failure the run must report, not an empty board
+        rows = []
+        for item in (data or {}).get("items", []) or []:
+            title = clean(item.get("title") or "")
+            job_url = (item.get("url") or "").strip()
+            if not title or not job_url:
+                continue
+            jp = item.get("_jobposting") or {}
+            desc = self._strip_html(jp.get("description") or item.get("content_html") or "")
+            places = []
+            for loc in jp.get("jobLocation") or []:
+                addr = (loc or {}).get("address") or {}
+                city = clean(addr.get("addressLocality") or "")
+                cc = clean(addr.get("addressCountry") or "")
+                if city:
+                    places.append(f"{city}, {cc}" if cc else city)
+            raw_loc = "; ".join(places)
+            location = self.format_location(raw_loc) if raw_loc else "Unknown"
+            job_type = self.classify_job_type("", "", desc)
+            rows.append(self.make_row(
+                target, title, job_url, location, raw_loc, job_type, desc,
+                "teamtailor_api"))
+        return rows
+
     def scan_target(self, target):
         adapters = {
             "ashby": self.scan_ashby,
@@ -4265,6 +4638,7 @@ class ATSScanner:
             "lever": self.scan_lever,
             "smartrecruiters": self.scan_smartrecruiters,
             "personio": self.scan_personio,
+            "teamtailor": self.scan_teamtailor,
             "recruitee": self.scan_recruitee,
             "workable": self.scan_workable,
             "workday": self.scan_workday,
@@ -4303,6 +4677,12 @@ class ATSScanner:
                   f"— using browser DOM fallback")
             return self.browser_fallback(target)
         return adapter(target)
+
+    def _note(self, message):
+        """Attach a per-company diagnostic to the scan log row being built."""
+        notes = getattr(self, "_target_notes", None)
+        if notes is not None:
+            notes.append(str(message)[:500])
 
     def _record_error(self, seed_name, phase, err_type, message, seed_url=""):
         """Append one row to the run's errors CSV (immediate, crash-safe)."""
@@ -4405,6 +4785,7 @@ class ATSScanner:
             if target["name"] in KNOWN_BOARD_ISSUES:
                 diagnostics.append(KNOWN_BOARD_ISSUES[target["name"]])
             err_type = err_msg = ""
+            self._target_notes = []
             try:
                 result = self.scan_target(target)
             except Exception as exc:
@@ -4412,6 +4793,12 @@ class ATSScanner:
                 err_type, err_msg = type(exc).__name__, str(exc)
                 error = f"{err_type}: {err_msg}"
                 diagnostics.append(error)
+            diagnostics.extend(self._target_notes)
+            if not result and not error and not self._target_notes:
+                # 2026-10-19: an empty board must say so. Without this the log
+                # showed "empty" with no reason (Cargo.one, Brain Rocket, ...).
+                diagnostics.append(
+                    f"{target['ats_type']} returned 0 postings for {target['url']}")
             accepted = []
             quarantined = []
             duplicates = 0

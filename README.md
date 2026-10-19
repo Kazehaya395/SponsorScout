@@ -99,7 +99,7 @@ entry; the bundled Chromium is used automatically.
 
 1. Download and install the package for your platform.
 2. Launch SponsorScout. On first start, accept the prompt to run an initial
-   scan (1–3 minutes).
+   scan. Depending on how many companies are enabled it can take from minutes to hours.
 3. Open **Search** to browse, and **Applications** to track what you apply to.
 
 ---
@@ -173,8 +173,6 @@ Edit the company lists that get scanned (**ATS portals** and **Career
 portals**). Changes apply on the next scan; **Reset to bundled defaults**
 restores the original lists.
 
-**Recommendation** - Always prefer adding ATS portal with "Job listing" of a company if available. App show quick results.
-
 <img src="assets/backend_data_management.png" alt="Data Management tab: ATS portals and career portals seed editor with Save to CSV, Reload and Reset actions" width="780">
 
 ### 6. AI Tailoring
@@ -218,7 +216,10 @@ just edited. Custom runs appear as `custom` in Scan History.
 1. **ATS boards** — companies with a known ATS are pulled through the official
    job-board API.
 2. **Career pages** — every company is also crawled through its own career page,
-   so career-page-only companies are never skipped.
+   so career-page-only companies are never skipped. Long lists are read page by
+   page, following "next page" and "show more" links. On the fast path a board
+   is read to at most 12 pages (`SPONSORSCOUT_STATIC_MAX_PAGES`); the browser
+   pass reads further.
 3. **Category-link check** — a link that leads to a department or category
    listing instead of a real job ad (its page shows more job links and no
    apply button) is detected and dropped, so only actual postings reach the
@@ -292,6 +293,12 @@ the old automatic behaviour set `SPONSORSCOUT_AUTO_INSTALL_BROWSERS=1` — it is
 off by default because a ~130 MB download can block the scan for minutes.
 Installed builds are unaffected: the browser ships inside the `.exe`, `.deb`
 and `.rpm`.
+
+**The scan stops with "Seed validation failed".** One invalid row in a career
+seed stops the whole career phase, so no company in that file is scanned. The
+message names the line, the company and the bad field, for example
+`invalid source_type 'not found'`. Open **Data Management**, correct that row,
+and run the scan again.
 
 **Some companies returned no jobs.** They may have no open roles (`EMPTY` in
 the log), or they may temporarily block automated access — try again later.
@@ -496,7 +503,7 @@ automaticamente.
 
 1. Scarica e installa il pacchetto per la tua piattaforma.
 2. Avvia SponsorScout. Al primo avvio accetta la richiesta di eseguire la
-   scansione iniziale (1–3 minuti).
+   scansione iniziale. A seconda di quante aziende sono attive può richiedere da pochi minuti a ore.
 3. Apri **Cerca** per sfoglare e **Candidature** per gestire le candidature.
 
 ---
@@ -629,7 +636,10 @@ esecuzioni personalizzate compaiono come `custom` nella Cronologia Scansioni.
    l'API ufficiale della bacheca.
 2. **Pagine carriera** — ogni azienda viene esplorata anche sulla propria
    pagina carriera, quindi le aziende con la sola pagina carriera non vengono
-   saltate.
+   saltate. Le liste lunghe vengono lette pagina per pagina, seguendo i link
+   "pagina successiva" e "mostra altri". Nel percorso rapido una bacheca viene
+   letta al massimo per 12 pagine (`SPONSORSCOUT_STATIC_MAX_PAGES`); il
+   passaggio con il browser va oltre.
 3. **Controllo link di categoria** — un link che porta a un elenco di reparto
    o categoria invece che a un vero annuncio (la pagina mostra altri link a
    lavori e nessun pulsante di candidatura) viene riconosciuto e scartato,
@@ -708,6 +718,12 @@ automatico di prima imposta `SPONSORSCOUT_AUTO_INSTALL_BROWSERS=1`: e disattivat
 perche un download di ~130 MB puo bloccare la scansione per minuti. Le build
 installate non ne risentono: il browser e incluso dentro `.exe`, `.deb` e
 `.rpm`.
+
+**La scansione si interrompe con "Seed validation failed".** Una riga non valida in
+un seed career blocca l'intera fase career, quindi nessuna azienda di quel file
+viene scansionata. Il messaggio indica riga, azienda e campo errato, per esempio
+`invalid source_type 'not found'`. Apri **Gestione Dati**, correggi quella riga
+e ripeti la scansione.
 
 **Alcune aziende non hanno restituito lavori.** Potrebbero non avere posizioni
 aperte (`EMPTY` nel log) oppure bloccare temporaneamente l'accesso automatico:

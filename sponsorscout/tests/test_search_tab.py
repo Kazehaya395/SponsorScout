@@ -436,16 +436,20 @@ def test_header_sort_orders_data_and_keeps_columns_aligned(db_path):
     from PySide6.QtCore import Qt
     from sponsorscout.ui.tabs.search import URL_ROLE
 
+    # The country is read from the job's location (persistence P0-55), so each
+    # fixture carries a location in its own country.
     _seed_searchable_job(
         db_path, title="Zeta Engineer", url="https://jobs.example/z",
-        experience_required="4+ years", company="Acme", country="Germany")
+        experience_required="4+ years", company="Acme", country="Germany",
+        location="Berlin")
     _seed_searchable_job(
         db_path, title="Alpha Engineer", url="https://jobs.example/a",
-        experience_required="3-5 years", company="Zeta", country="France")
+        experience_required="3-5 years", company="Zeta", country="France",
+        location="Paris")
     _seed_searchable_job(
         db_path, title="Mid Engineer", url="https://jobs.example/m",
         experience_required="", company="Mid", country="Italy",
-        experience_level="", experience_min_years=None)
+        location="Rome", experience_level="", experience_min_years=None)
     tab = _make_tab(db_path)
     tab.populate_static_filters()
     tab.run_search()
@@ -690,9 +694,11 @@ def test_clipped_tooltip_never_survives_a_page_change(db_path):
     would otherwise stay on the cell and describe a DIFFERENT job — the same
     class of bug as a stale row index pointing at the wrong job.
     """
+    # Long enough to exceed the Title column, which stretches to fill the
+    # viewport (2026-10-19: the earlier 67-character title fit and never clipped).
     _seed_searchable_job(
         db_path,
-        title="Principal Platform Engineer - Distributed Systems and Reliability",
+        title="Principal Platform Engineer - Distributed Systems, Reliability, Observability and Developer Experience Across Global Regions",
         company="Acme", url="https://jobs.example/long")
     _seed_searchable_job(
         db_path, title="Backend Engineer", company="Acme",
@@ -705,7 +711,7 @@ def test_clipped_tooltip_never_survives_a_page_change(db_path):
     row = next(r for r in range(tab.table.rowCount())
                if tab.table.item(r, 0).text().startswith("Principal"))
     assert tab.table.item(row, 0).toolTip() == (
-        "Principal Platform Engineer - Distributed Systems and Reliability")
+        "Principal Platform Engineer - Distributed Systems, Reliability, Observability and Developer Experience Across Global Regions")
 
     # A new result set that does NOT contain the long title must clear it:
     # the cell is reused and now shows a different (shorter) job.

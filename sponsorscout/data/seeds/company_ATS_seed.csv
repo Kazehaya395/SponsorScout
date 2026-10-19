@@ -32,7 +32,7 @@ Mistral AI,https://jobs.ashbyhq.com/mistral.ai,ashby,mistral.ai,direct_employer,
 Mixpanel,https://job-boards.greenhouse.io/mixpanel,greenhouse,mixpanel,direct_employer,Global,global,Analytics,80,90,80,
 Monzo,https://job-boards.greenhouse.io/monzo,greenhouse,monzo,direct_employer,Global,global,Fintech,90,95,70,
 Moonpay,https://jobs.lever.co/moonpay,lever,moonpay,direct_employer,Global,global,Crypto,75,90,80,verified: 25 jobs
-Moss,https://moss.jobs.personio.de,personio,moss,direct_employer,Global,global,Fintech,80,85,60,"verified 2026-09-15: API reachable, 0 open postings"
+Moss,https://jobs.ashbyhq.com/moss,ashby,moss,direct_employer,Global,global,Fintech,80,85,60,"moved 2026-10-18 from Personio (404): Ashby board verified live, 29 postings"
 Netlify,https://job-boards.greenhouse.io/netlify,greenhouse,netlify,direct_employer,Global,global,Developer Tools,85,95,90,
 Nexthink,https://careers.smartrecruiters.com/nexthink,smartrecruiters,nexthink,direct_employer,Global,global,SaaS,80,85,65,FIX P0-20: smartrecruiters API adapter
 NXP Semiconductors,https://nxp.wd3.myworkdayjobs.com/careers,workday,nxp/careers,direct_employer,Global,global,Semiconductors,80,85,55,FIX P0-20: workday API adapter
@@ -47,6 +47,7 @@ Sentry,https://jobs.ashbyhq.com/sentry,ashby,sentry,direct_employer,Global,globa
 simcorp,https://simcorp.wd3.myworkdayjobs.com/SimCorp_Jobs,workday,simcorp/SimCorp_Jobs,direct_employer,Global,global,Fintech/Software,75,80,55,FIX P0-20: workday API adapter
 SmartRecruiters,https://www.smartrecruiterscareers.com/jobs,auto,SmartRecruiters,direct_employer,Global,global,HR Tech,75,90,65,board_slug filled 2026-10-03 (adapter already special-cased this host)
 Sonio,https://sonio-ag.jobs.personio.com/,personio,sonio-ag,direct_employer,Global,global,HealthTech,70,85,55,verified: 10 jobs
+Spendesk,https://career.spendesk.com/jobs,teamtailor,spendesk,direct_employer,Global,global,Fintech,75,85,65,"moved 2026-10-18: Personio board 404; careers site is Teamtailor (career.spendesk.com/jobs.json, 26 postings)"
 SOTI,https://soti.wd3.myworkdayjobs.com/Careers/jobs,workday,soti/Careers,direct_employer,Global,global,Enterprise Software,70,85,50,"Workday - no API adapter, DOM path; FIX P0-20: workday API adapter"
 Starship,https://starship.teamtailor.com/jobs,teamtailor,starship,direct_employer,Global,global,Robotics,75,90,45,verified: 4 jobs
 Twilio,https://job-boards.greenhouse.io/twilio,greenhouse,twilio,direct_employer,Global,global,SaaS,85,90,80,
@@ -55,16 +56,15 @@ Vercel,https://job-boards.greenhouse.io/vercel,greenhouse,vercel,direct_employer
 Wolt,https://boards.greenhouse.io/wolt,greenhouse,wolt,direct_employer,Global,global,Delivery,80,85,55,
 Zalando,https://zalando.wd3.myworkdayjobs.com/ZalandoSiteWD,workday,zalando/ZalandoSiteWD,direct_employer,Global,global,E-Commerce,80,80,55,FIX P0-20: workday API adapter
 Zendesk,https://zendesk.wd1.myworkdayjobs.com/zendesk,workday,zendesk/zendesk,direct_employer,Global,global,SaaS,80,85,65,FIX P0-20: workday API adapter
-Akur8,https://jobs.ashbyhq.com/akur8,workable,akur8,direct_employer,France,job_location,Unknown,,,,added 2026-09 batch; scores unset
+Akur8,https://jobs.ashbyhq.com/akur8,ashby,akur8,direct_employer,France,job_location,Unknown,,,,added 2026-09 batch; scores unset
 Celus,https://celus.jobs.personio.de/?language=en,personio,celus,direct_employer,Portugal,job_location,Unknown,,,,added 2026-09 batch; scores unset
 GreenFlux,https://greenflux.recruitee.com/,recruitee,greenflux,direct_employer,Netherlands,job_location,Unknown,,,,added 2026-09 batch; scores unset
 HousingAnywhere,https://job-boards.greenhouse.io/housinganywhere,greenhouse,housinganywhere,direct_employer,Netherlands,job_location,Unknown,,,,added 2026-09 batch; scores unset
 Virtuagym,https://jobs.virtuagym.com/jobs,recruitee,virtuagym,direct_employer,Netherlands,job_location,Unknown,,,,added 2026-09 batch; scores unset
 Wolters Kluwer,https://wk.wd3.myworkdayjobs.com/External,workday,wk/External,direct_employer,Netherlands,job_location,Unknown,,,,added 2026-09 batch; scores unset; fixed 2026-10-03: board_slug must be <tenant>/<site>
 Catawiki,https://job-boards.greenhouse.io/catawiki,greenhouse,catawiki,direct_employer,Global,global,E-Commerce,75,85,60,moved 2026-10-03 from career seed to ATS seed: this is a real greenhouse API board
-Spendesk,https://spendesk.jobs.personio.com,personio,spendesk,direct_employer,Global,global,Fintech,75,85,65,moved 2026-10-03 from career seed to ATS seed: this is a real personio API board
 Smartly.io,https://job-boards.greenhouse.io/smartlyio,greenhouse,smartlyio,direct_employer,Finland,seed_url,Unknown,,,,added 2026-09 batch; scores unset; moved 2026-10-03 from career seed to ATS seed: this is a real greenhouse API board
-Broadcom,https://broadcom.wd1.myworkdayjobs.com/External_Career,workday,External_Career,direct_employer,Global,job_location,Unknown,,,,VMware portfolio posts here post-acquisition (B7)
+Broadcom,https://broadcom.wd1.myworkdayjobs.com/External_Career,workday,broadcom/External_Career,direct_employer,Global,job_location,Unknown,,,,VMware portfolio posts here post-acquisition (B7)
 Zauber,https://jobs.ashbyhq.com/zauber,ashby,zauber,direct_employer,Germany,job_location,AI / Logistics,,,,"Zauber Technology GmbH, Berlin (Ashby board); scores unset (2026-10-17 fill from job listings)"
 Lightspeed,https://jobs.ashbyhq.com/lightspeed,ashby,Lightspeed,direct_employer,Global,global,SaaS,80,85,65,
 Scorewarrior,https://jobs.ashbyhq.com/scorewarrior/,ashby,scorewarrior,direct_employer,Global,global,Gaming,75,85,70,

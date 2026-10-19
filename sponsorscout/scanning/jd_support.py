@@ -70,6 +70,10 @@ def normalize_jd_text(text):
     t = t.replace("\u00a0", " ").replace("\u200b", "")
     t = re.sub(r"(?:\s*\.\s*){2,}", ". ", t)
     t = re.sub(r"[ \t\x0b\f\r]+", " ", t)
+    # 2026-10-19: block tags become " . " separators, so a JD that opens with
+    # a <p> or <div> started with ". Global Corporate Controller." (Nexthink,
+    # Avomind). Leading separators carry no meaning; drop them.
+    t = re.sub(r"^[\s.,;:|\u00b7\u2022\-\u2013\u2014]+", "", t)
     return t.strip()
 
 
@@ -624,6 +628,17 @@ class JDSupportDetector:
             sentence, re.I,
         ):
             return VERDICT_NO, 0.9, ["candidate-must-already-have-authorization"]
+        # Decided 2026-10-18: a visa exemption offered to candidates counts as
+        # sponsorship support ("successful candidates are offered visa
+        # exemptions", "Benefits for non-UK residents: Visa exemption"). The
+        # "non-" of "non-UK" must not read as a negation, so this runs before
+        # the polarity window. An explicit refusal ("no visa exemption") still
+        # falls through to the normal rules.
+        if (re.search(r"\bvisa[\s-]+exemptions?\b", sentence, re.I)
+                and not re.search(
+                    r"\b(?:no|not|without|cannot|unable|nor)\b[^.;]{0,25}"
+                    r"\bvisa[\s-]+exemptions?\b", sentence, re.I)):
+            return VERDICT_YES, 0.9, ["visa-exemption-offered"]
         # Qualifiers must be near the concept; unrelated verbs/negations elsewhere
         # in a long sentence or bullet must not leak polarity.
         left = max(0, concept_match.start() - 90)

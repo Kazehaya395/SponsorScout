@@ -126,7 +126,17 @@ def _browser_auto_install_enabled() -> bool:
     is never an acceptable surprise for a desktop app (and it made the test
     suite hang); the user opts in explicitly instead.
     """
-    return os.environ.get(_AUTO_INSTALL_ENV, "").strip().lower() in _TRUTHY
+    # 2026-10-19: on by default for source runs (python main.py / terminal),
+    # because the missing-Chromium case zeroed 153 of 276 career companies
+    # on the user's machine. Off for frozen builds (cannot succeed there; the
+    # bundle must ship) and under pytest (no 130 MB download in tests).
+    # Set SPONSORSCOUT_AUTO_INSTALL_BROWSERS=0 to opt out.
+    raw = os.environ.get(_AUTO_INSTALL_ENV, "").strip().lower()
+    if raw:
+        return raw in _TRUTHY
+    if getattr(sys, "frozen", False) or os.environ.get("PYTEST_CURRENT_TEST"):
+        return False
+    return True
 
 
 def _ensure_playwright_browsers() -> bool:
@@ -207,7 +217,7 @@ def _ensure_playwright_browsers() -> bool:
             "Playwright Chromium browser is missing.  Automatic download is "
             "disabled, so JS-rendered career pages will return 0 jobs.  Run "
             "`python -m playwright install chromium` once, then restart the app. "
-            "(Set %s=1 to restore the automatic download.)",
+            "(Set %s=1 to allow the automatic download.)",
             _AUTO_INSTALL_ENV,
         )
         _ensure_playwright_browsers._ok = False

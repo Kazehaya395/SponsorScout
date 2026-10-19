@@ -213,6 +213,22 @@ def _apply_migrations(conn):
         )
 
 
+def _repair_sponsorship_scores(conn):
+    """Make sponsorship_score agree with the stored visa verdict (idempotent).
+
+    Scores used to be derived from the pre-integrity verdict, so jobs demoted to
+    Unknown kept scores of 70+ and the Dashboard counted them as sponsored while
+    the Search Sponsor filter did not. Verified rows: Unknown -> 35, No -> 0.
+    """
+    conn.execute("UPDATE jobs SET sponsorship_score = 35 "
+                 "WHERE source_type = 'verified' AND visa_sponsorship = 'Unknown' "
+                 "AND sponsorship_score <> 35")
+    conn.execute("UPDATE jobs SET sponsorship_score = 0 "
+                 "WHERE source_type = 'verified' AND visa_sponsorship = 'N' "
+                 "AND sponsorship_score <> 0")
+    conn.commit()
+
+
 def initialize(db_path=DB_PATH):
     conn = get_connection(db_path)
     try:
@@ -233,6 +249,7 @@ def initialize(db_path=DB_PATH):
         # Now run migrations safely to configure outstanding indices or queues.
         if not table_exists:
             _apply_migrations(conn)
+        _repair_sponsorship_scores(conn)
 
         # Fix country/location mismatch for any existing records.
         #
@@ -378,7 +395,8 @@ def search_jobs(db_path, title="", company="", location="", country="All", sourc
         if active_only:
             query += " AND is_expired = 0"
         if sponsorship_only:
-            query += " AND sponsorship_score >= 70"
+            # Same definition as the dashboard: a Yes verdict, not a score cut-off.
+            query += " AND visa_sponsorship = 'Y'"
         if remote_filter and remote_filter != "All":
             if remote_filter == "Remote EU":
                 query += " AND remote_type = 'remote_eu'"
@@ -499,13 +517,11 @@ def get_dashboard_stats(db_path, _conn=None):
             # on the dashboard always agree with what the user can filter for.
             "sponsored_jobs": conn.execute(
                 "SELECT COUNT(*) FROM jobs "
-                "WHERE sponsorship_score >= ? AND verified_active = 1 AND is_expired = 0",
-                (SPONSORSHIP_SCORE_THRESHOLD,),
+                "WHERE visa_sponsorship = 'Y' AND verified_active = 1 AND is_expired = 0",
             ).fetchone()[0],
             "sponsored_companies": conn.execute(
                 "SELECT COUNT(DISTINCT company) FROM jobs "
-                "WHERE sponsorship_score >= ? AND verified_active = 1 AND is_expired = 0",
-                (SPONSORSHIP_SCORE_THRESHOLD,),
+                "WHERE visa_sponsorship = 'Y' AND verified_active = 1 AND is_expired = 0",
             ).fetchone()[0],
             "applications": conn.execute("SELECT COUNT(*) FROM applications").fetchone()[0],
             "countries": conn.execute("SELECT COUNT(DISTINCT country) FROM jobs WHERE country <> ''").fetchone()[0],

@@ -51,7 +51,8 @@ def test_reason_is_surfaced_in_the_raised_error(monkeypatch):
 
     src = inspect.getsource(career)
     assert "Playwright is required for DOM fallback ({_pw_reason})" in src
-    assert "Playwright is required for --detail ({_pw_reason})" in src
+    # --detail falls back to HTTP-only and records the same reason (2026-10-19).
+    assert "detail: HTTP only (playwright unavailable: " in src
     assert 'diagnostics.append(f"playwright unavailable: {_pw_reason}")' in src
 
 

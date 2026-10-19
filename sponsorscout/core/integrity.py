@@ -118,6 +118,9 @@ def check_integrity(job: dict) -> tuple[dict, list[str]]:
     visa = job.get("visa_sponsorship")
     if _verdict_is_yes(visa) and not sponsorship_region_applies(country):
         job["visa_sponsorship"] = _VERDICT_UNKNOWN
+        # The score was derived from the Yes verdict before this demotion. An
+        # Unknown verdict scores a flat 35, so the score must follow the verdict.
+        job["sponsorship_score"] = min(int(job.get("sponsorship_score") or 0), 35)
         violations.append(
             f"visa-sponsorship-outside-region:{country}")
 
