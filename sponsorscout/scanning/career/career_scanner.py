@@ -11468,7 +11468,10 @@ class CareerPortalScanner:
         return bool(t) and t == re.sub(
             r"[^a-z0-9]+", "", segs[-1].casefold())
 
-    # Robert Walters serves a PerimeterX challenge
+    # 2026-10-19 (round 10b): human-verification pages that replace the site.
+    # Robert Walters serves a PerimeterX challenge ("Access to this page has
+    # been denied ... automation tools") to automated browsers; the scanner
+    # used to read it as an empty board.
     _BOT_CHALLENGE_MARKERS = (
         "access to this page has been denied",
         "please verify you are a human",

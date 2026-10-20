@@ -37,38 +37,72 @@ if (Get-Command py -ErrorAction SilentlyContinue) {
     throw 'python or py launcher not found in PATH'
 }
 
+# Native commands (python, pip, PyInstaller, playwright) write progress and
+# WARNING lines to stderr. Windows PowerShell 5.1 turns those lines into error
+# records, and with $ErrorActionPreference='Stop' that aborts the build even
+# when the command succeeded (e.g. "WARNING: Skipping PySide6 as it is not
+# installed."). These helpers run the command with 'Continue', merge both
+# streams to text, and judge the outcome by the exit code only.
+function Invoke-Native {
+    # Echoes output live (PyInstaller, playwright). Returns the exit code.
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $script:NativeOutput = @(& $Python @PythonArgs @args 2>&1 | ForEach-Object { $t = "$_"; Write-Host $t; $t })
+        return $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $prev
+    }
+}
+
+function Invoke-NativeQuiet {
+    # Captures output into $script:NativeOutput. Returns the exit code.
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $script:NativeOutput = @(& $Python @PythonArgs @args 2>&1 | ForEach-Object { "$_" })
+        return $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $prev
+    }
+}
+
 Write-Host "[1/4] Installing build dependencies..." -ForegroundColor Cyan
 # Repair pip if it is in a broken state (e.g. a half-finished self-upgrade
 # left pip._internal.operations.build missing). Detect the breakage, delete
 # the truncated package, then re-bootstrap pip from its bundled wheel.
 $RepairNeeded = $true
-try {
-    & $Python @PythonArgs -c "import pip._internal.operations.build" 2>$null
-    if ($LASTEXITCODE -eq 0) { $RepairNeeded = $false }
-} catch { }
+if ((Invoke-NativeQuiet -c "import pip._internal.operations.build") -eq 0) { $RepairNeeded = $false }
 if ($RepairNeeded) {
     Write-Host "Repairing broken pip installation..." -ForegroundColor Yellow
-    $Site = (& $Python @PythonArgs -c "import site,sys; print(site.getsitepackages()[0])" 2>$null)
+    $null = Invoke-NativeQuiet -c "import site,sys; print(site.getsitepackages()[0])"
+    $Site = $script:NativeOutput | Select-Object -First 1
     if ($Site) {
         Get-ChildItem -Path $Site -Filter 'pip*' -Directory | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
     }
-    & $Python @PythonArgs -m ensurepip --upgrade 2>$null
-    if ($LASTEXITCODE -ne 0) { & $Python @PythonArgs -m ensurepip 2>$null }
+    if ((Invoke-NativeQuiet -m ensurepip --upgrade) -ne 0) { $null = Invoke-NativeQuiet -m ensurepip }
 }
 # Pip never removes packages that are no longer listed. An older venv can still
 # hold the full PySide6 meta-package and PySide6-Addons, which bring WebEngine,
 # Quick, QML, PDF, Multimedia and FFmpeg (about 300 MB uncompressed in the bundle).
 # Remove them, then install the runtime requirements (PySide6-Essentials,
-# playwright) at their latest allowed versions.
-& $Python @PythonArgs -m pip uninstall -y PySide6 PySide6-Addons 2>$null | Out-Null
-& $Python @PythonArgs -m pip install -r requirements.txt --upgrade | Out-Null
+# playwright) at their latest allowed versions. Only uninstall when they are
+# actually present: pip prints "WARNING: Skipping ... not installed" otherwise.
+$null = Invoke-NativeQuiet -m pip freeze
+if ($script:NativeOutput | Where-Object { $_ -match '^PySide6([-_]Addons)?==' }) {
+    $null = Invoke-NativeQuiet -m pip uninstall -y PySide6 PySide6-Addons
+}
+$Code = Invoke-NativeQuiet -m pip install -r requirements.txt --upgrade
+if ($Code -ne 0) {
+    $tail = ($script:NativeOutput | Select-Object -Last 25) -join "`\n"
+    throw "pip install -r requirements.txt failed (exit $Code).`\n$tail"
+}
 
 # Fail fast when a dependency installed but is not actually usable. A broken
 # greenlet (its compiled extension missing) makes `playwright.sync_api` raise
 # ModuleNotFoundError, which the scanner swallows and later reports as an opaque
 # "Playwright is required for DOM fallback" for every target.
-& $Python @PythonArgs -c "from playwright.sync_api import sync_playwright" 2>$null
-if ($LASTEXITCODE -ne 0) {
+if ((Invoke-NativeQuiet -c "from playwright.sync_api import sync_playwright") -ne 0) {
     throw "playwright is not usable inside $Python (broken/missing dependency). Re-create the venv and retry."
 }
 
@@ -89,7 +123,7 @@ if (Test-Path $BuildDir) {
     Remove-Item -Recurse -Force $BuildDir
 }
 
-& $Python @PythonArgs -m PyInstaller `
+$Code = Invoke-Native -m PyInstaller `
     --clean `
     --noconfirm `
     --windowed `
@@ -134,6 +168,7 @@ if (Test-Path $BuildDir) {
     --exclude-module PySide6.QtPdfWidgets `
     --exclude-module PySide6.QtQuick3D `
     sponsorscout/main.py
+if ($Code -ne 0) { throw "PyInstaller failed (exit $Code)." }
 
 if (-not (Test-Path $ExePath)) {
     throw "PyInstaller did not produce $ExePath"
@@ -157,8 +192,8 @@ $BundledPlaywright = Join-Path $BuildDir '_playwright'
 Write-Host "[3/4] Installing Chromium into bundle ($BundledPlaywright)..." -ForegroundColor Cyan
 $env:PLAYWRIGHT_BROWSERS_PATH = $BundledPlaywright
 try {
-    & $Python @PythonArgs -m playwright install chromium --only-shell
-    if ($LASTEXITCODE -ne 0) { throw "playwright install chromium failed (exit $LASTEXITCODE)" }
+    $Code = Invoke-Native -m playwright install chromium --only-shell
+    if ($Code -ne 0) { throw "playwright install chromium failed (exit $Code)" }
 } finally {
     Remove-Item Env:PLAYWRIGHT_BROWSERS_PATH -ErrorAction SilentlyContinue
 }

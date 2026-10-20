@@ -1139,7 +1139,31 @@ class ToolsTab(QWidget):
         self._refresh_resume_button()
         self.data_changed.emit()
         self.scan_finished.emit(summary)
+        self._offer_blocked_portals(summary)
         self.status_message.emit(_("Scan finished: ") + status)
+
+    def _offer_blocked_portals(self, summary: dict):
+        """After a finished run, offer to open bot-blocked portals in the browser.
+
+        The scanner does not get past bot protection. The user decides whether
+        to search those portals by hand in their own default browser.
+        """
+        from sponsorscout.core.blocked_portals import (
+            blocked_portals_from_summary, open_in_default_browser)
+        blocked = blocked_portals_from_summary(summary)
+        if not blocked:
+            return
+        names = "\n".join(f"- {b['seed_name'] or b['url']}" for b in blocked)
+        answer = QMessageBox.question(
+            self, _("Blocked portals"),
+            _("These portals block automated access, so the scan could not read them:")
+            + "\n\n" + names + "\n\n"
+            + _("Open them in your default browser to search manually?"),
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+        if answer != QMessageBox.Yes:
+            return
+        for b in blocked:
+            open_in_default_browser(b["url"])
 
     def _view_run_log(self):
         row = self.runs_table.currentRow()

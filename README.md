@@ -313,6 +313,8 @@ again to continue instantly. **Stop** ends the run and keeps everything found,
 and **Resume** later continues the unfinished companies, even after restarting
 the app.
 
+**A career portal is blocked by bot protection.** Some career sites show a bot-check page (for example PerimeterX) to automated tools. SponsorScout does not solve these checks and does not continue past them. When a scan finishes, it lists the portals that actually showed the check (confirmed challenge pages only, never ATS boards) and asks whether to open them in your default browser, so you can search them yourself. Robert Walters Germany is currently one of these portals.
+
 **A job shows `?`.** `?` means *unknown*, never *no*. The ad had no explicit
 evidence, so SponsorScout does not guess. Unknown jobs are never removed.
 
@@ -737,6 +739,8 @@ scansione dove si trova (nulla va perso, i browser attendono) e clicca di nuovo
 lo stesso pulsante per continuare subito. **Ferma** termina l'esecuzione
 mantenendo tutto ciò che è stato trovato, e **Riprendi** più tardi continua le
 aziende non finite, anche dopo aver riavviato l'app.
+
+**Un portale di carriera è bloccato dalla protezione anti-bot.** Alcuni siti di carriera mostrano agli strumenti automatici una pagina di verifica anti-bot (ad esempio PerimeterX). SponsorScout non risolve queste verifiche e non prosegue oltre. Al termine di una scansione elenca i portali che hanno mostrato davvero la verifica (solo pagine di verifica confermate, mai le schede ATS) e chiede se aprirli nel browser predefinito, così puoi cercare tu stesso. Robert Walters Germany è attualmente uno di questi portali.
 
 **Un lavoro mostra `?`.** `?` significa *sconosciuto*, mai *no*. L'annuncio non
 conteneva evidenze esplicite, quindi SponsorScout non ipotizza nulla. I lavori
