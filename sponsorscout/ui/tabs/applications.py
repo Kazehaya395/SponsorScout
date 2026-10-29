@@ -13,7 +13,7 @@ log above the edit form records each status change made this session.
 
 from datetime import datetime
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
     QAbstractItemView, QComboBox, QGroupBox, QHBoxLayout, QHeaderView, QLabel,
@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 from sponsorscout.db import database as db
+from sponsorscout.ui.async_load import AsyncLoader
 from sponsorscout.i18n import _
 
 APP_STATUSES = ["saved", "applied", "interview", "offer", "rejected"]
@@ -57,6 +58,8 @@ class ApplicationsTab(QWidget):
     def __init__(self, db_path: str, parent=None):
         super().__init__(parent)
         self.db_path = db_path
+        self._loader = AsyncLoader(self, name="applications")
+        self._render_generation = 0
         self._editing_url = None
         self._fitting = False            # True while we set widths ourselves
         self._user_resized = False       # becomes True once the user drags a border
@@ -89,6 +92,7 @@ class ApplicationsTab(QWidget):
         header.setSectionResizeMode(QHeaderView.Interactive)   # manual resize on every column
         header.setStretchLastSection(False)
         header.setMinimumSectionSize(60)
+        header.setResizeContentsPrecision(200)
         header.sectionResized.connect(self._on_section_resized)
         self.table.itemSelectionChanged.connect(self._on_select)
         root.addWidget(self.table, 1)
@@ -146,21 +150,38 @@ class ApplicationsTab(QWidget):
     # ── Data loading ─────────────────────────────────────────────────────────
 
     def load_applications(self):
-        rows = db.list_applications(self.db_path)
+        path = self.db_path
+        self._loader.request(lambda: [tuple(r) for r in db.list_applications(path)], self._apply_applications)
+
+    def _apply_applications(self, rows):
+        selected = self._selected_row_values()
+        selected_url = selected[COL_URL] if selected else None
+        self._render_generation += 1
+        generation = self._render_generation
         self.table.setRowCount(0)
-        for r in rows:
-            company, title, status, applied_at, _f, notes, job_url = r[:7]
-            row = self.table.rowCount()
-            self.table.insertRow(row)
-            saved_on = (applied_at or "")[:10]
-            values = (company, title, status, saved_on, job_url, notes)
-            for col, val in enumerate(values):
-                item = QTableWidgetItem(str(val or ""))
-                if col == COL_STATUS:
-                    self._style_status(item, status)
-                self.table.setItem(row, col, item)
-        if not self._user_resized:
-            self._fit_columns()
+        def append(start=0):
+            if generation != self._render_generation:
+                return
+            self.table.blockSignals(True)
+            try:
+                for r in rows[start:start+100]:
+                    company, title, status, applied_at, _f, notes, job_url = r[:7]
+                    row = self.table.rowCount()
+                    self.table.insertRow(row)
+                    for col, value in enumerate((company, title, status, (applied_at or '')[:10], job_url, notes)):
+                        item = QTableWidgetItem(str(value or ''))
+                        if col == COL_STATUS:
+                            self._style_status(item, status)
+                        self.table.setItem(row, col, item)
+                    if job_url == selected_url:
+                        self.table.selectRow(row)
+            finally:
+                self.table.blockSignals(False)
+            if start+100 < len(rows):
+                QTimer.singleShot(0, lambda: append(start+100))
+            elif not self._user_resized:
+                self._fit_columns()
+        append()
 
     @staticmethod
     def _style_status(item: QTableWidgetItem, status):

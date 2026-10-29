@@ -67,6 +67,9 @@ def _patch_get(monkeypatch, resp=None, exc=None):
             raise exc
         return resp
     monkeypatch.setattr(T.requests, "get", fake_get)
+    # This legacy suite tests HTTP/errors. Rendered fallback has its own suite;
+    # never let a mocked HTTP response launch a real external browser here.
+    monkeypatch.setattr(T,"_read_rendered_html",lambda url:"")
 
 
 LONG_BODY = "<p>" + ("Responsibilities and requirements for the role. " * 20) + "</p>"
@@ -140,10 +143,20 @@ def test_job_lookup_returns_stored_description(db_path):
 
 # ── the tab ─────────────────────────────────────────────────────────────────
 
-@pytest.fixture()
+@pytest.fixture(scope="module")
 def qapp():
     from PySide6.QtWidgets import QApplication
-    return QApplication.instance() or QApplication([])
+    from PySide6.QtCore import QCoreApplication,QEvent
+    app=QApplication.instance() or QApplication([])
+    yield app
+    # Test-owned top-level widgets/clipboard must be released before the Qt
+    # application. Cyclic signal callbacks otherwise outlive function locals.
+    app.clipboard().clear()
+    for widget in app.topLevelWidgets():
+        widget.close()
+        widget.deleteLater()
+    QCoreApplication.sendPostedEvents(None,QEvent.DeferredDelete)
+    app.processEvents()
 
 
 def test_tab_copy_puts_full_text_on_clipboard(qapp, db_path, monkeypatch):

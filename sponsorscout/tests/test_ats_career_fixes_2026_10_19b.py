@@ -158,6 +158,10 @@ def _bare_career():
     obj._jd_browser_sem = _t.Semaphore(1)
     obj._jd_browser_lock = _t.Lock()
     obj._jd_browser_used = 0
+    # __new__ bypasses the constructor; mirror its new run-local detail state.
+    from sponsorscout.scanning.detail_state import DetailRequestState
+    obj._detail_state = DetailRequestState()
+    obj._tls = _t.local()
     return obj
 
 

@@ -13,6 +13,8 @@ from sponsorscout.ui.tabs.data_management import DataManagementTab
 from sponsorscout.ui.tabs.search import SearchTab
 from sponsorscout.ui.tabs.tailoring import TailoringTab
 from sponsorscout.ui.tabs.tools import ToolsTab
+from sponsorscout.ui.tabs.insights import InsightsTab
+from sponsorscout.ui.tabs.assisted_ingestion import AssistedIngestionTab
 
 __all__ = [
     "ApplicationsTab",
@@ -21,4 +23,6 @@ __all__ = [
     "SearchTab",
     "TailoringTab",
     "ToolsTab",
+    "InsightsTab",
+    "AssistedIngestionTab",
 ]

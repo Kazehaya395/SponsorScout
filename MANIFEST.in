@@ -1,8 +1,10 @@
+recursive-include sponsorscout/insights *.json *.csv
 recursive-include sponsorscout/data *.json *.csv *.png *.ico
 recursive-include sponsorscout/data/icons *.png
 recursive-include sponsorscout/db *.sql
 include README.md
-include CODEBASE.md
+include tools/SponsorScout_codebase_guide.md
+include tools/verification_2026_10_24.md
 include LICENSE
 include requirements.txt
 include SponsorScout.spec

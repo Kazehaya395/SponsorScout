@@ -44,8 +44,8 @@ CASES = [
     ("hybrid - berlin", "Germany"), ("Remote - EU", ""), ("Remote", ""),
     ("worldwide", ""), ("Unknown", ""), ("Not Specified", ""),
     ("Parma", "Italy"), ("Suzhou, CN", "China"), ("Milan, MI", "Italy"),
-    ("Baden-Württemberg", ""), ("La Paz - Bolivia", ""),
-    ("", ""), ("Algiers", ""), ("Algeria", "Algeria"),
+    ("Baden-Württemberg", "Germany"), ("La Paz - Bolivia", "Bolivia"),
+    ("", ""), ("Algiers", "Algeria"), ("Algeria", "Algeria"),
     # Session regressions: screenshot cities + Workable API shape + NJ site
     ("Milano, MI", "Italy"), ("Milano", "Italy"),
     ("Berlin, Germany", "Germany"), ("Florham Park, NJ, US", "United States"),

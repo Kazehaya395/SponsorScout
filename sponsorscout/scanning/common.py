@@ -1,147 +1,213 @@
-"""Shared constants and tiny helpers for the scanning package.
+"""Shared constants and concurrency-budget helpers across scanner phases.
 
-Extracted from ats_portal_scanner.py / career_scanner.py.
-
-Only what both scanners genuinely share lives here: the lean low-resource
-Chromium flag set (``BROWSER_ARGS`` / ``LOW_RESOURCE_BROWSER_ARGS``),
-host-adaptive pool sizing (``recommended_workers``) and the pause/stop gate
-(``check_control``). Each scanner keeps its own text helpers and CSV schemas
-next to the code that uses them, preserving the pipeline's 39-column jobs
-output and 15-column scan log.
+The scanner runs in two phases (ATS API boards first, then career portals).
+To avoid blowing past machine memory or locking up low-end laptops, this module
+adapts concurrency to the host's actual cores and available RAM.
 """
 
-def check_control(cancel_event, pause_event=None, poll_sec: float = 0.1) -> bool:
-    """Wait out a pause, then report whether the scan must stop.
+from __future__ import annotations
 
-    Returns ``True`` when the scan was cancelled — the caller must abort
-    immediately. Returns ``False`` when scanning may continue.
+import logging
+import os
+import ssl
+import threading
+import time
 
-    This is the single gate behind both desktop controls:
+logger = logging.getLogger(__name__)
 
-    * **Pause** suspends the calling worker *in place* (``pause_event`` set):
-      no new work is started, browsers stay open, and the run keeps its
-      identity, so Resume continues instantly with no database round-trip.
-    * **Stop** always wins over a Pause — pressing Stop while paused still
-      ends the scan promptly instead of deadlocking behind the pause.
+# Absolute floor: pretend the machine has at least this much available RAM so
+# temporary spikes in another app cannot permanently starve the scan.
+_MIN_USABLE_RAM = 2.0 * (1024 ** 3)  # 2 GiB
 
-    Both events may be ``None`` (CLI and tests), in which case this returns
-    ``False`` without blocking.
-    """
-    if pause_event is not None and pause_event.is_set():
-        while pause_event.is_set():
-            if cancel_event is not None and cancel_event.is_set():
-                return True
-            pause_event.wait(poll_sec)
-    return cancel_event is not None and cancel_event.is_set()
+# Low-memory / low-core machine cutoffs (strict conservative mode for <=8 GB RAM or <=4 CPU cores):
+_STRICT_MAX_CPUS = 4
+_STRICT_MAX_RAM_GIB = 8.5
+_STRICT_MIN_AVAIL_GIB = 2.5
 
 
-#: Absolute memory floor for pool sizing (2 GiB).  Sizing reads AVAILABLE RAM,
-#: not total; this only prevents a transient dip from pinning a scan to one
-#: worker for the whole run.
-_MIN_USABLE_RAM = 2 * 1024 ** 3
-
-#: Below this, we assume a low-end machine and stay deliberately small.
-_LOW_MEMORY_RAM = 6 * 1024 ** 3
-
-
-def host_workers_limits() -> tuple[int, int, int]:
-    """Return ``(cpu_count, total_ram_bytes, available_ram_bytes)`` for this machine.
-
-    RAM is read via ``GlobalMemoryStatusEx`` on Windows and ``sysconf`` on
-    POSIX; when neither works (exotic platform / sandbox) a conservative
-    8 GiB is assumed so the pool sizing stays *small* rather than optimistic.
-
-    Available RAM is reported alongside total because total alone is
-    misleading on a low-end machine: a 16 GB box that is currently 14 GB into
-    swap reads as "plenty of memory" while it is in fact thrashing.  Sizing
-    pools on total was how a single scan could still exhaust a machine.
-    """
-    import os
-
+def host_workers_limits() -> tuple[int, float, float]:
+    """Return (cpu_count, total_ram_bytes, available_ram_bytes)."""
     cpu = os.cpu_count() or 2
+    total_ram = 8.0 * (1024 ** 3)
+    avail_ram = 6.0 * (1024 ** 3)
 
-    ram = avail = 0
     try:
-        if os.name == "nt":
-            import ctypes
-
-            class _MEMORYSTATUSEX(ctypes.Structure):
-                _fields_ = [
-                    ("dwLength", ctypes.c_ulong),
-                    ("dwMemoryLoad", ctypes.c_ulong),
-                    ("ullTotalPhys", ctypes.c_ulonglong),
-                    ("ullAvailPhys", ctypes.c_ulonglong),
-                    ("ullTotalPageFile", ctypes.c_ulonglong),
-                    ("ullAvailPageFile", ctypes.c_ulonglong),
-                    ("ullTotalVirtual", ctypes.c_ulonglong),
-                    ("ullAvailVirtual", ctypes.c_ulonglong),
-                    ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
-                ]
-
-            stat = _MEMORYSTATUSEX()
-            stat.dwLength = ctypes.sizeof(_MEMORYSTATUSEX)
-            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
-                ram = int(stat.ullTotalPhys)
-                avail = int(stat.ullAvailPhys)
-        else:
-            ram = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
-            try:
-                avail = os.sysconf("SC_AVPHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")
-            except (ValueError, OSError, AttributeError):
-                avail = 0
+        import psutil
+        vm = psutil.virtual_memory()
+        return cpu, float(vm.total), float(vm.available)
     except Exception:
-        ram = avail = 0
+        pass
 
-    if ram <= 0:
-        ram = 8 * 1024 ** 3
-    if avail <= 0:
-        avail = ram
-    return cpu, ram, avail
+    try:
+        import ctypes
+
+        class MEMORYSTATUSEX(ctypes.Structure):
+            _fields_ = [
+                ("dwLength", ctypes.c_ulong),
+                ("dwMemoryLoad", ctypes.c_ulong),
+                ("ullTotalPhys", ctypes.c_ulonglong),
+                ("ullAvailPhys", ctypes.c_ulonglong),
+                ("ullTotalPageFile", ctypes.c_ulonglong),
+                ("ullAvailPageFile", ctypes.c_ulonglong),
+                ("ullTotalVirtual", ctypes.c_ulonglong),
+                ("ullAvailVirtual", ctypes.c_ulonglong),
+                ("sullAvailExtendedVirtual", ctypes.c_ulonglong),
+            ]
+
+        stat = MEMORYSTATUSEX()
+        stat.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
+            return cpu, float(stat.ullTotalPhys), float(stat.ullAvailPhys)
+    except Exception:
+        pass
+
+    try:
+        if os.path.exists("/proc/meminfo"):
+            mem = {}
+            with open("/proc/meminfo", encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    parts = line.split(":")
+                    if len(parts) == 2:
+                        key = parts[0].strip()
+                        val = parts[1].strip().split()[0]
+                        mem[key] = int(val) * 1024
+            if "MemTotal" in mem:
+                tot = float(mem["MemTotal"])
+                avail = float(mem.get("MemAvailable", mem.get("MemFree", int(tot * 0.6))))
+                return cpu, tot, avail
+    except Exception:
+        pass
+
+    try:
+        import subprocess
+        import sys as _sys
+        if _sys.platform == "darwin":
+            tot_s = subprocess.check_output(["sysctl", "-n", "hw.memsize"], timeout=2).decode().strip()
+            tot = float(int(tot_s))
+            vm_out = subprocess.check_output(["vm_stat"], timeout=2).decode()
+            page_sz = 4096
+            free_pages = 0
+            for ln in vm_out.splitlines():
+                if "page size of" in ln:
+                    for tok in ln.split():
+                        if tok.isdigit():
+                            page_sz = int(tok)
+                            break
+                elif any(ln.startswith(k) for k in ("Pages free:", "Pages inactive:", "Pages speculative:")):
+                    num = ln.split(":", 1)[1].strip().rstrip(".")
+                    if num.isdigit():
+                        free_pages += int(num)
+            avail = float(free_pages * page_sz) if free_pages > 0 else tot * 0.6
+            return cpu, tot, avail
+    except Exception:
+        pass
+
+    return cpu, total_ram, avail_ram
+
+
+def set_high_performance(enabled: bool) -> None:
+    """Enable or disable High-Performance (Turbo) concurrency scaling at runtime."""
+    os.environ["SPONSORSCOUT_HIGH_PERFORMANCE"] = "1" if enabled else "0"
+
+
+def is_high_performance() -> bool:
+    """Return True when explicit High Performance / Turbo override is enabled."""
+    return (
+        os.environ.get("SPONSORSCOUT_HIGH_PERFORMANCE", "").strip().lower() in ("1", "true", "yes", "on")
+        or os.environ.get("SPONSORSCOUT_TURBO", "").strip().lower() in ("1", "true", "yes", "on")
+    )
+
+
+def is_strict_low_spec(
+    cpu: int | None = None,
+    ram_total_bytes: float | None = None,
+    ram_avail_bytes: float | None = None,
+) -> bool:
+    """Return True on dual/quad-core CPUs or machines with <=8 GB RAM (or tight free RAM)."""
+    if cpu is None or ram_total_bytes is None or ram_avail_bytes is None:
+        cpu, ram_total_bytes, ram_avail_bytes = host_workers_limits()
+    gib = 1024 ** 3
+    total_gib = ram_total_bytes / gib
+    avail_gib = ram_avail_bytes / gib
+    return (cpu <= _STRICT_MAX_CPUS) or (total_gib <= _STRICT_MAX_RAM_GIB) or (avail_gib < _STRICT_MIN_AVAIL_GIB)
 
 
 def recommended_workers(kind: str = "browser", requested: int | None = None) -> int:
-    """Concurrency level suited to *this* machine, not to a dev workstation.
+    """Hardware-aware concurrency level suited to *this* machine.
 
-    Each Playwright Chromium instance costs roughly 150-400 MB resident, so the
-    previously hard-coded pools (3 concurrent browsers, 6 concurrent detail
-    fetches) can exhaust the RAM of an 8 GB laptop and stall the whole OS —
-    exactly the "scanning freezes my system" failure mode.
-
-    Sizing uses *available* RAM (floored at ``_MIN_USABLE_RAM``), not total
-    RAM.  Both phases draw on the same budget: on a 2-core / 8 GB box the
-    browser pool correctly drops to 1, but the lightweight HTTP pool used to be
-    computed independently from *total* RAM and still returned 4 — so a career
-    scan ran four concurrent fetchers on top of one Chromium on two cores.
-
-    ``kind``:
-      * ``"browser"`` — concurrent browser contexts for the career crawl.
-      * ``"http"``    — concurrent lightweight HTTP detail fetches.
-
-    ``requested`` caps the result without ever raising it, so a caller that
-    knows a tighter budget (or a test) can clamp it.
-
-    Returned values are always >= 1 and deliberately conservative; the scans
-    stay correct at any concurrency, they are merely slower.
+    Scaling policy:
+    - **Strict conservative tier** (`cpu <= 4` OR `total_ram <= 8.5 GiB` OR
+      `avail_ram < 2.5 GiB`): strictly caps threads and headless browsers so
+      dual/quad-core and <=8 GB laptops never stutter or swap.
+    - **Capable desktop auto-boost tier** (`cpu > 4` AND `total_ram > 8.5 GiB`):
+      automatically boosts multi-threaded company/HTTP pools and parallel
+      background headless Chrome browsers while reserving >=2 CPU threads and
+      >=3.0 GiB of free RAM so normal PC usage stays completely lag-free.
+    - **Optional High Performance (Turbo) override**: raises upper ceilings further
+      on capable hardware while still preserving OS responsiveness headroom.
+    - Honors explicit `SPONSORSCOUT_MAX_WORKERS` (browser) and
+      `SPONSORSCOUT_HTTP_WORKERS` (http).
     """
+    turbo = is_high_performance()
+
+    if kind in ("browser", "http"):
+        raw_env = os.environ.get(
+            "SPONSORSCOUT_MAX_WORKERS" if kind == "browser" else "SPONSORSCOUT_HTTP_WORKERS"
+        )
+        if raw_env:
+            try:
+                val = int(raw_env.strip())
+                if val >= 1:
+                    cap = 8 if kind == "browser" else (32 if turbo else 24)
+                    n = min(val, cap)
+                    if requested is not None:
+                        try:
+                            n = max(1, min(int(requested), n))
+                        except (TypeError, ValueError):
+                            pass
+                    return n
+            except (ValueError, TypeError):
+                pass
+
     cpu, ram_total, ram_avail = host_workers_limits()
-    # Use available RAM, floored at 2 GiB.  The floor exists only so a
-    # momentary spike in another application's memory cannot pin a scan to a
-    # single worker forever — but the floor must be an ABSOLUTE one, not a
-    # fraction of total: on a 32 GB box that is currently swapping, total/2 is
-    # 16 GB and would hand back the very large pool the machine cannot run.
-    ram = max(ram_avail, _MIN_USABLE_RAM)
-    if kind == "http":
-        if ram < _LOW_MEMORY_RAM:
-            n = 3 if cpu >= 2 else 2
-        else:
-            n = max(2, min(cpu * 2, 8))
-    elif ram < _LOW_MEMORY_RAM or cpu <= 2:
-        # browser contexts: the heavy case
-        n = 1
-    elif cpu <= 4:
-        n = 2
+    gib = 1024 ** 3
+    total_gib = ram_total / gib
+    raw_avail_gib = ram_avail / gib
+    avail_gib = max(ram_avail, _MIN_USABLE_RAM) / gib
+
+    if is_strict_low_spec(cpu, ram_total, ram_avail):
+        very_tight = (cpu <= 2) or (total_gib <= 5.0) or (raw_avail_gib < 2.0)
+        if kind == "http":
+            n = 3 if very_tight else (10 if turbo else 8)
+        elif kind == "company":
+            n = 2 if very_tight else (5 if turbo else 4)
+        else:  # browser
+            n = 1 if very_tight else 2
     else:
-        n = max(2, min(cpu // 2, 4))
+        # Capable machine (>4 cores and >8 GB RAM): reserve OS/desktop headroom
+        # so background scans never cause UI/desktop lag.
+        reserve_cpu = max(1, cpu // 8) if turbo else max(2, cpu // 4)
+        reserve_ram_gib = 2.0 if turbo else 3.0
+        usable_cpu = max(2, cpu - reserve_cpu)
+        usable_ram_gib = max(1.2, min(avail_gib - reserve_ram_gib, total_gib * (0.65 if turbo else 0.55)))
+
+        if kind == "http":
+            mult = 4 if turbo else 3
+            ram_factor = 4.5 if turbo else 3.5
+            cap = 32 if turbo else 24
+            n = max(10, min(usable_cpu * mult, int(usable_ram_gib * ram_factor), cap))
+        elif kind == "company":
+            mult = 3 if turbo else 2
+            ram_factor = 3.2 if turbo else 2.5
+            cap = 24 if turbo else 16
+            n = max(6, min(usable_cpu * mult, int(usable_ram_gib * ram_factor), cap))
+        else:  # parallel background headless Chrome browsers
+            per_browser_gib = 0.45 if turbo else 0.55
+            by_ram = max(2, int(usable_ram_gib / per_browser_gib))
+            by_cpu = max(2, (usable_cpu * 2 // 3) if turbo else (usable_cpu // 2))
+            cap = 8 if turbo else 6
+            n = max(2, min(by_cpu, by_ram, cap))
+
     if requested is not None:
         try:
             n = max(1, min(int(requested), n))
@@ -150,137 +216,240 @@ def recommended_workers(kind: str = "browser", requested: int | None = None) -> 
     return n
 
 
-# Lean Chromium flags.  ``--blink-settings=imagesEnabled=false`` alone removes
-# the bulk of the download/render work on image-heavy career pages, and the
-# remaining flags stop background networking that costs CPU and bandwidth
-# without contributing a single job row.  The last three cap the renderer's
-# process count and V8 old-space so a stray heavy board cannot balloon a
-# worker's RAM during a long crawl.
+def describe_host_budget() -> str:
+    """One-line hardware & worker budget summary for scan logs."""
+    cpu, ram_total, ram_avail = host_workers_limits()
+    total_mb = ram_total / (1024 * 1024)
+    avail_mb = ram_avail / (1024 * 1024)
+    tier = "strict-low-spec" if is_strict_low_spec(cpu, ram_total, ram_avail) else (
+        "high-perf-turbo" if is_high_performance() else "auto-boost"
+    )
+    return (
+        f"host ({tier}): {cpu} cpu, {avail_mb:.0f} MB available RAM "
+        f"(of {total_mb:.0f} MB total) -> "
+        f"browser workers={recommended_workers('browser')}, "
+        f"company workers={recommended_workers('company')}, "
+        f"http workers={recommended_workers('http')}"
+    )
+
+
 BROWSER_ARGS = [
-    "--no-sandbox",
-    "--disable-dev-shm-usage",
-    "--disable-http2",
-    "--ignore-certificate-errors",
-    "--blink-settings=imagesEnabled=false",
+    "--disable-blink-features=AutomationControlled",
     "--disable-background-networking",
     "--disable-background-timer-throttling",
     "--disable-backgrounding-occluded-windows",
-    "--disable-renderer-backgrounding",
-    "--disable-client-side-phishing-detection",
+    "--disable-breakpad",
+    "--disable-component-extensions-with-background-pages",
     "--disable-default-apps",
+    "--disable-dev-shm-usage",
     "--disable-extensions",
-    "--disable-features=TranslateUI,BlinkGenPropertyTrees,MediaRouter",
+    "--disable-features=Translate,BackForwardCache,AcceptCHFrame,MediaRouter,OptimizationHints",
     "--disable-gpu",
     "--disable-software-rasterizer",
-    "--disable-sync",
-    "--disable-translate",
-    "--metrics-recording-only",
+    "--disable-ipc-flooding-protection",
+    "--disable-renderer-backgrounding",
+    "--blink-settings=imagesEnabled=false",
     "--mute-audio",
-    "--no-first-run",
     "--no-default-browser-check",
-    "--renderer-process-limit=2",
-    "--js-flags=--max-old-space-size=512",
+    "--no-first-run",
+    "--no-pings",
+    "--no-sandbox",
+    "--renderer-process-limit=3",
 ]
 
-# Back-compat alias: both scanners (and the dev scripts they are synced from)
-# refer to the low-resource launch flags by this name.  Keeping one definition
-# here means a flag added for the ATS phase can never be missing from the
-# career phase.
 LOW_RESOURCE_BROWSER_ARGS = BROWSER_ARGS
 
-# ── test stand-ins for the cancellation API the app provides (2026-10-06) ──
-# The installed career_scanner imports these at module level; a loud
-# ImportError is correct in production, so the HARNESS must supply them.
+
 class ScanCancelled(Exception):
-    """Raised when the UI's Stop button aborts a scan."""
+    """Raised when cooperative cancellation interrupts a scan worker."""
+    pass
 
 
-def check_cancelled(cancel_event=None):
-    if cancel_event is not None and getattr(cancel_event, "is_set", lambda: False)():
-        raise ScanCancelled("scan cancelled")
-    return False
+def check_control(cancel_event: threading.Event | None,
+                  pause_event: threading.Event | None,
+                  poll_sec: float = 0.25) -> bool:
+    """Cooperative cancellation and pause checkpoint for scanner loops.
 
-
-def sleep_interruptible(seconds, cancel_event=None, pause_event=None):
-    """Sleep for `seconds`, waking early on Stop.
-
-    Returns True when the full time elapsed, False when cancel_event was set.
-    Callers read False as "stop now", so this must really sleep: the stand-in
-    that returned False after 0.05 s made every HTTP retry backoff and the DNS
-    retry abort the company at once (2026-10-19). While paused, the clock does
-    not advance.
+    Returns True if cancelled (caller should exit immediately).
+    Blocks if paused until resumed or cancelled.
     """
-    import time as _t
-    check_cancelled(cancel_event)
-    end = _t.monotonic() + max(0.0, float(seconds or 0))
-    while True:
-        if cancel_event is not None and getattr(cancel_event, "is_set", lambda: False)():
+    if cancel_event is not None and cancel_event.is_set():
+        return True
+    if pause_event is not None and pause_event.is_set():
+        while pause_event.is_set():
+            if cancel_event is not None and cancel_event.is_set():
+                return True
+            time.sleep(poll_sec)
+    return bool(cancel_event is not None and cancel_event.is_set())
+
+
+def check_cancelled(cancel_event: threading.Event | None):
+    """Raise ScanCancelled if cancel_event is set."""
+    if cancel_event is not None and cancel_event.is_set():
+        raise ScanCancelled("Scan cancelled by user")
+
+
+def sleep_interruptible(seconds: float, cancel_event: threading.Event | None = None,
+                        pause_event: threading.Event | None = None, step: float = 0.05) -> bool:
+    """Sleep for ``seconds`` while checking cancellation and pause events.
+
+    Returns True if slept completely without cancellation.
+    Returns False if cancelled.
+    """
+    end = time.monotonic() + seconds
+    while time.monotonic() < end:
+        if check_control(cancel_event, pause_event, poll_sec=step):
             return False
-        if pause_event is not None and getattr(pause_event, "is_set", lambda: False)():
-            end += 0.2
-            _t.sleep(0.2)
-            continue
-        remaining = end - _t.monotonic()
-        if remaining <= 0:
-            return True
-        _t.sleep(min(0.2, remaining))
+        time.sleep(min(step, max(0.005, end - time.monotonic())))
+    return True
 
 
-# ── Workday spaced site codes (2026-10-19) ───────────────────────────────────
-# Leonardo's Workday board prints "IT - Venegono Superiore", "GB - Yeovil -
-# Lysander Rd", "PL - Świdnik S.A.", "NLD - Alphen Aan Den Rijn". The career
-# sanitiser rejected every one of them (about 186 blank locations). The ATS
-# scanner has the same rule in format_location; this copy serves the career side.
-_WD_SPACED_ISO2 = {
-    "IT", "GB", "PL", "DE", "FR", "ES", "NL", "AT", "BE", "CH", "SE", "NO", "DK",
-    "FI", "IE", "PT", "CZ", "RO", "HU", "GR", "BG", "HR", "SK", "SI", "LT", "LV",
-    "EE", "LU", "US", "CA", "IN", "JP", "CN", "KR", "SG", "AU", "NZ", "BR", "MX",
-    "AR", "CL", "ZA", "AE", "EG", "IL", "TR", "UA", "RU",
-    "USA", "IND", "CAN", "GBR", "DEU", "FRA", "ESP", "ITA", "NLD", "POL", "AUT",
-    "BEL", "CHE", "SWE", "NOR", "DNK", "FIN", "PRT", "IRL", "CZE", "ROU", "HUN",
-    "GRC", "BGR", "HRV", "SVK", "SVN", "LTU", "LVA", "EST", "LUX",
-}
-_WD_STREET_RE = None
-
-
-def workday_spaced_location(location):
-    """'IT - Venegono Superiore' -> 'Venegono Superiore, IT'.
-
-    Returns None when the text is not a spaced site code, so callers fall back
-    to their normal handling. A street-like second segment yields the country
-    code alone, never a guessed city.
-    """
-    import re as _re
-    global _WD_STREET_RE
-    if _WD_STREET_RE is None:
-        _WD_STREET_RE = _re.compile(
-            r"\b(rue|strasse|stra(?:ss|ß)e|road|rd|street|avenue|via|calle|blvd|"
-            r"boulevard|drive|lane|weg|allee|platz|route|chemin)\b|\d", _re.I)
-    m = _re.match(r"^([A-Z]{2,3})\s+-\s+(.+)$", str(location or "").strip())
-    if not m or m.group(1) not in _WD_SPACED_ISO2:
-        return None
-    cc = m.group(1)
-    city = _re.split(r"\s+-\s+", m.group(2))[0].strip()
-    city = _re.sub(r"\s+(S\.p\.A\.|S\.A\.|Loc\.?)\s*$", "", city).strip()
-    if city and not _WD_STREET_RE.search(city):
-        return f"{city}, {cc}"
-    return cc
-
-
-def tls_context():
-    """SSL context that trusts the operating system's certificate store.
-
-    2026-10-19: Spendesk (career.spendesk.com) failed on a user's Windows
-    machine with CERTIFICATE_VERIFY_FAILED ("unable to get local issuer
-    certificate"). The server sends a complete chain (Certainly Intermediate
-    R1 under Starfield Root CA G2). Python's bundled CA list lacks that root,
-    while browsers and Windows use the OS store. ``truststore`` makes ssl use
-    the OS store. Verification stays ON in every case; if truststore is not
-    installed we fall back to the default context.
-    """
-    import ssl
+def tls_context() -> ssl.SSLContext:
+    """Create a verified SSLContext using OS truststore when available."""
     try:
-        import truststore  # noqa: WPS433 (optional, pinned in requirements)
-        return truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        import truststore
+        ctx = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ctx.check_hostname = True
+        ctx.verify_mode = ssl.CERT_REQUIRED
+        return ctx
     except Exception:
         return ssl.create_default_context()
+
+
+def workday_spaced_location(raw: str) -> str | None:
+    """Normalize Workday location codes like 'IT - Venegono Superiore' -> 'Venegono Superiore, IT'
+    or 'GB - 12 High Street' -> 'GB'. Returns None if raw does not match code format.
+    """
+    if not raw or not isinstance(raw, str):
+        return None
+    s = raw.strip()
+    # Match patterns like: "IT - Venegono Superiore", "GB - Yeovil - Lysander Rd", "NLD - Alphen Aan Den Rijn"
+    parts = [p.strip() for p in s.split(" - ") if p.strip()]
+    if len(parts) >= 2:
+        code = parts[0]
+        # Country code: 2-3 uppercase letters
+        if (len(code) in (2, 3)) and code.isalpha() and code.isupper():
+            # Check remaining parts for city/address
+            rest = parts[1:]
+            # If second part starts with digits like "12 High Street", return country only
+            if rest and rest[0] and rest[0][0].isdigit():
+                return code
+            # Clean off company suffixes like "S.A." or trailing address segments
+            city = rest[0]
+            if city.endswith(" S.A."):
+                city = city[:-5].strip()
+            return f"{city}, {code}"
+    return None
+
+
+# Listing outcomes are independent of enrichment coverage. A cap/repeat stop
+# retains rows but cannot honestly claim the board was fully traversed.
+def is_dns_failure(*messages) -> bool:
+    text = ' '.join(str(value or '') for value in messages).casefold()
+    return any(marker in text for marker in (
+        'err_name_not_resolved','does not resolve (dns)','temporary failure in name resolution',
+        'name or service not known','nodename nor servname','eai_again','dns lookup failed'))
+
+
+def completion_status(found: int,error: str = '',diagnostics=()) -> str:
+    import re
+    if error:
+        return 'partial' if found else 'error'
+    if not found:
+        return 'empty'
+    pieces = [diagnostics] if isinstance(diagnostics,str) else list(diagnostics or [])
+    listing = ' | '.join(str(piece) for piece in pieces if not re.search(
+        r'(?i)^(?:\[?detail\]?|jd enrichment|enrichment activity|detail activity)',str(piece)))
+    incomplete = re.search(
+        r'(?i)(?:blocked access:|blocked by bot protection:|challenge page served instead of|JD coverage incomplete:|listing completeness unverified|listing incomplete:|page\s+cap[^|]*reached|(?:dom|listing|row)\s+cap[^|]*(?:reached|more)|'
+        r'pagination\s+(?:stopped|cap|incomplete)|\bboard has more pages\b|'
+        r'\bpages? of repeats\b|no new listings on \d+ consecutive pages|'
+        r're-served the same listing|listing[^|]*time budget[^|]*exhausted)',listing)
+    return 'partial' if incomplete else 'ok'
+
+
+def reconcile_scan_artifacts(scan_log_csv,main_csv,quarantine_csv,run_id='',merge_info=None):
+    """Audit final actions into the log, not guessed late quarantine increments.
+
+    Jobs Found retains the observed pre-merge number. Jobs Retained attributes
+    each final row once; Jobs Merged is explicitly separate from quarantine.
+    Retried targets have one latest outcome plus an Attempts count.
+    """
+    from collections import Counter
+    from sponsorscout.core.job_identity import read_job_csv,write_job_csv
+    rows = read_job_csv(scan_log_csv)
+    if not rows:
+        return {}
+    selected,order = {},[]
+    for row in rows:
+        key = tuple(row.get(field,'') for field in ('Run ID','Seed Name','Seed URL','Target Country'))
+        if key not in selected:
+            order.append(key)
+            selected[key] = dict(row)
+            selected[key]['Attempts'] = int(row.get('Attempts') or 1)
+        else:
+            attempts = selected[key]['Attempts'] + 1
+            duration = float(selected[key].get('Duration Sec') or 0) + float(row.get('Duration Sec') or 0)
+            selected[key] = dict(row)
+            selected[key]['Attempts'] = attempts
+            selected[key]['Duration Sec'] = round(duration,1)
+    rows = [selected[key] for key in order]
+    current = [i for i,row in enumerate(rows) if not run_id or row.get('Run ID')==run_id]
+    retained,quarantined,merged = Counter(),Counter(),Counter()
+
+    def owner(job):
+        names = {name.strip().casefold() for name in str(job.get('Seed Name') or job.get('Company Name') or '').split(';') if name.strip()}
+        choices = [i for i in current if str(rows[i].get('Seed Name') or rows[i].get('Company') or '').strip().casefold() in names]
+        if not choices:
+            return None
+        company = str(job.get('Company Name') or '').strip().casefold()
+        direct = [i for i in choices if str(rows[i].get('Seed Name') or '').strip().casefold()==company]
+        if direct:
+            choices = direct
+        target = str(job.get('Target Country') or '').strip().casefold()
+        scoped = [i for i in choices if str(rows[i].get('Target Country') or '').strip().casefold()==target]
+        if scoped:
+            choices = scoped
+        url = str(job.get('Job URL') or '')
+        return max(choices,key=lambda i: len(str(rows[i].get('Seed URL') or '')) if url.startswith(str(rows[i].get('Seed URL') or '\0')) else 0)
+
+    jobs = read_job_csv(main_csv)
+    quarantine = read_job_csv(quarantine_csv)
+    for job in jobs:
+        index = owner(job)
+        if index is not None:
+            retained[index] += 1
+    for job in quarantine:
+        if run_id and job.get('Run ID') and job.get('Run ID')!=run_id:
+            continue
+        index = owner(job)
+        if index is not None:
+            quarantined[index] += 1
+    for seed,count in (merge_info or {}).get('by_seed',{}).items():
+        names = {name.strip() for name in str(seed).split(';')}
+        choices = [i for i in current if rows[i].get('Seed Name') in names]
+        for i in choices:
+            amount = min(int(count),max(0,int(rows[i].get('Jobs Found') or 0)-retained[i]))
+            merged[i] += amount
+            count -= amount
+        if count and choices:
+            merged[choices[0]] += int(count)
+    for i in current:
+        row = rows[i]
+        row['Quarantined'] = quarantined[i]
+        row['Jobs Retained'] = retained[i]
+        row['Jobs Merged'] = merged[i]
+        row['Status'] = completion_status(int(row.get('Jobs Found') or 0),row.get('Error') or '',[row.get('Diagnostics') or ''])
+        # Keep repeated reconciliations idempotent.
+        diagnostic = str(row.get('Diagnostics') or '').split(' | final: found=')[0]
+        row['Diagnostics'] = diagnostic + (
+            f" | final: found={row.get('Jobs Found') or 0}; retained={retained[i]}; "
+            f"merged={merged[i]}; quarantined={quarantined[i]}")
+    columns = list(rows[0])
+    for name in ('Jobs Retained','Jobs Merged','Attempts'):
+        if name not in columns:
+            columns.append(name)
+    write_job_csv(scan_log_csv,rows,columns)
+    return {'written':len(jobs),'quarantined':sum(quarantined.values()),
+            'merged':sum(merged.values()),'targets':len(current),
+            'partial':sum(rows[i].get('Status')=='partial' for i in current)}

@@ -5,7 +5,16 @@ to the previous UI concept (dark navy header, light body, white cards,
 blue accent) while letting QSS do the heavy lifting.
 """
 
+from pathlib import Path as _Path
+
 from PySide6.QtGui import QColor, QPalette
+
+# F-21 revised (2026-10-22, after user feedback on the solid-block look): the
+# tick glyph ships inside the package and its path is resolved from this
+# module's own location at import time, so no build can carry a dangling or
+# developer-specific path — the original F-21 bug class stays closed.
+_TICK_URL = (_Path(__file__).resolve().parent.parent
+             / "data" / "icons" / "tick.png").as_posix()
 
 HEADER_BG = "#1d2d44"
 HEADER_FG = "#ffffff"
@@ -114,7 +123,60 @@ QHeaderView::section {{ background-color: #eef1f5; color: {TEXT_MUTED};
     border: none; border-bottom: 1px solid {BORDER}; border-right: 1px solid {BORDER};
     padding: 6px; font-weight: bold; }}
 
-QCheckBox {{ color: {TEXT_MAIN}; }}
+
+QCheckBox {{
+    color: #1F2937;
+    spacing: 8px;
+    font-size: 13px;
+}}
+/* FIX F-21 (2026-10-22, revision 3 — the look the user asked for): the classic
+   native checkbox. White box with a dark rim; when checked, a dark tick glyph
+   (data/icons/tick.png, path resolved at import time above) on the white box.
+   No coloured fill. Revision 1 was invisible (missing asset behind a hard-coded
+   developer path); revision 2 was an accent block with a white tick, rejected as
+   "way uglier & big"; revision 3 matches the native control in the user's
+   reference image. The asset ships in the package and the path is resolved from
+   this module, so the original dangling-path bug class stays closed. */
+QCheckBox::indicator,
+QListView::indicator,
+QListWidget::indicator {{
+    width: 14px;
+    height: 14px;
+    border: 1px solid #6f7a86;
+    border-radius: 2px;
+    background: #ffffff;
+}}
+QListView::indicator, QListWidget::indicator {{
+    width: 13px;
+    height: 13px;
+    margin-right: 6px;
+}}
+QCheckBox::indicator:hover,
+QListView::indicator:hover,
+QListWidget::indicator:hover {{
+    border: 1px solid {ACCENT};
+}}
+QCheckBox::indicator:checked,
+QListView::indicator:checked,
+QListWidget::indicator:checked {{
+    border: 1px solid #3f4854;
+    background: #ffffff;
+    image: url("{_TICK_URL}");
+}}
+QCheckBox::indicator:checked:hover,
+QListView::indicator:checked:hover,
+QListWidget::indicator:checked:hover {{
+    border: 1px solid {ACCENT};
+    background: #ffffff;
+    image: url("{_TICK_URL}");
+}}
+QCheckBox::indicator:disabled,
+QListView::indicator:disabled,
+QListWidget::indicator:disabled {{
+    border: 1px solid {BORDER};
+    background: #eef1f5;
+}}
+
 QScrollBar:vertical {{ background: #f0f2f5; width: 11px; }}
 QScrollBar::handle:vertical {{ background: #c3ccd6; border-radius: 5px;
                                min-height: 24px; }}

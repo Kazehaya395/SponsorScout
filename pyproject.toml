@@ -56,4 +56,4 @@ where = ["."]
 include = ["sponsorscout*"]
 
 [tool.setuptools.package-data]
-sponsorscout = ["data/*.json", "data/seeds/*.csv", "data/*.png", "data/*.ico", "data/icons/*.png", "db/*.sql"]
+sponsorscout = ["data/*.json", "data/seeds/*.csv", "data/*.png", "data/*.ico", "data/icons/*.png", "db/*.sql", "insights/*.json", "insights/*.csv"]

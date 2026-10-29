@@ -42,13 +42,13 @@ def test_missing_errors_file_gives_empty_list(tmp_path):
     assert bp.blocked_portals_from_errors_csv(None) == []
 
 
-def test_summary_lists_only_career_bot_blocks_never_ats(tmp_path):
+def test_summary_lists_confirmed_blocks_from_both_phases(tmp_path):
     career = tmp_path / "career_errors.csv"
     ats = tmp_path / "ats_errors.csv"
     _write_errors(career, [{"Seed Name": "Robert Walters Germany",
                             "Message": "blocked by bot protection: PerimeterX challenge page",
                             "Seed URL": "https://www.robertwalters.de/en/jobs.html"}])
-    # Even if an ATS errors file contained the same text, it must not be offered.
+    # Real ATS blocks are queued too; an unconfirmed plain HTTP 403 is not.
     _write_errors(ats, [{"Seed Name": "Some ATS board",
                          "Message": "blocked by bot protection: PerimeterX challenge page",
                          "Seed URL": "https://boards.example/some"},
@@ -56,13 +56,15 @@ def test_summary_lists_only_career_bot_blocks_never_ats(tmp_path):
                          "Seed URL": "https://boards.greenhouse.io/x"}])
     summary = {"artifacts": {"career": {"errors": str(career)}, "ats": {"errors": str(ats)}}}
     found = bp.blocked_portals_from_summary(summary)
-    assert [f["seed_name"] for f in found] == ["Robert Walters Germany"]
+    assert {f["seed_name"] for f in found} == {"Robert Walters Germany","Some ATS board"}
+    assert {f["phase"] for f in found} == {"ats","career"}
 
 
-def test_no_career_artifact_means_nothing_offered(tmp_path):
+def test_ats_only_block_is_still_queued(tmp_path):
     ats = tmp_path / "ats_errors.csv"
     _write_errors(ats, [{"Message": "blocked by bot protection: X", "Seed URL": "https://a.example/"}])
-    assert bp.blocked_portals_from_summary({"artifacts": {"ats": {"errors": str(ats)}}}) == []
+    found=bp.blocked_portals_from_summary({"artifacts":{"ats":{"errors":str(ats)}}})
+    assert len(found)==1 and found[0]["phase"]=="ats"
 
 
 def test_generic_blocked_text_without_bot_marker_is_not_offered(tmp_path):

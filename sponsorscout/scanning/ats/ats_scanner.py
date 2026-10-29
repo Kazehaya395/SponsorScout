@@ -34,7 +34,6 @@ from collections import Counter
 from html import unescape
 from urllib.parse import urlparse, parse_qsl, urlencode, urlunparse, urljoin, unquote
 from urllib.request import Request, urlopen
-
 try:
     from playwright.sync_api import sync_playwright
     PLAYWRIGHT_IMPORT_ERROR = None
@@ -43,40 +42,38 @@ except ModuleNotFoundError as _pw_exc:
     # Keep the reason: a bare None hid WHICH module was missing from the
     # frozen bundle (playwright itself, greenlet or pyee).
     PLAYWRIGHT_IMPORT_ERROR = f"{type(_pw_exc).__name__}: {_pw_exc}"
-
 # Desktop UI Stop/Pause. Imported, not reimplemented, so both scanners obey
 # the same control protocol.
 from sponsorscout.scanning.common import check_control
+from sponsorscout.scanning.common import completion_status,reconcile_scan_artifacts
+from sponsorscout.scanning.response_evidence import challenge_reason,http_error_reason,response_metadata,listing_block_message
+from sponsorscout.scanning.detail_state import DetailRequestState
+from sponsorscout.core.location_evidence import apply_row_geography
+from sponsorscout.core.job_identity import (posting_identity,metadata_title,evergreen_title,
+    explicit_detail_url,merge_sources,merge_job_rows,finalize_job_csvs,read_job_csv,write_job_csv,
+    portal_queue_key)
 from sponsorscout.scanning.common import tls_context as _tls_context
-
 # Real-time logging: flush prints during long runs.
 import builtins as _builtins
-
 # Installed by the desktop app (set_progress_callback) so scanner output is
 # routed to the UI log instead of a console nobody sees. None = plain stdout.
 progress_cb = None
-
-
 def set_progress_callback(callback):
     """Route this module's print()/_notify output to the desktop log."""
     global progress_cb
     progress_cb = callback
 def print(*args, **kwargs):
     _notify(" ".join(str(a) for a in args))
-
 def _playwright_unavailable_reason():
     """Why sync_playwright is unusable — surfaced in error logs."""
     return PLAYWRIGHT_IMPORT_ERROR or "playwright.sync_api could not be imported"
-
 def _notify(msg):
     if progress_cb:
         progress_cb(msg)
     else:
         _builtins.print(msg, flush=True)
-
 def _log_file_path() -> str:
     """Where to write the scanner's diagnostic log.
-
     Never the current working directory: a packaged Windows build is installed
     under Program Files, which is not writable — the previous hard-coded
     ``ats_scraper_errors.log`` relative path made ``logging.basicConfig`` fail
@@ -86,17 +83,14 @@ def _log_file_path() -> str:
     """
     try:
         from sponsorscout import paths
-
         return str(paths.ensure_scan_output_dir() / "ats_scraper_errors.log")
     except Exception:  # standalone single-file mode
         return "ats_scraper_errors.log"
-
 logging.basicConfig(
     filename="ats_scraper_errors.log",
     level=logging.WARNING,
     format="%(asctime)s %(levelname)s %(message)s",
 )
-
 # ─────────────────────────────────────────────────────────────────────────────
 # FIX P0-31: STATIC-HTML FAST PATH (speed, accuracy-preserving)
 #
@@ -117,19 +111,16 @@ logging.basicConfig(
 # static result entirely and run the browser exactly as before, so a
 # JS-rendered board can never silently produce a truncated row count.
 # ─────────────────────────────────────────────────────────────────────────────
-
 # A static result must clear this bar to be trusted. Chosen deliberately high:
 # a board with 1-4 visible links is far more likely to be a JS shell that
 # happens to expose a couple of static links than a genuinely tiny board.
 _STATIC_MIN_JOBS = 5
-
 # Hosts that are known JS-only shells: never waste a static request on them.
 _STATIC_SKIP_HOSTS = (
     "myworkdayjobs.com", "icims.com", "taleo.net", "successfactors",
     "csod.com", "avature.net", "eightfold.ai", "phenompeople.com",
     "oraclecloud.com", "brassring.com", "jobvite.com", "workday.com",
 )
-
 # Client-side-rendering markers. When present, the HTML we received is a
 # hydration shell: some postings are in the markup but the full list is built
 # in the browser. Measured on Miro — static saw 12 links, the browser 27.
@@ -139,8 +130,6 @@ _STATIC_SPA_MARKERS = (
     "window.__remixContext", "data-reactroot", "ng-version=",
     "data-svelte-h", "__sveltekit", "data-vue-meta", "id=\"__nuxt\"",
 )
-
-
 # ── FIX P27 (2026-10-05): one workload classifier, shared by both scanners ──
 # Amazon Italia printed 121 of 183 rows as "Part-time", including
 # "Cloud Operations Architect" and "Senior Theatrical Marketing Manager".
@@ -161,7 +150,6 @@ _STATIC_SPA_MARKERS = (
 # appears in ordinary prose constantly ("contract negotiation", "contract
 # management") and used to make the ATS scanner call such roles Full-time
 # while the career scanner called them Contract (P27b).
-
 _WL_INTERN_RE = re.compile(
     r"\bintern(?:ship|s)?\b|\bpraktikum\b|\bpraktikant\w*|\btirocinio\b"
     r"|\bapprendistato\b|\btrainee\b|\bapprentic\w*|\bstagiaire\b"
@@ -180,7 +168,6 @@ _WL_CONTRACT_RE = re.compile(
 _WL_PERMANENT_RE = re.compile(
     r"\bpermanent\b|\bunbefristet\b|\bvast(?:e)? contract\b"
     r"|\btempo indeterminato\b|\bcdi\b|\bindefinido\b", re.I)
-
 #: Sentences in which a part-time (or full-time) mention is NOT the schedule
 #: of this posting: pay pro-rating, hour-reduction notes, equal-opportunity
 #: boilerplate, and "if you work part-time" conditionals.
@@ -192,10 +179,7 @@ _WL_BOILERPLATE_RE = re.compile(
     r"|\bif\s+you\b|\bshould\s+you\b|\bwhere\s+applicable\b"
     r"|\bfor\s+part[ _-]?time\s+(?:hours|employees|colleagues|staff|roles)\b"
     r"|\bwe\s+(?:also\s+)?(?:offer|consider|welcome|support)\b", re.I)
-
 _WL_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?;])\s+|[\n\r]+|\|")
-
-
 def _wl_declared(text, pattern):
     """True when `pattern` fires in a sentence that is not pay boilerplate."""
     if not text:
@@ -207,11 +191,8 @@ def _wl_declared(text, pattern):
             continue
         return True
     return False
-
-
 def classify_workload(employer_field="", title="", text=""):
     """Return Internship / Part-time / Full-time / Contract / "" (unknown).
-
     `employer_field` is a structured value from the provider (Workday's
     `timeType`, greenhouse's `employment_type`, the iCIMS `FULL_TIME` enum
     after humanisation). It is believed outright when it says anything.
@@ -245,8 +226,6 @@ def classify_workload(employer_field="", title="", text=""):
         # part-time wording is a footnote. This is the Amazon shape.
         return "Full-time"
     return ""
-
-
 def classify_work_location_mode(text):
     """Return Remote / Hybrid / On-site / "" from the same evidence rules."""
     t = text or ""
@@ -266,14 +245,9 @@ def classify_work_location_mode(text):
                  r"|\bvor ort\b|\bin sede\b|\bpresencial\b", t, re.I):
         return "On-site"
     return ""
-
-
-
 _STATIC_ANCHOR_RE = re.compile(
     r"<a\b[^>]*?href\s*=\s*[\"']([^\"'#][^\"']*)[\"'][^>]*>(.*?)</a>",
     re.I | re.S)
-
-
 def _static_strip_tags(fragment):
     """Inner HTML of an anchor -> visible text."""
     if not fragment:
@@ -282,15 +256,11 @@ def _static_strip_tags(fragment):
     txt = re.sub(r"<[^>]+>", " ", txt)
     txt = unescape(txt)
     return re.sub(r"\s+", " ", txt).strip()
-
-
 def fetch_static_jobs(seed_url, timeout_sec=15, min_jobs=None,
                       url_validator=None, title_validator=None):
     """Try to harvest postings from the raw HTML, with no browser.
-
     Returns (jobs, diagnostic). `jobs` is [] when the page needs JS — the
     caller must then run its normal browser path.
-
     The two validator callables are the scanner's own is_valid_job_url /
     is_valid_job_title, so the static path applies IDENTICAL acceptance rules
     to the browser path. That is what makes this safe: it changes how bytes
@@ -323,13 +293,11 @@ def fetch_static_jobs(seed_url, timeout_sec=15, min_jobs=None,
         html = raw.decode(charset, "replace")
     except Exception as exc:
         return [], f"static: fetch failed ({type(exc).__name__})"
-
     # Hydration shell -> the static markup is not the whole list. Bail out and
     # let the browser render it, rather than silently truncating the company.
     for _marker in _STATIC_SPA_MARKERS:
         if _marker in html:
             return [], f"static: client-rendered ({_marker}); using browser"
-
     jobs = []
     seen = set()
     for href, inner in _STATIC_ANCHOR_RE.findall(html):
@@ -354,13 +322,11 @@ def fetch_static_jobs(seed_url, timeout_sec=15, min_jobs=None,
             "card_context": "",
             "extraction_method": "static_html",
         })
-
     if len(jobs) < min_jobs:
         # Not trustworthy — discard and let the browser handle it.
         return [], (f"static: only {len(jobs)} job link(s) "
                     f"(<{min_jobs}); using browser")
     return jobs, f"static HTML: {len(jobs)}"
-
 # ─────────────────────────────────────────────────────────────────────────────
 # FIX P0-30: EXPERIENCE REQUIREMENT EXTRACTION
 #
@@ -384,7 +350,6 @@ def fetch_static_jobs(seed_url, timeout_sec=15, min_jobs=None,
 #   • Title inference beats year-band inference: a "Senior Consultant" asking
 #     for 4 years is Senior, not Mid.
 # ─────────────────────────────────────────────────────────────────────────────
-
 _EXP_WORD_NUM = {
     "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
     "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12,
@@ -403,12 +368,10 @@ _EXP_WORD_NUM = {
 }
 _EXP_WORD_ALT = "|".join(sorted((re.escape(w) for w in _EXP_WORD_NUM),
                                 key=len, reverse=True))
-
 _EXP_YEAR_UNIT = (r"(?:years?|yrs?\.?|jahre?n?|anni|anno|jaar|jaren|"
                   r"ans|an|a[nñ]os|a[nñ]o)")
 _EXP_MONTH_UNIT = (r"(?:months?|mon\.?|monate?n?|mesi|mese|maanden|maand|"
                    r"mois|meses|mes)")
-
 # The number must sit in a clause genuinely about work experience.
 _EXP_ANCHOR = re.compile(
     r"experien|berufserfahrung|erfahrung|praxis|esperienz|ervaring|"
@@ -422,9 +385,7 @@ _EXP_ANCHOR = re.compile(
     r"ruolo simile|ambito|settore|soortgelijke|vergelijkbare|"
     r"poste similaire|puesto similar|en el (?:sector|[áa]rea)",
     re.I)
-
 _EXP_YEARS_IN = re.compile(r"(?:\d{1,2}|" + _EXP_WORD_ALT + r")\s*(?:\+|plus)?\s*(?:years?|yrs?|months?)\s+(?:in|of|as)\s+[A-Za-z]", re.I)
-
 # Disqualifiers, checked in a tight window around the number so a sentence
 # that merely also mentions a degree is not discarded wholesale.
 _EXP_BLOCK_NEAR = re.compile(
@@ -460,7 +421,6 @@ _EXP_BLOCK_NEAR = re.compile(
     r"anniversary|jubil[äa]um|loyalty|tenure|betriebszugeh[öo]rigkeit|"
     r"once a year|per year|every year|annually|j[äa]hrlich|ogni anno|"
     r"pay ri[sz]e|salary review|gehaltserh[öo]hung)\b", re.I)
-
 _EXP_NONE = re.compile(
     r"(no (?:prior |previous |work |professional )?experience (?:is )?"
     r"(?:required|necessary|needed)|"
@@ -471,7 +431,6 @@ _EXP_NONE = re.compile(
     r"aucune exp[ée]rience (?:requise|n[ée]cessaire)|"
     r"sin experiencia (?:previa)?|no se requiere experiencia|"
     r"entry[-\s]?level|no experience)", re.I)
-
 _EXP_LEVEL_PATTERNS = [
     ("Internship", re.compile(
         r"\b(intern(?:ship)?|internship|praktikum|praktikant|werkstudent|"
@@ -503,7 +462,6 @@ _EXP_LEVEL_PATTERNS = [
         r"d[ée]butant|reci[ée]n titulad|starter|trainee|"
         r"associate\b|assistant\b)\b", re.I)),
 ]
-
 # "Senior Care Assistant" is not a senior role; a role that TALKS TO senior
 # people is not itself senior.
 _EXP_LEVEL_FALSE = re.compile(
@@ -518,7 +476,6 @@ _EXP_LEVEL_FALSE = re.compile(
     r"senior\s+(?:stakeholder|leader|management|leadership|executive|"
     r"colleague|team|member|client|partner|sponsor|manager)s?|"
     r"senior\s+(?:stakeholder|leadership|management)\b)", re.I)
-
 # A seniority word in body text only counts when the sentence is about the
 # person being hired. Without this, "you will lead a team for the next 2
 # years" scored the row as a Lead role.
@@ -531,9 +488,7 @@ _EXP_HIRING_CUE = re.compile(
     r"wij zoeken|je bent|functie van|"
     r"nous recherchons|vous [êe]tes|poste de|"
     r"buscamos|eres un|puesto de)", re.I)
-
 _EXP_SENT_SPLIT = re.compile(r"(?<=[.!?;:])\s+|[\n\r]+|\s*[•·▪▸–—]\s+")
-
 # --- Requirements-section awareness (bare requirement fragments) ----------
 # _EXP_SENT_SPLIT breaks at ':', bullets and newlines, so "Requirements: 3-5
 # years" can arrive as the bare fragment "3-5 years" with the anchor word
@@ -555,7 +510,6 @@ _EXP_REQ_HEADER = re.compile(
     r"nous recherchons|exp[\u00e9e]rience|qu\u00e9 buscas|buscamos|"
     r"perfil)$",
     re.I)
-
 # Section headings that end requirements scope - after one of these a relaxed
 # fragment no longer counts, so marketing numbers ("About us: 25 years of
 # experience") stay unclaimed by the weak tier.
@@ -569,7 +523,6 @@ _EXP_SECTION_END = re.compile(
     r"ce que nous offrons|notre entreprise|qu\u00e9 ofrecemos|nuestra empresa|"
     r"bewerbung|candidatura)$",
     re.I)
-
 # Strict experience NOUN - narrower than _EXP_ANCHOR (no 'relevant' /
 # 'professional' / 'working in'): the mention fallback that yields
 # "Mentioned" instead of NA may only fire when the JD actually names
@@ -577,11 +530,9 @@ _EXP_SECTION_END = re.compile(
 _EXP_MENTION_NOUN = re.compile(
     r"experien|berufserfahrung|erfahrung|vorkenntnis|"
     r"esperienz|exp\u00e9rience|ervaring|experiencia|experi[e\u00ea]nc", re.I)
-
 _EXP_SOURCE_RANK = {"": 0, "none": 0, "title_inference": 1,
                     "card_context": 2, "api_description": 3, "detail_text": 3,
                     "api_field": 4}
-
 # ATS-published seniority vocabulary -> canonical level. Employer-set, so it
 # outranks anything inferred from a title or from prose.
 _EXP_ATS_LEVEL = {
@@ -596,16 +547,12 @@ _EXP_ATS_LEVEL = {
     "director": "Executive", "executive": "Executive", "vp": "Executive",
     "c-level": "Executive", "chief": "Executive",
 }
-
-
 def _jd_plain(raw, limit=20000):
     """HTML/markup -> plain text for experience extraction.
-
     Several ATS APIs already return the FULL job description in the same
     response used for titles (Ashby descriptionPlain, Greenhouse content,
     Workable description, Lever/Recruitee description). Feeding that straight
     in costs ZERO extra HTTP requests.
-
     Greenhouse returns HTML-ESCAPED markup ("&lt;p&gt;"); stripping tags before
     unescaping would leave every tag in the text, so unescape comes FIRST.
     """
@@ -621,15 +568,11 @@ def _jd_plain(raw, limit=20000):
     txt = re.sub(r"[ \t\xa0]+", " ", txt)
     txt = re.sub(r"\n\s*\n+", "\n", txt)
     return txt.strip()[:limit]
-
-
 def _exp_num(tok):
     tok = (tok or "").strip().lower().rstrip(".")
     if tok.isdigit():
         return int(tok)
     return _EXP_WORD_NUM.get(tok)
-
-
 def _exp_level_from_years(lo, hi):
     # For a stated range use the midpoint: "5-8 years" is a Senior ask, but
     # anchoring on the lower bound alone would call it Mid.
@@ -648,8 +591,6 @@ def _exp_level_from_years(lo, hi):
     if v < 10:
         return "Senior"
     return "Lead"
-
-
 def _exp_level_from_text(text):
     if not text:
         return ""
@@ -659,22 +600,17 @@ def _exp_level_from_text(text):
         if rx.search(text):
             return level
     return ""
-
-
 def _exp_scan_numbers(text):
     """Return the strongest explicit experience statement, or None.
-
     Two tiers, because _EXP_SENT_SPLIT breaks at ':', bullets and newlines
     and can strand a bare fragment ("Requirements: 3-5 years" arrives as just
     "3-5 years") away from the anchor words in its header:
-
     * STRONG - the fragment itself names experience (anchor / years-in).
       Anchored hits are unambiguous: they always win, lowest minimum first
       (the historic behaviour).
     * WEAK - the fragment sits under a requirements/qualifications heading
       (_EXP_REQ_HEADER, state persists until _EXP_SECTION_END) or is a short
       list fragment (<=100 chars). Used only when no strong hit exists.
-
     Every candidate, strong or weak, must clear the +/-45 char disqualifier
     window, so ages, contract durations and company-tenure marketing never
     become experience requirements.
@@ -762,11 +698,8 @@ def _exp_scan_numbers(text):
             elif weak_best is None or lo_y < weak_best[0]:
                 weak_best = cand
     return strong_best or weak_best
-
-
 def extract_experience(text="", title=""):
     """Detect required experience from JD text and/or job title.
-
     Returns a dict: required / min_years / max_years / level / evidence / source.
     Numeric years appear ONLY when explicitly stated in the text.
     """
@@ -774,7 +707,6 @@ def extract_experience(text="", title=""):
            "level": "Unknown", "evidence": "", "source": "none"}
     text = text or ""
     title = title or ""
-
     hit = _exp_scan_numbers(text)
     if hit:
         lo_y, hi_y, months, plus, lo_raw, hi_raw, ev = hit
@@ -794,7 +726,6 @@ def extract_experience(text="", title=""):
         out["evidence"] = ev
         out["source"] = "detail_text"
         return out
-
     none_hit = _EXP_NONE.search(text) or _EXP_NONE.search(title)
     if none_hit:
         out.update({"required": "None required", "min_years": 0,
@@ -803,13 +734,11 @@ def extract_experience(text="", title=""):
                     "source": ("detail_text" if _EXP_NONE.search(text)
                                else "title_inference")})
         return out
-
     lvl = _exp_level_from_text(title)
     if lvl:
         out.update({"level": lvl, "source": "title_inference",
                     "evidence": title[:300]})
         return out
-
     for sent in _EXP_SENT_SPLIT.split(text):
         sent = (sent or "").strip()
         if not sent or len(sent) > 400:
@@ -821,7 +750,6 @@ def extract_experience(text="", title=""):
             out.update({"level": lvl, "source": "detail_text",
                         "evidence": sent[:300]})
             return out
-
     # The JD names experience somewhere but yielded neither a number nor a
     # seniority word: that is a reference, not an absence - report it as
     # "Mentioned" so the UI can reserve NA for descriptions that never name
@@ -841,12 +769,9 @@ def extract_experience(text="", title=""):
                     "source": "detail_text"})
         return out
     return out
-
-
 def apply_experience_to_record(rec, jd_text="", card_context="", title="",
                                level_hint="", key_prefix="Experience "):
     """Fill the four Experience columns on a record, respecting source rank.
-
     Never downgrades: a weaker source cannot overwrite a stronger one.
     `level_hint` is an employer-published seniority string (e.g.
     SmartRecruiters experienceLevel) and outranks every inference.
@@ -860,7 +785,6 @@ def apply_experience_to_record(rec, jd_text="", card_context="", title="",
     src = exp["source"]
     if src == "detail_text":
         src = "api_description" if jd else "card_context"
-
     hint = (level_hint or "").strip()
     if hint:
         mapped = _EXP_ATS_LEVEL.get(hint.lower())
@@ -868,7 +792,6 @@ def apply_experience_to_record(rec, jd_text="", card_context="", title="",
             exp["level"] = mapped
             if exp["required"] in ("Unknown", "Mentioned"):
                 src = "api_field"
-
     cur = rec.get(key_prefix + "Source") or "none"
     if _EXP_SOURCE_RANK.get(src, 0) < _EXP_SOURCE_RANK.get(cur, 0):
         return False
@@ -879,7 +802,6 @@ def apply_experience_to_record(rec, jd_text="", card_context="", title="",
     rec[key_prefix + "Level"] = exp["level"]
     rec[key_prefix + "Source"] = src
     return True
-
 # ─────────────────────────────────────────────────────────────────────────────
 # FIX P0-29: HOST-ADAPTIVE RESOURCE GOVERNOR (low-end laptop safety)
 #
@@ -901,7 +823,6 @@ def apply_experience_to_record(rec, jd_text="", card_context="", title="",
 # clock. It is a MEMORY/BANDWIDTH fix, not a speed fix. Speed is handled
 # separately (FIX P0-31); do not conflate the two.
 # ─────────────────────────────────────────────────────────────────────────────
-
 def _host_cpu_count():
     """Physical-ish CPU count that respects cgroup/affinity limits."""
     n = 0
@@ -915,11 +836,8 @@ def _host_cpu_count():
         except Exception:
             n = 0
     return max(1, n or 1)
-
-
 def _host_free_mb():
     """Best-effort available RAM in MB. Returns None when undeterminable.
-
     Uses MemAvailable (what the kernel thinks is actually obtainable without
     swapping), not MemFree, and honours a cgroup v2 memory.max limit so a
     container with a small cap is not mistaken for a big host.
@@ -958,14 +876,10 @@ def _host_free_mb():
         except Exception:
             avail = None
     return avail
-
-
 # Measured peak RSS of one headless Chromium with a real job board loaded.
 _BROWSER_RSS_MB = 600
 # Leave this much for the OS, the user's other apps, and this process.
 _RESERVE_MB = 1200
-
-
 # FIX P0-36: this module used to define its OWN ``recommended_workers`` here.
 # career_scanner already deleted its local copy and imports the shared one
 # from ``sponsorscout.scanning.common``; this file did not, so the SAME
@@ -976,14 +890,14 @@ _RESERVE_MB = 1200
 # pipeline. The ``requested=`` cap the local copy offered is preserved in
 # ``common.recommended_workers``, so no caller lost functionality.
 from sponsorscout.scanning.common import recommended_workers as _common_recommended_workers
-
-
 # REBASE 2026-10-03 (R3): identical knob to career_scanner.py so the two
 # scanners still size themselves the same way. common.recommended_workers only
 # ever clamps downward; SPONSORSCOUT_MAX_WORKERS / SPONSORSCOUT_HTTP_WORKERS is
 # the one way to raise it, opt-in, hard-capped.
 def recommended_workers(kind="browser", requested=None):
     n = _common_recommended_workers(kind, requested)
+    if kind not in ("browser", "http"):
+        return n
     raw = os.environ.get("SPONSORSCOUT_MAX_WORKERS" if kind == "browser"
                          else "SPONSORSCOUT_HTTP_WORKERS")
     if not raw:
@@ -995,8 +909,6 @@ def recommended_workers(kind="browser", requested=None):
     if want < 1:
         return n
     return min(want, 8 if kind == "browser" else 24)
-
-
 def describe_host_budget():
     """One-line host summary for the run header (helps users self-diagnose)."""
     cpus = _host_cpu_count()
@@ -1005,12 +917,9 @@ def describe_host_budget():
     return (f"host: {cpus} cpu, {free_s} available RAM -> "
             f"browser workers={recommended_workers('browser')}, "
             f"http workers={recommended_workers('http')}")
-
-
 # Resource types that never contain job data. Blocking them is safe for
 # extraction correctness: no adapter reads pixels, fonts or video.
 _BLOCKED_RESOURCE_TYPES = {"image", "media", "font"}
-
 # Analytics/ads/chat hosts. These load slowly, spin the CPU and never carry
 # postings. Matched as substrings against the request URL.
 _BLOCKED_URL_MARKERS = (
@@ -1023,21 +932,16 @@ _BLOCKED_URL_MARKERS = (
     "youtube.com/embed", "player.vimeo.com", "adservice.google",
     "bat.bing.com", "snap.licdn.com", "analytics.tiktok",
 )
-
-
 def install_page_resource_blocking(target, block_types=None, block_hosts=True):
     """Attach request interception to a Playwright Page or BrowserContext.
-
     Measured effect: 5.59 MB -> 3.12 MB downloaded across 3 job boards (-44%)
     and a matching drop in decode/raster CPU. Wall-clock effect was ~0%, which
     is expected and fine — this exists to protect RAM/CPU/bandwidth.
-
     Fails open: if routing cannot be installed the scrape still runs.
     """
     if target is None:
         return False
     types = _BLOCKED_RESOURCE_TYPES if block_types is None else set(block_types)
-
     def _route(route, request=None):
         try:
             req = request if request is not None else route.request
@@ -1055,14 +959,11 @@ def install_page_resource_blocking(target, block_types=None, block_hosts=True):
                 return route.continue_()
             except Exception:
                 return None
-
     try:
         target.route("**/*", _route)
         return True
     except Exception:
         return False
-
-
 # Chromium flags that cut memory and CPU without changing rendered DOM.
 LOW_RESOURCE_BROWSER_ARGS = [
     "--no-sandbox",
@@ -1084,9 +985,7 @@ LOW_RESOURCE_BROWSER_ARGS = [
     "--renderer-process-limit=2",
     "--js-flags=--max-old-space-size=512",
 ]
-
 # ───────────────────────── CONFIG ─────────────────────────────────────────────
-
 # FIX UI-2 parity (P9): one work-mode classifier, used by BOTH scanners and
 # by the DB ingest. It was previously inline in the career writer only, so
 # the ATS scanner shipped no "Work Mode" column at all and every ATS row had
@@ -1103,11 +1002,8 @@ _WORK_MODE_REMOTE = re.compile(
 _WORK_MODE_ONSITE = re.compile(
     r"\b(on[- ]?site|onsite|in[- ]office|in office|presenza|vor ort|"
     r"op kantoor)\b")
-
-
 def classify_work_mode(blob: str) -> str:
     """Remote / Hybrid / Remote-Hybrid / Onsite / Unknown from free text.
-
     "Unknown" is a real answer: a posting that never mentions where the work
     happens has not told us it is an office job, and downstream must not
     pretend otherwise.
@@ -1128,8 +1024,6 @@ def classify_work_mode(blob: str) -> str:
     if _WORK_MODE_ONSITE.search(low):
         return "Onsite"
     return "Unknown"
-
-
 def work_mode_evidence(blob, limit=3) -> str:
     """FIX P74 (run 20261016T140013): identical bytes to career_scanner.py --
     the snippets a work-mode verdict came from, so the verdict is auditable
@@ -1147,15 +1041,11 @@ def work_mode_evidence(blob, limit=3) -> str:
             if len(out) >= limit:
                 return "; ".join(out)
     return "; ".join(out)
-
-
 # FIX P75 (run 20261016T140013): identical rule to career_scanner.py -- a
 # trailing "Remote - <region>" tail welded onto the title in the SOURCE
 # markup is a location, not title text. "(Full-time, Remote)" is untouched.
 _GLUED_REMOTE_TAIL_RE = re.compile(
     r"\s*(?:\([^)]*\)|\))?Remote\s*[-–—][^\n]*$", re.I)
-
-
 def strip_glued_remote_tail(title: str) -> str:
     if not title:
         return title
@@ -1163,8 +1053,6 @@ def strip_glued_remote_tail(title: str) -> str:
     if cut and len(cut) >= 6 and re.search(r"[a-z]", cut, re.I):
         return cut.strip(" \t-–—|•,")
     return title
-
-
 # FIX P73 (run 20261016T140013): role-word vocabulary for the category-page
 # gate, mirroring career's ProductionScannerConfig.ROLE_WORD_PATTERN.
 # FIX P78 (run 20261016T173850): a trailing support-facet slug
@@ -1175,8 +1063,6 @@ _SUPPORT_FACET_SEGS = {
     "visasponsorship", "relocation", "remote", "hybrid", "onsite",
     "workfromhome",
 }
-
-
 _ATS_JOB_HOST_RE = re.compile(
     r"(?:^|\.)(?:"
     r"kula\.ai|join\.com|recruitee\.com|teamtailor\.com|workable\.com|"
@@ -1188,17 +1074,14 @@ _ATS_JOB_HOST_RE = re.compile(
     r"myworkdayjobs\.com|icims\.com|taleo\.net|successfactors\.com|"
     r"avature\.net|eightfold\.ai|phenompeople\.com|oraclecloud\.com"
     r")$", re.I)
-
 #: A host that exists to serve job pages: careers.x.com, jobs.x.com, ...
 _JOB_SUBDOMAIN_RE = re.compile(
     r"^(?:careers?|jobs?|apply|recruiting|recruitment|vacancies|hiring|work)\.",
     re.I)
-
 #: An opaque record id: 35169, 44bdf359cd980a79973ba9119532279e, a UUID.
 _OPAQUE_ID_SEG_RE = re.compile(
     r"^(?:[0-9]{3,}|[0-9a-f]{8,}|[0-9a-f-]{20,}|[A-Za-z0-9_-]*\d[A-Za-z0-9_-]{5,})$",
     re.I)
-
 #: P32 -- aggregators that hide the employer behind a redirector.
 #: englishjobsearch.at lists 15 real jobs, every one of them behind
 #: /clickout/<hash> or /clickout_alt/<hash>, with the title in the anchor
@@ -1207,7 +1090,6 @@ _REDIRECT_JOB_PATH_RE = re.compile(
     r"/(?:clickout|clickout_alt|click|out|goto|go|redirect|redir|jump|"
     r"track|tracking|visit|away|link|apply-redirect|r)/"
     r"([A-Za-z0-9][A-Za-z0-9_-]{5,})/?$", re.I)
-
 #: P33 -- a department / function / place CHIP sitting under /jobs/.
 #: jobsinvienna.com's static HTML holds NO job-detail links at all, only
 #: /jobs/Sales-and-Sales-Related, /jobs/Marketing, /jobs/IT, /jobs/AT-Vienna,
@@ -1251,16 +1133,12 @@ _ROLE_WORD_RE = re.compile(
     r"addetto|impiegato|operaio|responsabile|tecnico|commesso|venditore|"
     r"mitarbeiter|leiter|berater|techniker|verkaeufer|ingenieur|praktikant)\b",
     re.I)
-
-
 def _url_last_segment(url):
     try:
         path = urlparse(url).path.rstrip("/")
     except Exception:
         return ""
     return path.rsplit("/", 1)[-1] if path else ""
-
-
 def is_ats_detail_url(url):
     """P31: a job detail page on a third-party ATS / dedicated careers host."""
     try:
@@ -1275,7 +1153,6 @@ def is_ats_detail_url(url):
     # Needs a tenant AND an opaque record id, so the board's own landing page
     # (careers.kula.ai/journi) is still not mistaken for a job.
     return len(segs) >= 2 and bool(_OPAQUE_ID_SEG_RE.match(segs[-1]))
-
 _ROLE_WORD_RE = re.compile(
     r"\b("
     r"engineer|developer|manager|analyst|scientist|specialist|consultant|"
@@ -1290,8 +1167,6 @@ _ROLE_WORD_RE = re.compile(
     r"apprentice|graduate|nurse|doctor|pharmacist|planner|scheduler|"
     r"receptionist|waiter|warehouse|legal counsel|business partner"
     r")\b", re.I)
-
-
 OUTPUT_FIELDS = [
     "Company Name", "Seed Name", "Source Type", "Hiring Company",
     "Target Country", "Scope Policy", "Industry Type",
@@ -1312,31 +1187,25 @@ OUTPUT_FIELDS = [
     "URL Type", "Visa Sponsorship", "Relocation Support",
     "Relocation Required", "Support Confidence", "Support Evidence",
     "Support Evidence URL", "Support Evidence Type", "Record Status",
-    "Quarantine Reason", "Run ID", "Scanned At",
+    "Quarantine Reason", "Extracted Skills", "Run ID", "Scanned At",
 ]
-
 LOG_FIELDS = [
     "Run ID", "Seed Name", "Company", "Source Type", "Target Country", "Status",
     "Provider", "Jobs Found", "Quarantined", "Duplicates", "Rejected Scope",
     "Error", "Diagnostics", "Duration Sec", "Seed URL",
 ]
-
 ERROR_FIELDS = [
     "Run ID", "Timestamp", "Seed Name", "Phase", "Error Type", "Message", "Seed URL",
 ]
-
 BAD_HOSTS = {
     "bcorporation.net", "glassdoor.com", "indeed.com", "linkedin.com",
     "youtube.com", "google.com", "cookie-script.com", "onetrust.com",
     "sharepoint.com", "my.greenhouse.io",
 }
-
 BAD_TITLES = {
     "create alert", "skip to main content", "open positions", "working at",
     "here", "report", "b corporation",
 }
-
-
 # Batch L (universal FP fix): role nouns that prove a title is a real job.
 # Policy/banner phrases ("data protection", "equal opportunity", ...) also
 # occur in genuine titles ("Data Protection Officer"), so those phrases only
@@ -1354,25 +1223,16 @@ _ROLE_NOUNS_RE = re.compile(
     r"franchisee|franchisor|franchise partner)s?\b",
     re.IGNORECASE,
 )
-
-
 def _has_role_noun(title: str) -> bool:
     """True when the title names a job-holder role (real job signal)."""
     return bool(_ROLE_NOUNS_RE.search(title or ""))
-
 # Network resilience (v5)
-PREFLIGHT_PROBE_HOSTS = (
-    "www.google.com", "boards-api.greenhouse.io", "api.ashbyhq.com",
-    "api.lever.co", "api.smartrecruiters.com",
-)
 PREFLIGHT_PORT = 443
 PREFLIGHT_TIMEOUT_SEC = 5
 PREFLIGHT_MAX_FAILURES = 2
 HTTP_RETRIES = 3
 HTTP_BACKOFF_BASE_SEC = 1.5
 HTTP_TIMEOUT_SEC = 35
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # SEED UPGRADE TABLE — fixes for the v4 seed. Keyed by company `name`.
 # Applied in-memory when reading a v6-format seed (name, ats_type, careers_url,
@@ -1387,7 +1247,6 @@ SEED_UPGRADE = {
     "InnoGames": {"lever_region": "eu"},
     "Avomind": {"source_type": "recruiter"},
 }
-
 # ATS types whose public list API is known to currently return 0/404 — surfaced
 # in the scan log diagnostics rather than silently reported as healthy.
 KNOWN_BOARD_ISSUES = {
@@ -1395,7 +1254,6 @@ KNOWN_BOARD_ISSUES = {
     "Dbt Labs": "Greenhouse board 'dbtlabsinc' returns 404 (board taken private)",
     "Crealytics": "Personio board currently returns 0 positions",
 }
-
 # ───────────────────────── SHARED HELPERS ────────────────────────────────────
 def clean(value):
     value = unescape(str(value or ""))
@@ -1413,12 +1271,8 @@ def clean(value):
         except (UnicodeError, UnicodeEncodeError):
             pass
     return re.sub(r"\s+", " ", value).strip()
-
-
 def host_of(url):
     return urlparse(url).netloc.lower().split(":")[0]
-
-
 # ───────────────────────── JD SUPPORT DETECTOR ────────────────────────────────
 # (imported verbatim from career_portal_scanner_v7.py — keep in sync)
 # ───────────────────── JD SUPPORT DETECTOR ─────────────────────
@@ -1441,8 +1295,6 @@ from sponsorscout.scanning.jd_support import (
     VERDICT_YES,
     detect_blue_card,
 )
-
-
 # FIX P0-34b (parity with career_scanner): ISO-3166-1 alpha-3 codes, used to
 # recognise an address tail such as "Jesi, AN, ITA" that is NOT a job title.
 _ISO3_COUNTRY_CODES = {
@@ -1460,8 +1312,6 @@ _ISO3_COUNTRY_CODES = {
     "svk", "svn", "swe", "syr", "tha", "tun", "tur", "twn", "tza", "uga",
     "ukr", "ury", "usa", "uzb", "ven", "vnm", "zaf", "zmb", "zwe",
 }
-
-
 # FIX P0-47 (S-07): ISO3 -> ISO2, so a three-letter country suffix can be
 # resolved to a country name.  _ISO3_COUNTRY_CODES already existed but was
 # used ONLY by the title validator, so "Vercelli, ITA" was recognised as a
@@ -1498,8 +1348,6 @@ _ISO3_TO_ISO2 = {
     "ukr": "ua", "ury": "uy", "usa": "us", "uzb": "uz", "ven": "ve",
     "vnm": "vn", "zaf": "za", "zmb": "zm", "zwe": "zw",
 }
-
-
 # ── FIX P0-50 (S-01/S-02): shared post-detect false-positive guards ─────────
 # The ATS scanner ran five guards after detector.detect(); the career scanner
 # ran NONE, so `grep -c VERDICT_UNKNOWN` was 8 in ats_scanner.py and 0 in
@@ -1512,7 +1360,7 @@ _ISO3_TO_ISO2 = {
 _SUPPORT_VISA_KEYWORD_RE = re.compile(
     r"visa|work permit|work authori[sz]ation|immigration|h-?1b|"
     r"blue card|carta blu|blaue karte|blauwe kaart|carte bleue|"
-    r"tarjeta azul|skilled (migrant|worker)|aufenthaltstitel|"
+    r"tarjeta azul|skilled migrant|skilled worker(?:[\s-]+(?:visa|sponsorship|route|permit|scheme|stream))|aufenthaltstitel|"
     r"arbeitserlaubnis|permesso di soggiorno|permis de travail|"
     r"werkvergunning|arbeidsvergunning|permiso de trabajo"
     # FIX P0-53: "we are willing to sponsor the right candidate" carries no
@@ -1525,18 +1373,15 @@ _SUPPORT_VISA_KEYWORD_RE = re.compile(
     r"eligible\s+|qualified\s+|international\s+|overseas\s+|foreign\s+)?"
     r"(?:candidate|applicant|employee|hire|new\s+joiner|individual|person|"
     r"professional|talent|worker|you)s?\b", re.I)
-
 _SUPPORT_EVENT_RE = re.compile(
     r"sponsor\w*.{0,50}\b(event|conference|trade[- ]show|booth|"
     r"session|co[- ]market|partner|speaker)\b", re.I)
 _SUPPORT_EVENT_RE2 = re.compile(
     r"\b(event|conference|trade[- ]show|booth|session|co[- ]market|"
     r"partner)\w*.{0,50}sponsor\w*", re.I)
-
 _SUPPORT_TRAVEL_RE = re.compile(
     r"\b(visas?|work permits?)\s+for\s+(international\s+events?|"
     r"speakers?|travel|attendees?)", re.I)
-
 # FIX P0-50 (S-02): the same thing written as a travel-coordination duty
 # list. Appodeal's "Executive & Personal Assistant to CEO" says
 # "International travel coordination - flights, hotels, visas, ground
@@ -1559,13 +1404,11 @@ _SUPPORT_TRAVEL_LIST_RE = re.compile(
     r"itinerar\w*|ground\s+transport\w*|car\s+rental|per\s+diem|"
     r"(?:airport|ground|hotel|airline|shuttle)\s+transfers?|"
     r"expense\s+reports?)\b", re.I)
-
 _SUPPORT_FUNCTION_TITLE_RE = re.compile(
     r"\b(?:global|international)\s+mobility\b|\bimmigration\b|\brelocation\b", re.I)
 _SUPPORT_FUNCTION_ROLE_RE = re.compile(
     r"\b(manager|specialist|coordinator|officer|lead|director|program|"
     r"administrator|consultant|partner|hr|expert|advisor|adviser|analyst|assistant|counsel|lawyer|agent)\b", re.I)
-
 _SUPPORT_DUTY_RE = re.compile(
     r"\b(track(?:ing)?|manag(?:e|ing)|oversee(?:ing)?|administer(?:ing)?|"
     r"process(?:ing)?|handle(?:ing)?|coordinat(?:e|ing))\s+(?:of\s+)?"
@@ -1576,13 +1419,19 @@ _SUPPORT_DUTY_RE = re.compile(
     r"|\badvice\s+(?:about|on|regarding)\s+(?:visas?|passports?|immigration)\b"
     r"|\b(?:handl\w*|process\w*|manag\w*)\s+(?:all\s+)?(?:immigration|visa)\s+"
     r"(?:requests?|applications?|queries|questions|cases?)\b", re.I)
-
 # 2026-10-19: a restriction is not an offer. "Location & work authorization: this
 # internship is available only in France" is a limit on who may apply, not
 # sponsorship. Vetoed unless a candidate-facing offer is also present.
+_SUPPORT_EU_INTERNAL_RE = re.compile(
+    r"\b(?:visa|relocation|support|assistance)\b[^.;!?\n]{0,30}\bwithin\s+the\s+eu\b"
+    r"|\bwithin\s+the\s+eu\b[^.;!?\n]{0,30}\b(?:visa|relocation|support|assistance)\b"
+    r"|\b(?:visa|relocation)\s+(?:and\s+relocation\s+)?support\s+within\s+(?:the\s+)?(?:eu|europe)\b",
+    re.I)
+_SUPPORT_FOREIGN_SPONSOR_RE = re.compile(
+    r"\b(?:international|foreign|overseas|worldwide|global|non-eu|outside\s+(?:the\s+)?eu)\b",
+    re.I)
 _SUPPORT_RESTRICTION_RE = re.compile(
     r"\b(?:available|open|eligible|limited|restricted)\s+only\s+(?:in|to|for)\b", re.I)
-
 # A candidate-FACING offer vetoes the duty/travel downgrades: "we will cover
 # your visa" is support even inside a paragraph about travel admin. A bare
 # "we offer" or "benefits include" elsewhere in the JD is NOT enough.
@@ -1619,23 +1468,18 @@ _SUPPORT_CANDIDATE_OFFER_RE = re.compile(
     r"|\beligible\s+for\b[^.;!?]{0,30}\b(?:visa|sponsorship|work\s+permit)\b"
     r"|\b(?:open|willing|happy|able|prepared)\s+to\s+sponsor\w*"
     r"|\bcan\s+sponsor\b|\bwill\s+sponsor\b"
-    r"|\bsponsorship\s+(?:is\s+)?(?:available|provided|offered)\b", re.I)
-
-
+    r"|\bsponsorship\s+(?:is\s+)?(?:available|provided|offered|considered)\b"
+    r"|\b(?:visa\s+)?sponsorship\b[^.;!?]{0,35}\bconsidered\b", re.I)
 # FIX P0-52: per-guard downgrade counters. "Sponsored Jobs = 24 out of 2,497"
 # is either the honest base rate or a guard eating true positives, and there
 # was no way to tell which. The scan summary now prints how many YES verdicts
 # each guard removed, so the question is answerable from the run itself.
 SUPPORT_GUARD_HITS = collections.Counter()
-
-
 def _guard_hit(name):
     try:
         SUPPORT_GUARD_HITS[name] += 1
     except Exception:
         pass
-
-
 # Guard (6): a sentence that offers sponsorship and then hedges it ("We do sponsor
 # visas! However, we aren't able to sponsor visas for every role") is not a
 # sponsorship offer to this candidate. Demote to Unknown, never to No.
@@ -1643,21 +1487,23 @@ _SUPPORT_HEDGE_RE = re.compile(
     r"(?i)\b(?:however|unable|not able|aren'?t able|are not able|cannot|can'?t|"
     r"not every|for every|not all|not always|only in certain|in some cases)\b")
 _SUPPORT_SPONSOR_WORD_RE = re.compile(r"(?i)\bsponsor\w*")
-
-
 _VERDICT_POSSIBLE = "Possible"
-
-
+_SUPPORT_COMMITMENT_RE = re.compile(
+    r"\b(?:if\s+we\s+make\s+(?:you\s+)?an\s+offer\b[^.;!?\n]{0,60}\b(?:we\s+will|effort\s+to\s+get\s+(?:you\s+)?a\s+visa)|"
+    r"make\s+every\s+(?:reasonable\s+)?effort\s+to\s+(?:get|obtain|secure)\s+(?:you\s+)?a\s+visa|"
+    r"retain\s+an\s+immigration\s+(?:lawyer|attorney)\b)\b",
+    re.I)
 def _sponsorship_hedged(text):
+    # An affirmative employer commitment ("if we make you an offer, we will make every
+    # reasonable effort to get you a visa...") overrides a general hedge disclaimer.
+    if _SUPPORT_COMMITMENT_RE.search(text or ""):
+        return False
     for sentence in re.split(r"[.!?;\n]+", text or ""):
         if _SUPPORT_SPONSOR_WORD_RE.search(sentence) and _SUPPORT_HEDGE_RE.search(sentence):
             return True
     return False
-
-
 def apply_support_fp_guards(visa, reloc, text, title=""):
     """Downgrade visa/relocation YES verdicts that are not offers to the hire.
-
     A mention is only "support offered to YOU" if it isn't the job FUNCTION,
     an event/travel arrangement, or brand sponsorship. Returns the possibly
     downgraded (visa, reloc) pair; anything other than YES is passed through
@@ -1725,14 +1571,18 @@ def apply_support_fp_guards(visa, reloc, text, title=""):
         if not _SUPPORT_CANDIDATE_OFFER_RE.search(_rest):
             visa = VERDICT_UNKNOWN
             _guard_hit("7_restriction_not_offer")
+    # (8) EU-internal mobility restriction: visa/relocation offered only within EU
+    # is not visa sponsorship for foreign/international candidates.
+    if (visa == VERDICT_YES or reloc == VERDICT_YES) and _SUPPORT_EU_INTERNAL_RE.search(text):
+        if not _SUPPORT_FOREIGN_SPONSOR_RE.search(text):
+            if visa == VERDICT_YES:
+                visa = VERDICT_UNKNOWN
+                _guard_hit("8_eu_internal_only_visa")
+            if reloc == VERDICT_YES:
+                reloc = VERDICT_UNKNOWN
+                _guard_hit("8_eu_internal_only_reloc")
     return visa, reloc
-
-
-
-
 _COUNTRY_TAIL_CACHE = {}
-
-
 def _is_country_token(tok: str) -> bool:
     """True when tok is a country NAME or an ISO-2 / ISO-3 country code."""
     t = (tok or "").strip().lower()
@@ -1753,8 +1603,6 @@ def _is_country_token(tok: str) -> bool:
     if len(t) == 3 and t in _ISO3_COUNTRY_CODES:
         return True
     return t in _COUNTRY_TAIL_CACHE["names"]
-
-
 # ── FIX P36 (2026-10-06): a work-mode qualifier is not a location ─────────
 # Greenhouse publishes multi-site roles as a pipe list whose FIRST segment
 # is a hiring-policy label, not a place:
@@ -1773,17 +1621,13 @@ def _is_country_token(tok: str) -> bool:
 _WORKMODE_QUALIFIER_RE = re.compile(
     r"(?i)^(?:remote[\s\-]?friendly|hybrid[\s\-]?friendly|office[\s\-]?based"
     r"|flexible|travel[\s\-]?required)(?:\s*\([^)]*\))?$")
-
 _TITLE_PLACES_RE = re.compile(
     r"\b(?:in|based in|located in)\s+"
     r"([A-Z][\w'\-]+(?:\s*,\s*[A-Z][\w'\-]+|\s+(?:or|and)\s+[A-Z][\w'\-]+)+)")
-
-
 def title_place_conflict(title, location):
     """2026-10-19: a title that names its places ("Internship in Paris or London")
     cannot sit in a location in neither place or their countries. Mistral's
     "Applied Scientist (Internship in Paris or London)" was scraped as Seoul.
-
     Returns the conflict text, or "" when there is no conflict or no evidence.
     Only the title is read: the description has too many incidental places.
     """
@@ -1807,11 +1651,8 @@ def title_place_conflict(title, location):
     if not place_countries or loc_country in place_countries:
         return ""
     return f"title names {' / '.join(places)}; location {loc}"
-
-
 def _location_confidence(location, loc_source):
     """How much a Job Location can be trusted (FIX W2-8, shared rule).
-
     Identical ladder to CareerPortalScanner._location_confidence so the two
     scanners cannot drift: anything derived from the web host or a broad
     region is "low", a detail/API/address read is "high".
@@ -1832,13 +1673,9 @@ def _location_confidence(location, loc_source):
     if src in ("url", "title", "slug", "seed_scope+card"):
         return "medium"
     return "medium"
-
-
 def _location_is_site_derived(loc_source):
     """True when the country came from the web host, not from the posting."""
     return "site" in (loc_source or "").strip().lower()
-
-
 # Two-letter ISO codes used as a prefix in Workday/Leonardo style strings
 # ("IT - Venegono Superiore", "GB - Yeovil - Lysander Rd").
 _WD_ISO2_CODES = {
@@ -1857,14 +1694,10 @@ _WD_SITE_COUNTRY_CODES = {
     "ARG", "CHL", "COL", "EGY", "ARE", "ZAF", "NZL", "IDN", "VNM", "THA", "HKG",
     "TUR", "GRC", "UKR",
 }
-
-
 _BUSINESS_HEAD_RE = re.compile(
     r"\b(affairs|delivery|capacity|center|centre|relations|operations|services|"
     r"solutions|engineering|development|programme|program|partnerships?|policy|"
     r"strategy|legal|finance|sales|marketing|talent|research)\b", re.I)
-
-
 # ── HTTP: per-host gate and keep-alive connections (2026-10-19) ─────────────
 # Many companies share one host (every Workday tenant is a myworkdayjobs.com
 # subdomain, SmartRecruiters and Personio are single hosts). Unlimited parallel
@@ -1876,8 +1709,6 @@ _BUSINESS_HEAD_RE = re.compile(
 _HOST_GATES = {}
 _HOST_GATES_LOCK = threading.Lock()
 _CONN_LOCAL = threading.local()
-
-
 def _host_gate(netloc):
     """Per-host semaphore. SPONSORSCOUT_HOST_CONCURRENCY (default 3)."""
     try:
@@ -1891,8 +1722,6 @@ def _host_gate(netloc):
             gate = threading.BoundedSemaphore(limit)
             _HOST_GATES[netloc] = gate
         return gate
-
-
 def _keepalive_request(url, method, data, headers, timeout):
     """Return (status, payload_bytes) over a reused connection, or None when the
     response needs urlopen (redirects). Raises HTTPError for 4xx/5xx and
@@ -1902,25 +1731,21 @@ def _keepalive_request(url, method, data, headers, timeout):
     import ssl
     import urllib.error
     from urllib.parse import urlsplit
-
     parts = urlsplit(url)
     key = (parts.scheme, parts.netloc)
     pool = getattr(_CONN_LOCAL, "pool", None)
     if pool is None:
         pool = _CONN_LOCAL.pool = {}
     path = (parts.path or "/") + (("?" + parts.query) if parts.query else "")
-
     def _make():
         if parts.scheme == "https":
             return http.client.HTTPSConnection(
                 parts.netloc, timeout=timeout, context=_tls_context())
         return http.client.HTTPConnection(parts.netloc, timeout=timeout)
-
     def _send(conn):
         conn.request(method, path, body=data, headers=headers)
         resp = conn.getresponse()
         return resp, resp.read()
-
     conn = pool.pop(key, None)
     reused = conn is not None
     if conn is None:
@@ -1941,7 +1766,6 @@ def _keepalive_request(url, method, data, headers, timeout):
         except Exception:
             pass
         raise urllib.error.URLError(exc)
-
     if 300 <= resp.status < 400:
         conn.close()
         return None
@@ -1953,12 +1777,10 @@ def _keepalive_request(url, method, data, headers, timeout):
         raise urllib.error.HTTPError(url, resp.status, resp.reason,
                                      resp.headers, io.BytesIO(payload))
     return resp.status, payload
-
-
 class ATSScanner:
     def __init__(self, seed_file="company_ATS_seed.csv",
                  output_file="scraped_ats_jobs_v5.csv",
-                 skip_preflight=False, resume=False,
+                 skip_preflight=True, resume=False,
                  cancel_event=None, only_companies=None, pause_event=None):
         self.seed_file = seed_file
         self.output_file = output_file
@@ -1978,7 +1800,56 @@ class ATSScanner:
         self._errors_csv = None
         self.run_id = time.strftime("%Y%m%dT%H%M%S")
         self.detector = JDSupportDetector()
+        self._tls = threading.local()
+        self._file_lock = threading.Lock()
+        self._seen_lock = threading.Lock()
+        self._jd_lock = threading.Lock()
+        self._captured_jds = {}
+        self._captured_jd_identities = {}
+        self._detail_state = DetailRequestState()
+        self._browser_sem = threading.BoundedSemaphore(max(1, recommended_workers("browser")))
 
+    @property
+    def _target_notes(self):
+        notes = getattr(self._tls, "target_notes", None)
+        if notes is None:
+            notes = []
+            self._tls.target_notes = notes
+        return notes
+
+    @_target_notes.setter
+    def _target_notes(self, value):
+        self._tls.target_notes = list(value) if value is not None else []
+
+    def store_captured_jd(self, url, text):
+        if not url or not text:
+            return
+        cleaned = str(text).strip()
+        if not cleaned:
+            return
+        if len(cleaned) > 32000:
+            cleaned = cleaned[:32000]
+        key = str(url).strip()
+        if getattr(self,'_detail_state',None) is not None:
+            self._detail_state.register(key,getattr(self._tls,'evidence_scope',''))
+            self._detail_state.observe(key,cleaned,transport='provider JD')
+        with self._jd_lock:
+            existing = self._captured_jds.get(key, "")
+            if len(cleaned) > len(existing):
+                self._captured_jds[key] = cleaned
+            identity = posting_identity(key)
+            aliases = getattr(self, '_captured_jd_identities', None)
+            if aliases is not None and len(cleaned) > len(aliases.get(identity, '')):
+                aliases[identity] = cleaned
+
+    def get_captured_jd(self, url):
+        if not url:
+            return ""
+        key = str(url).strip()
+        with self._jd_lock:
+            exact = self._captured_jds.get(key, '')
+            alias = getattr(self, '_captured_jd_identities', {}).get(posting_identity(url), '')
+            return exact if len(exact) >= len(alias) else alias
     # ── HTTP helpers ─────────────────────────────────────────────────────────
     @staticmethod
     def _is_network_error(exc):
@@ -1990,31 +1861,97 @@ class ATSScanner:
             "getaddrinfo", "connectionrefused",
         )
         return any(m in msg for m in markers)
-
-    def _preflight_connectivity(self):
+    def _preflight_connectivity(self, targets=()):
+        """F-40: probe only the hosts THIS run will actually touch (deduped
+        netlocs of the selected targets, capped at four), in parallel, and
+        only warn on failure - a one-company scan must not wait on
+        unrelated hosts before it starts.
+        """
         if self.skip_preflight:
             return
-        failures = []
-        for host in PREFLIGHT_PROBE_HOSTS:
+        hosts = []
+        for t in targets or ():
             try:
-                socket.setdefaulttimeout(PREFLIGHT_TIMEOUT_SEC)
-                infos = socket.getaddrinfo(host, PREFLIGHT_PORT, socket.AF_INET)
-                if not infos:
-                    raise socket.gaierror("no address")
-                ip = infos[0][4][0]
-                with socket.create_connection((ip, PREFLIGHT_PORT),
-                                              timeout=PREFLIGHT_TIMEOUT_SEC):
-                    pass
-                print(f"[preflight] OK   {host}")
-            except Exception as exc:
-                failures.append(f"{host}: {type(exc).__name__}: {exc}")
-                print(f"[preflight] FAIL {host}: {type(exc).__name__}: {exc}")
-        if len(failures) >= PREFLIGHT_MAX_FAILURES:
-            raise RuntimeError(
-                "Connectivity pre-flight FAILED: "
-                f"{len(failures)}/{len(PREFLIGHT_PROBE_HOSTS)} probes unreachable. "
-                "Aborting before crawling. Check DNS/VPN/proxy, then re-run. "
-                "(Use --skip-preflight to bypass.)\n  " + "\n  ".join(failures))
+                netloc = (urlparse(t.get("url") or t.get("careers_url") or "").netloc
+                          or "").lower()
+            except Exception:
+                netloc = ""
+            if netloc and netloc not in hosts:
+                hosts.append(netloc)
+        hosts = hosts[:4]
+        if not hosts:
+            return
+
+        def _probe(host):
+            infos = socket.getaddrinfo(host, PREFLIGHT_PORT, socket.AF_INET)
+            if not infos:
+                raise socket.gaierror("no address")
+            ip = infos[0][4][0]
+            with socket.create_connection((ip, PREFLIGHT_PORT),
+                                          timeout=PREFLIGHT_TIMEOUT_SEC):
+                pass
+
+        import concurrent.futures as _cf
+        failures = []
+        with _cf.ThreadPoolExecutor(max_workers=len(hosts)) as ex:
+            futs = {ex.submit(_probe, h): h for h in hosts}
+            for fut in _cf.as_completed(futs):
+                host = futs[fut]
+                try:
+                    fut.result()
+                    print(f"[preflight] OK   {host}")
+                except Exception as exc:
+                    failures.append(f"{host}: {type(exc).__name__}: {exc}")
+                    print(f"[preflight] FAIL {host}: {type(exc).__name__}: {exc}")
+        if failures:
+            print(f"[preflight] WARNING {len(failures)}/{len(hosts)} probe(s) "
+                  "failed but proceeding.")
+
+    def _response_text(self,url,text,status=0):
+        scope=getattr(self._tls,'evidence_scope','')
+        self._detail_state.register(url,scope)
+        # A provider response that is a wall is reported by scope: the target
+        # listing URL itself means the board is unreadable, anything else is a
+        # job-detail read whose failure belongs to JD coverage.
+        listing_scope = bool(scope) and portal_queue_key(url) == portal_queue_key(scope)
+        reason=challenge_reason(text,subject='listing' if listing_scope else 'detail')
+        if reason:
+            self._detail_state.observe(url,kind='blocked',reason=reason,**response_metadata(text,status=status))
+            raise RuntimeError(listing_block_message(reason) if listing_scope
+                               else 'blocked access: '+reason)
+        if self._detail_state.outcomes.get(url,{}).get('kind')=='blocked':
+            self._detail_state.observe(url,kind='resolved',reason='subsequent provider response readable',transport='HTTP')
+        return text
+
+    def _response_failure(self,url,exc):
+        reason=http_error_reason(exc)
+        if reason:
+            self._detail_state.register(url,getattr(self._tls,'evidence_scope',''))
+            self._detail_state.observe(url,kind='blocked',reason=reason,**getattr(exc,'response_evidence',response_metadata(status=getattr(exc,'code',0))))
+        return reason
+
+    def _note_transport_retry(self, kind, seconds):
+        """FIX P19c (2026-10-28): leave a trace of retrying, per seed.
+
+        Nothing recorded a retry before: run 20261028T192816 spent 72.6% of
+        its wall clock on two seeds (Philips 2,959.8 s, Prysmian 2,897.3 s)
+        and its own scan log still said "Attempts=1; failed=0; blocked=0",
+        because HTTP_RETRIES swallows the transient responses inside _fetch
+        and coverage() lets a later readable response outrank them. These
+        counters are printed on the seed's diagnostics line by
+        DetailRequestState.transport_summary(); attribution is the same
+        'evidence_scope' _response_failure already uses, so a worker thread
+        with no seed scope contributes nothing rather than guessing.
+        """
+        scope = getattr(self._tls, 'evidence_scope', '')
+        state = getattr(self, '_detail_state', None)
+        if state is None:
+            return
+        state.note_transport(scope, 'retries')
+        if seconds:
+            state.note_transport(scope, 'backoff_seconds', seconds)
+        if kind:
+            state.note_transport(scope, kind)
 
     def _fetch(self, url, method="GET", body=None, timeout=None):
         """Fetch a URL with transient-error retry + exponential backoff.
@@ -2022,6 +1959,7 @@ class ATSScanner:
         timeout = timeout or HTTP_TIMEOUT_SEC
         last_exc = None
         for attempt in range(1, HTTP_RETRIES + 1):
+            _transport_note = None
             try:
                 data = json.dumps(body).encode() if body is not None else None
                 req = Request(url, data=data, method=method, headers={
@@ -2036,144 +1974,84 @@ class ATSScanner:
                     if direct is None:
                         with urlopen(req, timeout=timeout,
                                      context=_tls_context()) as resp:
-                            return resp.read().decode("utf-8-sig", errors="replace")
-                return direct[1].decode("utf-8-sig", errors="replace")
+                            return self._response_text(url,resp.read().decode("utf-8-sig", errors="replace"),getattr(resp,"status",0))
+                return self._response_text(url,direct[1].decode("utf-8-sig", errors="replace"),direct[0])
             except Exception as exc:
                 import urllib.error
                 if isinstance(exc, urllib.error.HTTPError):
+                    self._response_failure(url,exc)
                     # 404/410 are definitive; 429/5xx are transient — retry them.
                     if exc.code in (404, 410):
                         raise
                     if exc.code != 429 and exc.code < 500:
                         raise
                     last_exc = exc
+                    _transport_note = ('throttled_429' if exc.code == 429
+                                       else 'server_5xx')
                 elif not self._is_network_error(exc):
                     raise
                 else:
                     last_exc = exc
+                    _transport_note = 'network_errors'
             if attempt < HTTP_RETRIES:
-                time.sleep(HTTP_BACKOFF_BASE_SEC * (2 ** (attempt - 1)))
+                _backoff = HTTP_BACKOFF_BASE_SEC * (2 ** (attempt - 1))
+                self._note_transport_retry(_transport_note, _backoff)
+                time.sleep(_backoff)
         raise last_exc
-
     def _get_json(self, url):
         return json.loads(self._fetch(url))
-
     def _post_json(self, url, body):
         return json.loads(self._fetch(url, method="POST", body=body))
-
     # ── Seed ─────────────────────────────────────────────────────────────────
     def read_seed_file(self):
+        """Parse enabled targets only; no startup seed validation or upgrades."""
         if not os.path.exists(self.seed_file):
-            raise FileNotFoundError(
-                f"Seed file '{self.seed_file}' not found. "
-                f"Put 'company_ATS_seed.csv' in the working directory or pass --input."
-            )
+            raise FileNotFoundError(f"Seed file '{self.seed_file}' not found")
+        wanted = None if self.only_companies is None else {
+            str(c).strip().lower() for c in self.only_companies if str(c or '').strip()
+        }
         records = []
-        errors = []
-        seen_keys = set()
-        seed_path = self.seed_file
-        _legacy_provider_warned = False
+        seen = set()
+        seed_names = set()
         with open(self.seed_file, "r", encoding="utf-8-sig", newline="") as f:
             reader = csv.DictReader(f)
             reader.fieldnames = [clean(x) for x in (reader.fieldnames or [])]
-            for line_no, row in enumerate(reader, 2):
-                # FIX P0-32: rows whose first column starts with "#" are
-                # human-readable group headers (the HQ-country banners and the
-                # "NEWLY ADDED" markers in the grouped seeds), not companies.
-                # Skip them -- and fully blank spacer rows -- BEFORE validation,
-                # otherwise each one is reported as "invalid URL ''" and the
-                # ENTIRE run aborts with "Seed validation failed".
-                _c0 = (row.get("name") or row.get("seed_name") or "").lstrip()
-                if _c0.startswith("#") or not any(
-                        (v or "").strip()
-                        for v in row.values() if isinstance(v, str)):
+            for row in reader:
+                seed_name = clean(row.get("seed_name") or row.get("name"))
+                if not seed_name or seed_name.startswith("#"):
                     continue
-                name = clean(row.get("name"))
-                # Schema: the seed carries ``provider`` (+ optional
-                # ``board_slug``). ``ats_type`` was its v6 name and has been
-                # removed from the schema, the seed manager and the Data
-                # Management tab. It is still READ here -- a personal seed
-                # under %APPDATA% may predate the rename -- but it is
-                # announced once per file instead of being honoured in
-                # silence, because a seed that disagrees with the shipped
-                # schema will keep surprising its owner until they fix it.
-                _legacy_ats = clean(row.get("ats_type"))
-                ats_type = (clean(row.get("provider")) or _legacy_ats).lower()
-                if _legacy_ats and not _legacy_provider_warned:
-                    _legacy_provider_warned = True
-                    print(f"  [seed] {seed_path}: uses the removed v6 column "
-                          f"'ats_type'; read as 'provider'. Rename the column "
-                          f"(or re-copy the shipped seed) to silence this.")
-                industry = clean(row.get("industry") or "Tech")
+                name = clean(row.get("canonical_name") or seed_name)
+                seed_names.update((name, seed_name))
+                if wanted is not None and not {seed_name.lower(), name.lower()} & wanted:
+                    continue
+                if clean(row.get("enabled") or "true").lower() in {"0", "false", "no", "disabled"}:
+                    continue
                 url = clean(row.get("careers_url"))
-                if not name or not url:
-                    errors.append(f"line {line_no}: missing name/careers_url")
+                provider = clean(row.get("provider") or row.get("ats_type") or "auto").lower()
+                key = (seed_name.casefold(), clean(row.get("target_country") or "Global").casefold(), url.casefold())
+                if key in seen:
                     continue
-                if not url.startswith(("http://", "https://")):
-                    errors.append(f"line {line_no} {name}: invalid URL {url!r}")
-                    continue
-                unresolved_auto = False
-                if not ats_type or ats_type == "auto":
-                    sniffed = self._sniff_ats_type(url)
-                    if sniffed:
-                        ats_type = sniffed
-                    else:
-                        # Plain careers site with no ATS signature: keep the
-                        # row (ats_type stays "auto") so scan_target() routes
-                        # it to the browser DOM fallback.  A company is never
-                        # dropped just because its ATS cannot be identified.
-                        ats_type = "auto"
-                        unresolved_auto = True
-                if not ats_type:
-                    errors.append(
-                        f"line {line_no} {name}: no ats_type/provider and the "
-                        f"URL matches no known ATS: {url!r}")
-                    continue
-                if unresolved_auto:
-                    print(f"   [seed] {name}: no API adapter for {url!r} — "
-                          f"the browser DOM fallback will be used")
-                # v6 → v5 upgrade
-                upg = SEED_UPGRADE.get(name)
-                if upg:
-                    changed = []
-                    for k in ("source_type", "lever_region"):
-                        if upg.get(k):
-                            changed.append(f"{k} -> {upg[k]}")
-                    if changed:
-                        print(f"   [upgrade] {name}: " + "; ".join(changed))
-                source_type = ((upg or {}).get("source_type")
-                               or clean(row.get("source_type"))
-                               or "direct_employer")
-                lever_region = (upg or {}).get("lever_region") or ""
-                key = (name.casefold(), ats_type, url.casefold())
-                if key in seen_keys:
-                    print(f"   -> Seed deduped (duplicate): {name} line {line_no}")
-                    continue
-                seen_keys.add(key)
+                seen.add(key)
                 scores = {}
                 for col in ("sponsorship_history", "english_friendly", "remote_score"):
-                    raw = clean(row.get(col))
                     try:
-                        scores[col] = int(raw) if raw else None
-                    except ValueError:
+                        value = int(row.get(col) or "")
+                        scores[col] = value if 0 <= value <= 100 else None
+                    except (TypeError, ValueError):
                         scores[col] = None
                 records.append({
-                    "name": name, "ats_type": ats_type, "url": url,
-                    "industry": industry, "source_type": source_type,
-                    "lever_region": lever_region,
-                    # v7 columns (defaulted so v6 seeds behave exactly as before)
-                    "target_country": clean(row.get("target_country")) or "Global",
-                    "scope_policy": (clean(row.get("scope_policy"))
-                                     or "global").lower(),
+                    "name": name, "ats_type": provider, "url": url,
+                    "industry": clean(row.get("industry") or "Tech"),
+                    "source_type": clean(row.get("source_type") or "direct_employer"),
+                    "lever_region": clean(row.get("lever_region")),
+                    "target_country": clean(row.get("target_country") or "Global"),
+                    "scope_policy": clean(row.get("scope_policy") or "global").lower(),
                     "board_slug": clean(row.get("board_slug")),
                     "notes": clean(row.get("notes")),
                     **scores,
                 })
-        self._audit_seed_contradictions(records)
-        if errors:
-            raise ValueError("Seed validation failed:\n - " + "\n - ".join(errors))
+        self._seed_name_cache = seed_names
         return records
-
     # ── FIX P0-44: contradictory seed rows are now reported at load time ─────
     # Two silent-failure classes cost a full debugging cycle on 2026-10-03.
     #
@@ -2205,12 +2083,9 @@ class ATSScanner:
         "eightfold.ai", "phenompeople.com", "brassring.com", "jobvite.com",
         "breezy.hr", "jobteaser.com", "avature.com",
     )
-
     _SEED_LOCALE_RE = re.compile(r"^([a-z]{2})[-_]([a-z]{2})$", re.I)
-
     def _seed_url_country(self, url):
         """Country named by the seed URL itself, or None.
-
         Three gazetteer-free signals, strongest first: an explicit
         /country/<name> segment, a locale segment such as /en-in/ or /nl-BE/,
         and finally the host ccTLD (via _country_from_site, which already
@@ -2269,7 +2144,6 @@ class ATSScanner:
             if hit:
                 return hit
         return None
-
     def _audit_seed_contradictions(self, records):
         """Report seed rows whose own fields disagree. Warn only, never fail."""
         dead_policy, url_mismatch = [], []
@@ -2324,7 +2198,6 @@ class ATSScanner:
                 print("       %s" % url[:96])
         print("   " + "-" * 68)
         print("")
-
     # URL fingerprints for the 8 adapters this scanner implements.  Mirrors
     # ``core.ats_detection`` (plus the SmartRecruiters legacy hosts) so a v7
     # seed row with ``provider=auto`` still resolves; kept local so the
@@ -2346,7 +2219,6 @@ class ATSScanner:
         (re.compile(r"([a-z0-9_-]+\.)?icims\.com", re.I), "icims"),
         (re.compile(r"([a-z0-9_-]+\.)?eightfold\.ai", re.I), "eightfold"),
     )
-
     @classmethod
     def _sniff_ats_type(cls, url: str) -> str:
         """Resolve provider=auto / blank from the careers URL. '' = unknown."""
@@ -2354,7 +2226,6 @@ class ATSScanner:
             if pattern.search(url or ""):
                 return ats_type
         return ""
-
     # ── Normalization ────────────────────────────────────────────────────────
     @staticmethod
     def _strip_html(text):
@@ -2365,8 +2236,6 @@ class ATSScanner:
         text = re.sub(r"<[^>]+>", " ", text)
         lines = [clean(ln) for ln in text.split("\n")]
         return "\n".join(ln for ln in lines if ln)
-
-
     # ── W3-2 (P6): supplementary gazetteer ───────────────────────────────
     # core.location_country is authoritative and is NOT edited (user rule).
     # This table only fills the gaps it leaves. Every entry below was
@@ -2595,7 +2464,6 @@ class ATSScanner:
     _W3_LOC_PREFIX_RE = re.compile(
         r"(?i)^(?:in|at|presso|sede\s+di|sede|standort|bei|near|c/o|"
         r"location|luogo|ort|plaats|lieu)\s+[:\-]?\s*")
-
     @staticmethod
     def _w3_norm(value):
         import unicodedata
@@ -2603,10 +2471,8 @@ class ATSScanner:
         s = "".join(c for c in s if not unicodedata.combining(c))
         s = re.sub(r"[^0-9a-zA-Z\u00c0-\u024f\s'\-/.]", " ", s)
         return re.sub(r"\s+", " ", s).strip().lower()
-
     def _w3_strip_location_noise(self, value):
         """Trim the furniture that keeps a real place from being recognised.
-
         "Sede di Cuneo" -> "Cuneo", "64100 Teramo" -> "Teramo",
         "Innsbruck. Access to ..." -> "Innsbruck".
         """
@@ -2619,7 +2485,6 @@ class ATSScanner:
         v = re.sub(r"^\d{4,6}[\s,-]+", "", v).strip()      # postcode first
         v = re.sub(r"[\s,-]+\d{4,6}$", "", v).strip()      # postcode last
         return v
-
     def _supplementary_country(self, value):
         """Country for a place core.location_country does not know. "" if none."""
         v = self._w3_strip_location_noise(value)
@@ -2649,7 +2514,6 @@ class ATSScanner:
                 if hit:
                     return hit
         return ""
-
     def _resolve_country(self, value):
         """country_from_location first, the supplementary table second."""
         v = str(value or "").strip()
@@ -2668,7 +2532,6 @@ class ATSScanner:
         except Exception:
             pass
         return self._supplementary_country(v)
-
     def _w3_has_country(self, value):
         """True when the string already names a country in any language."""
         v = self._w3_strip_location_noise(value)
@@ -2689,11 +2552,9 @@ class ATSScanner:
             except Exception:
                 pass
         return False
-
     def _w3_is_region_only(self, value):
         n = self._w3_norm(self._w3_strip_location_noise(value))
         return bool(n) and n in self._W3_REGION_MARKERS
-
     # FIX P0-49 (S-09/S-04): same gate as career_scanner._sanitize_job_location.
     # This file has no gazetteer of its own, so the test is the country
     # resolver plus the company-echo and non-place-marker rules; the intent
@@ -2706,7 +2567,6 @@ class ATSScanner:
         "emea", "apac", "amer", "americas", "latam", "nordics", "benelux",
         "dach", "europe", "european union", "eu",
     })
-
     # ── W3-3 (P7): cross-bucket URL de-duplication ───────────────────────
     # Run 20261003T233023 shipped 69 job URLs in BOTH <run>.csv and
     # <run>_recruiter.csv -- Bolt's own postings republished by Work in
@@ -2717,55 +2577,11 @@ class ATSScanner:
     # finished, and keeps the EMPLOYER's copy: an aggregator's row carries
     # a worse Hiring Company and usually a vaguer location.
     _W3_DEDUPE_SKIP_URL_RE = re.compile(r"(?i)#job=|/(?:apply|application)(?:/|$)")
-
-    def _dedupe_cross_bucket(self, direct_csv, recruiter_csv, quarantine_csv,
-                             columns):
-        """Returns (moved, scanned). Rewrites the files only if moved > 0."""
-        import collections
-
-        def _read(path):
-            try:
-                with open(path, "r", newline="", encoding="utf-8-sig") as f:
-                    return list(csv.DictReader(f))
-            except FileNotFoundError:
-                return []
-
-        direct, recruiter = _read(direct_csv), _read(recruiter_csv)
-        if not direct or not recruiter:
-            return 0, len(direct) + len(recruiter)
-        # A URL that many rows share inside ONE company is a board/apply
-        # page, not a posting: never collapse those.
-        counts = collections.Counter(
-            (r.get("Company Name", ""), r.get("Job URL", ""))
-            for r in direct + recruiter)
-        shared = {u for (_c, u), n in counts.items() if n > 3}
-        employer_urls = {
-            (r.get("Job URL") or "").strip() for r in direct
-            if (r.get("Job URL") or "").strip()
-            and not self._W3_DEDUPE_SKIP_URL_RE.search(r.get("Job URL") or "")
-        } - shared
-        keep, moved = [], []
-        for r in recruiter:
-            u = (r.get("Job URL") or "").strip()
-            if u and u in employer_urls:
-                r["Record Status"] = "quarantine"
-                r["Quarantine Reason"] = "duplicate_url_cross_source"
-                moved.append(r)
-            else:
-                keep.append(r)
-        if not moved:
-            return 0, len(direct) + len(recruiter)
-        with open(recruiter_csv, "w", newline="", encoding="utf-8-sig") as f:
-            w = csv.DictWriter(f, fieldnames=columns)
-            w.writeheader()
-            for r in keep:
-                w.writerow({k: r.get(k, "") for k in columns})
-        with open(quarantine_csv, "a", newline="", encoding="utf-8-sig") as f:
-            w = csv.DictWriter(f, fieldnames=columns)
-            for r in moved:
-                w.writerow({k: r.get(k, "") for k in columns})
-        return len(moved), len(direct) + len(recruiter)
-
+    def _dedupe_cross_bucket(self,direct_csv,recruiter_csv,quarantine_csv,columns):
+        """Compatibility API: merge source markers into main, never quarantine."""
+        result = finalize_job_csvs(direct_csv,recruiter_csv,columns,
+                                  quality=getattr(self,'_record_quality',None))
+        return result['merged'],result['written']+result['merged']
     def _sanitize_job_location(self, value, company=""):
         v = re.sub(r"\s+", " ", str(value or "")).strip(" \t,;|-")
         if not v:
@@ -2808,7 +2624,6 @@ class ATSScanner:
         if re.search(r"[A-Za-z\u00c0-\u00ff]", v) and ("," in v or len(v.split()) <= 3):
             return v
         return "Unknown"
-
     def _norm(self, s):
         try:
             s = s.translate(str.maketrans({
@@ -2825,14 +2640,11 @@ class ATSScanner:
         except Exception:
             pass
         return re.sub(r"\s+", " ", s).strip().lower()
-
     # Acronyms / country codes that must never be title-cased ("UK" → "Uk").
     _ACRONYMS = {"uk", "us", "usa", "uae", "eu", "emea", "apac", "latam",
                  "mena", "dach", "dnu", "hq"}
-
     # Source-data typos seen in ATS location strings.
     _TYPO_MAP = {"dehli": "Delhi"}
-
     @staticmethod
     def _fmt_token(tok):
         """Normalize one location token: strip Workday '(DNU)' / '(Remote)'
@@ -2853,7 +2665,6 @@ class ATSScanner:
             for p in parts if p
         ]
         return ", ".join(parts) if parts else tok
-
     def format_location(self, location, remote_hint=""):
         """Normalize a structured ATS location string to 'City, Country' or
         'Remote - X'. Returns 'Remote' when the posting is remote with no
@@ -2898,7 +2709,6 @@ class ATSScanner:
         # "2 Locations" style Workday placeholder (actual sites not in list API)
         if re.fullmatch(r"\d+\s+locations?", low):
             return "Unknown"
-
         # ── Remote-first forms: "Remote", "Remote - X", "Remote, X", "Remote (X)" ──
         if re.match(r"^remote\b", low):
             m = re.search(r"^remote[\s:.,()-]+(.+)$", location, re.I)
@@ -2908,21 +2718,18 @@ class ATSScanner:
                 region = self._fmt_token(region)
                 return f"Remote - {region}" if region else "Remote"
             return "Remote"
-
         # ── "City1, City2 or Remote (Country)" → "City1, Country" ──────────────
         if re.search(r"\bor\b.{0,24}\bremote\b", low):
             cm = re.search(r"\(([^)]+)\)", location)
             country = self._fmt_token(cm.group(1)) if cm else ""
             first_city = self._fmt_token(location.split(",")[0])
             return f"{first_city}, {country}" if country else first_city
-
         # ── "Place - Remote Based" → keep the leading place ───────────────────
         if re.search(r"-\s*remote\b", low) or re.search(r"\bremote\s+based\b", low):
             leading = re.split(r"-\s*remote\b|\bremote\s+based\b", location, 1, re.I)[0]
             leading = self._fmt_token(leading)
             if leading:
                 return leading
-
         # ── "City, Region, Country" (or bare city) ────────────────────────────
         segs = [s.strip() for s in location.split(",") if s.strip()]
         if segs:
@@ -2930,14 +2737,11 @@ class ATSScanner:
             out = [s for s in out if s]
             if out:
                 return ", ".join(out)
-
         out = self._fmt_token(location)
         return out or ("Remote" if "remote" in remote_hint else "Unknown")
-
     # ── Classification (honest — no fabrication) ─────────────────────────────
     def classify_job_type(self, raw="", workplace="", description=""):
         """FIX P27 / P27b: delegate to the shared classifier.
-
         Two defects lived here. (a) `part[ -]?time` was tested BEFORE
         full-time against raw+workplace+description, so Amazon's pay
         footnote decided the schedule. (b) `contract|fixed-term|temporary`
@@ -2951,7 +2755,6 @@ class ATSScanner:
         mode = classify_work_location_mode(
             clean(f"{raw} {workplace} {description}")) or "Unknown"
         return f"{job_kind} / {mode}"
-
     def classify_support(self, description, title="", company=""):
         """Run the explicit-evidence support detector over the JD text.
         Returns (eu_blue_card, visa, relocation, relocation_required,
@@ -2987,30 +2790,11 @@ class ATSScanner:
         elif visa == VERDICT_NO and reloc == VERDICT_NO:
             flag = "N"
         return (blue, visa, reloc, reloc_req, conf, evidence, flag)
-
     # ── Identity / validation ────────────────────────────────────────────────
-    def canonical_job_id(self, company, url, provider, title="", location=""):
-        u = unescape(url or "")
-        candidates = []
-        for pattern in (
-            r"(?i)(?:jobid|job_id|gh_jid|reqid|requisitionid|career_job_req_id|postingid|r)=([A-Za-z]*\d{4,})",
-            r"(?i)(?:^|[/_-])(R\d{5,})(?:[-_/?]|$)",
-            r"(?i)[/_-](?:JR|REQ)[-_]?(\d{4,})(?:[-_/?#]|$)",
-            r"(?i)/jobs?/(\d{5,})(?:/|$)",
-            r"(?i)/([0-9a-f]{8}-[0-9a-f-]{27,})(?:/|$)",
-            r"(?i)/(\d{5,})(?:/?(?:[?#]|$))",
-        ):
-            candidates.extend(re.findall(pattern, u))
-        identity = candidates[0].casefold() if candidates else ""
-        if not identity:
-            p = urlparse(u)
-            identity = p.netloc.casefold().removeprefix("www.") + p.path.rstrip("/").casefold()
-        if not identity and title:
-            identity = f"title:{self._norm(title)}|loc:{self._norm(location)}"
-        # G3 fix: provider must not fragment identity — the same job seen via
-        # two ATS boards (or API vs browser fallback) is the same job.
-        return f"{company.casefold()}|{identity}"
-
+    def canonical_job_id(self,company,url,provider,title="",location=""):
+        """Observed posting identity, preserving tenant/query/hash/ID case."""
+        base_company = str(company or '').split('|')[0].casefold()
+        return base_company+'|'+posting_identity(url)
     def valid_job_url(self, url):
         if not url or not url.startswith(("http://", "https://")):
             return False
@@ -3029,16 +2813,17 @@ class ATSScanner:
             "applicationmethods", "apply", "application",
         }
         segments = [s for s in path.split("/") if s]
+        strong_detail = explicit_detail_url(url)
+        hard_segments = {'users','sign-in','signin','sign_in','privacy','cookie','terms','create-alert','create_alert'}
         for seg in segments:
-            if seg in rejected_segments:
+            if seg in hard_segments or (seg in rejected_segments and not strong_detail):
                 return False
         # a couple of multi-segment UI routes (exact path, not substring)
-        if re.search(r"/(users/sign_in|applicationmethods)(?:/|$)", path):
+        if re.search(r"/(users/sign_in|applicationmethods)(?:/|$)", path) and not strong_detail:
             return False
-        if re.search(r"/(careers?|jobs?)/?$", path):
+        if re.search(r"/(careers?|jobs?)/?$", path) and not strong_detail:
             return False
         return True
-
     # Compact place vocabulary for the G1 location-as-title guard below
     # (ATS port of the career-scanner fix; API titles are structured so this
     # mostly guards the browser_fallback DOM scrape).
@@ -3063,10 +2848,8 @@ class ATSScanner:
         hessen baden-württemberg baden-wurttemberg nordrhein-westfalen europe eu emea
         apac dach nordics benelux balkans latam mena global worldwide
         """.split())
-
     def _title_is_pure_location(self, title: str) -> bool:
         """True when a title is only place/code/postal segments ("Milano, MI").
-
         Every comma segment must be a known place, a 2-3 letter code, or a
         postal code — anything else (e.g. "Sales, UK", "Nurse, Berlin") is
         kept as a title so real jobs are never quarantined by this check.
@@ -3123,8 +2906,6 @@ class ATSScanner:
                 continue
             return False
         return saw_place
-
-
     # ── W3-1 (P5): multilingual title hygiene ────────────────────────────
     # Evidence, run 20261003T233023: the gate rejected real non-English
     # roles ("Koch (m/w/d)" -> "Koch", 4 letters, killed by the
@@ -3197,10 +2978,8 @@ class ATSScanner:
         "ceo", "cfo", "cto", "coo", "cio", "cmo", "chro", "cdo", "cso",
         "md", "gp", "pm", "qa",
     })
-
     def _split_title_place(self, title):
         """("Designer (m/w/d) Jobs in Innsbruck") -> ("Designer", "Innsbruck").
-
         Returns the title unchanged and "" when the pattern does not apply.
         """
         t = re.sub(r"\s+", " ", str(title or "")).strip()
@@ -3214,7 +2993,6 @@ class ATSScanner:
         if len(head) < 3 or not any(ch.isalpha() for ch in head):
             return t, ""          # the suffix WAS the title ("Jobs in Wien")
         return head, place
-
     #: FIX P66 (B4/B5): parity with the career scanner. A WordPress-backed
     #: board scraped as a listing yields the POST DATE welded to the author
     #: byline ("September 7, 2026James") as a "job title", and a
@@ -3229,7 +3007,6 @@ class ATSScanner:
         r"|\d{1,2}[./-]\d{1,2}[./-]20\d\d"
         r"|20\d\d[./-]\d{1,2}[./-]\d{1,2}"
         r")\s*[a-z]*\s*$")
-
     def _is_nav_title(self, title):
         """Board navigation / search furniture, in any of the seed languages."""
         low = re.sub(r"\s+", " ", str(title or "")).strip().casefold()
@@ -3253,25 +3030,10 @@ class ATSScanner:
                     r"offres d'emploi|job search|search jobs)\b", low):
             return True
         return False
-
     def _other_company_names(self, company):
-        """FIX P73: every OTHER company on the ATS seed list, for evidence
-        scoping. Identical discipline to career_scanner._other_company_names:
-        cached, and a read failure degrades to "no scoping", never a crash."""
-        names = getattr(self, "_seed_name_cache", None)
-        if names is None:
-            names = set()
-            try:
-                with open(self.seed_file, newline="", encoding="utf-8-sig") as f:
-                    for row in csv.DictReader(f):
-                        n = (row.get("name") or "").strip()
-                        if n and not n.startswith("#"):
-                            names.add(n)
-            except Exception:
-                names = set()
-            self._seed_name_cache = names
-        return tuple(n for n in names if n != company)
-
+        """Evidence names retained from the normal seed read, without more I/O."""
+        return tuple(n for n in getattr(self, "_seed_name_cache", ())
+                     if n.casefold() != str(company).casefold())
     def _clean_rescued_location(self, raw):
         """FIX P79 (run 20261016T173850): a raw location rescued from a detail
         page ("Munich Hybrid (NavVis GmbH)") used to reach Raw Location
@@ -3306,7 +3068,6 @@ class ATSScanner:
         except Exception:
             return ""
         return ""
-
     def _slug_is_title(self, url, title):
         """FIX 8t: the last path segment IS the title, separator-free."""
         try:
@@ -3318,7 +3079,6 @@ class ATSScanner:
         t = re.sub(r"[^a-z0-9]+", "", (title or "").casefold())
         return bool(t) and t == re.sub(
             r"[^a-z0-9]+", "", segs[-1].casefold())
-
     def _page_looks_like_listing(self, html, page_url):
         """FIX 8t: a category page LINKS to jobs; a job page carries an
         apply affordance. Three-plus same-host job-shaped anchors and no
@@ -3349,7 +3109,6 @@ class ATSScanner:
         return not re.search(
             r"(?i)(apply\b|application\b|bewerben|bewerbung|candidat|"
             r"sollicit|postuler|requestid=|job_application)", html)
-
     def _detail_page_is_listing(self, url):
         """FIX 8t: one budgeted static GET to settle a suspected category
         page whose slug equals its role-word title (/jobs/devops).
@@ -3376,14 +3135,15 @@ class ATSScanner:
         except Exception:
             return False
         return self._page_looks_like_listing(html, url)
-
     def valid_title(self, title, url=""):
         title = clean(title)
         title = self._split_title_place(title)[0]
         title = strip_glued_remote_tail(title)
         low = title.lower()
-        if not title or len(title) > 180:
+        if not title or len(title) > 180 or metadata_title(title):
             return False
+        if evergreen_title(title) and url and self.valid_job_url(url):
+            return True
         # FIX P73 (run 20261016T140013): identical rule to career -- a title
         # with no role word that equals the last slug segment(s) of its own
         # URL is an aggregator category page, not a vacancy.
@@ -3457,7 +3217,6 @@ class ATSScanner:
                    "full time", "part time", "contract"}:
             return False
         return True
-
     # ── Row construction (full v5 schema, honest defaults) ───────────────────
     # ── FIX P0-41 (parity with career_scanner) ───────────────────────────
     _STREET_WORDS = (r"via|viale|v\.le|piazza|piazzale|p\.zza|corso|c\.so|strada|"
@@ -3474,7 +3233,6 @@ class ATSScanner:
         "sede", "indirizzo", "filiale", "negozio", "store", "adresse",
         "standort", "location", "address", "apply", "now", "reference",
         "job", "jobs", "contratto", "tempo", "full", "part", "time"})
-
     def _town_from_address(self, text):
         """Town out of a street address the place vocabulary does not list."""
         if not text:
@@ -3494,7 +3252,6 @@ class ATSScanner:
                 or not re.match(r"^[A-ZÀ-ÖØ-Þ]", cand)):
             return None
         return cand
-
     #: FIX P49 (2026-10-07): Workday encodes the posting's country as an
     #: ISO-3166 alpha-3 segment in the job URL --
     #: "/job/NLD---North-Holland---Haarlem/...". The scanner read only the
@@ -3523,10 +3280,8 @@ class ATSScanner:
     #: "/job/<SEGMENT>/" where SEGMENT is "NLD---North-Holland---Haarlem".
     _WORKDAY_URL_LOC_RE = re.compile(
         r"/job/([A-Z]{3})---([^/?#]+)")
-
     def _workday_url_location(self, *urls):
         """(place, country) encoded in a Workday job URL, else ("", "").
-
         FIX P49. Returns the country only for a code the table names, and the
         place with the alpha-3 stripped off. Never guesses.
         """
@@ -3546,7 +3301,6 @@ class ATSScanner:
             place = parts[0] if parts else ""
             return place, country
         return "", ""
-
     def _country_from_site(self, *urls):
         """Country implied by the host a posting is served from."""
         try:
@@ -3574,7 +3328,6 @@ class ATSScanner:
                     and tld not in self._VANITY_TLDS):
                 return ISO2_TO_COUNTRY[tld]
         return None
-
     # ── FIX P0-40: scope enforcement (ported from career_scanner) ─────────
     # This module READ scope_policy and wrote it to output, but never acted on
     # it: there was no _scope_allows() in the file at all, and the scan log
@@ -3592,8 +3345,6 @@ class ATSScanner:
         "slovakia", "slovenia", "spain", "sweden", "switzerland",
         "united kingdom",
     })
-
-
     # ── FIX P64 (2026-10-08): country scoping is OFF by default ─────────
     # A seed's target_country records the PORTAL's scope and the company's
     # HQ. It was never meant to delete that company's jobs in other
@@ -3611,7 +3362,6 @@ class ATSScanner:
     # Set SPONSORSCOUT_SCOPE_FILTER=1 to restore the old behaviour.
     SCOPE_FILTER = (os.environ.get("SPONSORSCOUT_SCOPE_FILTER", "0")
                     .strip().lower() in ("1", "true", "yes", "on"))
-
     _SCOPE_ALIASES = {
         "germany": {"germany", "deutschland", "berlin", "hamburg", "munich", "munchen", "muenchen", "frankfurt", "cologne", "koln", "koeln", "dusseldorf", "duesseldorf", "stuttgart", "hannover", "bremen", "leipzig", "dresden", "bayern", "bavaria"},
         "italy": {"italy", "italia", "milan", "milano", "rome", "roma", "turin", "torino", "bologna", "napoli", "parma", "venice", "venezia", "florence", "firenze", "lombardia", "lombardy", "piemonte", "toscana", "sicilia"},
@@ -3620,7 +3370,6 @@ class ATSScanner:
         "ireland": {"ireland", "dublin", "cork", "galway", "limerick"},
         "india": {"india", "bharat", "pune", "mumbai", "bombay", "delhi", "new delhi", "bengaluru", "bangalore", "hyderabad", "chennai", "madras", "kolkata", "calcutta", "ahmedabad", "noida", "gurgaon", "gurugram", "kochi", "cochin"},
     }
-
     def _scope_allows(self, target, location, context="", url=""):
         # FIX P64: no job is dropped for being in the "wrong" country.
         if not self.SCOPE_FILTER:
@@ -3640,7 +3389,6 @@ class ATSScanner:
         # in let one mention of the target country anywhere on a board pass
         # every job on it.
         return self._scope_country_match(tc, location, "", "")
-
     def _scope_country_match(self, target, location, context="", url=""):
         blob = self._norm(" ".join([
             location or "", context or "",
@@ -3668,7 +3416,6 @@ class ATSScanner:
                 self._resolve_country(location) or "").casefold() == target.casefold()
         except Exception:
             return False
-
     def _scope_confidence(self, target, location, context="", url=""):
         """FIX P19b: career-scanner vocabulary for the scope verdict."""
         policy = (target.get("scope_policy") or "global").lower()
@@ -3680,11 +3427,26 @@ class ATSScanner:
                     if self._scope_country_match(tc, location, context, url)
                     else "unverified_seed_url")
         if policy == "job_location":
-            # Rows that fail the job-location test never reach the writer --
-            # make_row quarantines them -- so anything written is verified.
-            return "verified"
+            # FIX P19c (2026-10-28): this branch used to answer "verified"
+            # unconditionally, resting on the claim that rows failing the
+            # job-location test never reach the writer. That was only true
+            # while FIX P64's predecessor was in force. SCOPE_FILTER now
+            # defaults OFF (ats_scanner.py above), so nothing here is tested
+            # and "verified" claimed a check that never ran -- in run
+            # 20261028T192816 it put 466 Wolters Kluwer rows carrying
+            # IND/USA/ITA/GBR locations under a Netherlands seed in that
+            # column, and Akur8's NYC/London/Tokyo/Montreal rows too. The
+            # data is untouched (keeping every country is the P64 decision);
+            # only the label was overstating itself.
+            if not self.SCOPE_FILTER:
+                return "unfiltered"
+            # With the filter on, use the SAME evidence _scope_allows() used
+            # to admit the row: the job's own location, page context and URL
+            # deliberately excluded (FIX P0-37 parity).
+            return ("verified"
+                    if self._scope_country_match(tc, location, "", "")
+                    else "unverified_job_location")
         return "n/a"
-
     def make_row(self, target, title, url, location, raw_location, job_type,
                  description, extraction_method, location_source="api"):
         title = clean(title)
@@ -3837,10 +3599,13 @@ class ATSScanner:
         # FIX P0-30: experience from the JD text the adapter already fetched
         # (zero extra requests), with the title as fallback evidence.
         apply_experience_to_record(rec, jd_text=description or "", title=title)
+        # Keep scan lightweight: persist full JD text for SQLite storage;
+        # skill/category/domain extraction runs outside the scan loop in Insights.
+        if description:
+            self.store_captured_jd(url, description)
+        rec["Extracted Skills"] = ""
         return rec
-
     # ── ATS adapters ─────────────────────────────────────────────────────────
-
     # ── FIX P0-43: board_slug was a dead column ──────────────────────────────
     # Every adapter re-derived the board identifier from the URL and ignored
     # the board_slug the seed already carried, so a vanity careers URL silently
@@ -3857,7 +3622,6 @@ class ATSScanner:
     @staticmethod
     def _seed_slug(target, part=None):
         """board_slug from the seed, or "" to fall back to URL sniffing.
-
         ``part`` selects a field of a compound slug: Workday rows store
         "<tenant>/<site>", so _seed_slug(target, 0) -> tenant, 1 -> site.
         """
@@ -3870,7 +3634,6 @@ class ATSScanner:
         if len(pieces) <= part:
             return ""
         return pieces[part]
-
     def scan_ashby(self, target):
         url = target["url"]
         parts = [p for p in urlparse(url).path.split("/") if p]
@@ -3899,7 +3662,6 @@ class ATSScanner:
                 location, raw_location, job_type, desc, "ashby_api")
             rows.append(row)
         return rows
-
     def scan_greenhouse(self, target):
         url = target["url"]
         parsed = urlparse(url)
@@ -3928,7 +3690,6 @@ class ATSScanner:
                 location, loc_obj.get("name") or "", job_type, desc, "greenhouse_api")
             rows.append(row)
         return rows
-
     def scan_lever(self, target):
         url = target["url"]
         parts = [p for p in urlparse(url).path.split("/") if p]
@@ -3955,7 +3716,6 @@ class ATSScanner:
                 location, loc_val, job_type, desc, "lever_api")
             rows.append(row)
         return rows
-
     def scan_smartrecruiters(self, target):
         url = target["url"]
         host = urlparse(url).netloc.lower()
@@ -3973,10 +3733,24 @@ class ATSScanner:
         offset = 0
         rows = []
         try:
+            # FIX P19c (2026-10-28): 150 was a guess and run
+            # 20261028T192816 showed what it cost -- Delivery Hero has 945
+            # postings and got 150 descriptions, so 795 rows stayed
+            # listing-only purely because of this default. The four
+            # SmartRecruiters seeds in that run needed 945, 106, 64 and 2
+            # details, so 400 covers three of the four completely and takes
+            # Delivery Hero from 150 to 400 rows with a description; set
+            # SPONSORSCOUT_SMARTRECRUITERS_DETAILS=945 for full coverage of a
+            # board that size. Cost: the 150-detail seed spent 163.8 s in
+            # total including ten listing pages, so the extra details are tens
+            # of seconds, not minutes, and the per-seed time budget can still
+            # cut them off. BambooHR deliberately stays at 150 (its own
+            # default, see scan_bamboohr below) until one more run shows its
+            # boards need more.
             sr_detail_budget = [int(os.environ.get(
-                "SPONSORSCOUT_SMARTRECRUITERS_DETAILS", "150"))]
+                "SPONSORSCOUT_SMARTRECRUITERS_DETAILS", "400"))]
         except ValueError:
-            sr_detail_budget = [150]
+            sr_detail_budget = [400]
         while True:
             data = self._get_json(
                 f"https://api.smartrecruiters.com/v1/companies/{board}/postings"
@@ -4006,21 +3780,36 @@ class ATSScanner:
                         txt = sec.get("text") or sec.get("description") or ""
                         desc_parts.append(self._strip_html(txt))
                 desc = " ".join(desc_parts).strip()
-                if not desc and sr_detail_budget[0] > 0 and job.get("id"):
-                    try:
-                        full = self._get_json(
-                            f"https://api.smartrecruiters.com/v1/companies/"
-                            f"{board}/postings/{job.get('id')}")
-                        secs = ((full or {}).get("jobAd") or {}).get("sections") or {}
-                        desc = " ".join(
-                            self._strip_html((secs.get(k) or {}).get("text") or "")
-                            for k in ("companyDescription", "jobDescription",
-                                      "qualifications", "additionalInformation")
-                        ).strip()
-                        if desc:
-                            sr_detail_budget[0] -= 1
-                    except Exception:
-                        desc = ""
+                if not desc:
+                    # FIX P19c (2026-10-28): split the two reasons a row can
+                    # end up without a description. The coverage line reports
+                    # both as "unattempted", which hid that Nexthink's 13 rows
+                    # had budget left (SmartRecruiters returned no posting id
+                    # for them) while Delivery Hero's 795 had none left at all.
+                    _scope = getattr(self._tls, 'evidence_scope', '')
+                    if not job.get("id"):
+                        self._detail_state.note_transport(_scope, 'no_id')
+                    elif sr_detail_budget[0] > 0:
+                        try:
+                            full = self._get_json(
+                                f"https://api.smartrecruiters.com/v1/companies/"
+                                f"{board}/postings/{job.get('id')}")
+                            secs = ((full or {}).get("jobAd") or {}).get("sections") or {}
+                            desc = " ".join(
+                                self._strip_html((secs.get(k) or {}).get("text") or "")
+                                for k in ("companyDescription", "jobDescription",
+                                          "qualifications", "additionalInformation")
+                            ).strip()
+                            if desc:
+                                sr_detail_budget[0] -= 1
+                        except Exception:
+                            # Used to be a silent "desc = ''": a board whose
+                            # detail endpoint 404s for every posting looked
+                            # identical to one with nothing to read.
+                            desc = ""
+                            self._detail_state.note_transport(_scope, 'detail_errors')
+                    else:
+                        self._detail_state.note_transport(_scope, 'budget_skipped')
                 job_type = self.classify_job_type(
                     (job.get("typeOfEmployment") or {}).get("label"),
                     location, desc)
@@ -4039,6 +3828,143 @@ class ATSScanner:
             if not jobs or offset >= data.get("totalFound", 0):
                 break
         return rows
+    #: Where a Personio job page puts the vacancy text, most specific first.
+    #: FIX P19c (2026-10-28) -- NOT verified against a live board. Run
+    #: 20261028T192816 read only the XML feed for its 27 personio rows, and no
+    #: Personio posting page can be fetched from the sandbox this change was
+    #: written in, so the names below are Personio's usual template hooks and
+    #: the fallback in _personio_jd_text() is what actually decides. Worst
+    #: case if real markup matches nothing: an empty description, i.e. exactly
+    #: the behaviour scan_personio had before -- never a wrong or invented one.
+    _PERSONIO_JD_CONTAINERS = (
+        "jobcontent", "job-content", "jobdescription", "job-description",
+        "careerportal-additional-content", "position-details",
+        "job-display--content", "job-display",
+    )
+    #: boilerplate that must never be mistaken for a job description
+    _PERSONIO_SKIP_TAGS = ("script", "style", "noscript", "iframe", "nav",
+                           "header", "footer", "aside", "form", "button")
+    #: tags that end a text run, so the saved JD keeps its paragraph shape
+    _PERSONIO_BLOCK_TAGS = ("p", "br", "li", "ul", "ol", "div", "section",
+                            "article", "h1", "h2", "h3", "h4", "h5", "tr",
+                            "table", "main")
+    _PERSONIO_VOID_TAGS = ("area", "base", "br", "col", "embed", "hr", "img",
+                           "input", "link", "meta", "param", "source", "track",
+                           "wbr")
+
+    def _personio_jd_text(self, html):
+        """Return the vacancy text of a Personio posting page (stdlib only).
+
+        Container-scoped on purpose, not "strip the whole page": a saved JD
+        also feeds skill extraction and the Insights cube, so the nav, footer
+        and the apply widget would be indexed as though they were
+        requirements. Text is gathered into a small tree, the longest element
+        whose id/class hits _PERSONIO_JD_CONTAINERS wins, and if none hits the
+        largest <main>/<article>/<section> subtree is used with the boilerplate
+        tags pruned. Anything shorter than 80 characters is reported as
+        no_container rather than stored as a description.
+        """
+        from html.parser import HTMLParser
+        from sponsorscout.scanning.jd_support import normalize_jd_text
+
+        class _Node:
+            __slots__ = ("tag", "atts", "own", "kids")
+
+            def __init__(self, tag="", atts=""):
+                self.tag, self.atts, self.own, self.kids = tag, atts, "", []
+
+        class _Tree(HTMLParser):
+            def __init__(self):
+                super().__init__(convert_charrefs=True)
+                self.root = _Node("#root")
+                self.stack = [self.root]
+
+            def _open(self, tag, attrs):
+                node = _Node(tag, " ".join(
+                    str(value or "") for name, value in attrs
+                    if name in ("id", "class")).lower())
+                self.stack[-1].kids.append(node)
+                return node
+
+            def handle_starttag(self, tag, attrs):
+                node = self._open(tag, attrs)
+                if tag not in self_void:
+                    self.stack.append(node)
+
+            def handle_startendtag(self, tag, attrs):
+                self._open(tag, attrs)
+
+            def handle_endtag(self, tag):
+                for depth in range(len(self.stack) - 1, 0, -1):
+                    if self.stack[depth].tag == tag:
+                        del self.stack[depth:]
+                        break
+
+            def handle_data(self, data):
+                if data:
+                    self.stack[-1].own += data
+
+        self_void = self._PERSONIO_VOID_TAGS
+        try:
+            tree = _Tree()
+            tree.feed(str(html or ""))
+            tree.close()
+        except Exception:
+            return ""
+
+        skip = set(self._PERSONIO_SKIP_TAGS)
+
+        def text(node, depth=0):
+            """Visible text below `node`, boilerplate pruned, blocks on lines."""
+            if node.tag in skip or depth > 400:
+                return ""
+            pieces = []
+            if node.own.strip():
+                pieces.append(" ".join(node.own.split()))
+            for kid in node.kids:
+                chunk = text(kid, depth + 1)
+                if chunk:
+                    pieces.append(chunk)
+            joiner = "\n" if node.tag in self._PERSONIO_BLOCK_TAGS else " "
+            return joiner.join(pieces)
+
+        def walk(node, depth=0):
+            yield node, depth
+            if depth <= 400:
+                for kid in node.kids:
+                    yield from walk(kid, depth + 1)
+
+        lengths = {}          # node id() -> full text
+        for node, _depth in walk(tree.root):
+            if node.tag in skip:
+                continue
+            lengths[id(node)] = text(node)
+
+        best = ""
+        for node, _depth in walk(tree.root):
+            hit = next((name for name in self._PERSONIO_JD_CONTAINERS
+                        if name in node.atts), None)
+            if not hit:
+                continue
+            chunk = lengths.get(id(node), "")
+            if len(chunk) > len(best):
+                best = chunk
+        if len(best) < 80:
+            # No hook matched (or the page was a shell). Fall back to the
+            # largest semantic container we can find, then to the whole body
+            # minus the pruned boilerplate -- a Personio redesign should still
+            # yield the JD text rather than nothing.
+            for node, _depth in walk(tree.root):
+                if node.tag not in ("main", "article", "section", "body"):
+                    continue
+                chunk = lengths.get(id(node), "")
+                if len(chunk) > len(best):
+                    best = chunk
+        if len(best) < 80:
+            self._detail_state.note_transport(
+                getattr(self._tls, "evidence_scope", ""), "no_container")
+            return ""
+        return normalize_jd_text(best)
 
     def scan_personio(self, target):
         import xml.etree.ElementTree as ET
@@ -4066,6 +3992,21 @@ class ATSScanner:
             raise pers_exc
         root = ET.fromstring(raw)
         rows = []
+        # FIX P19c (2026-10-28): the feed was the whole story for personio, so
+        # every row it produced had an empty description and every support
+        # verdict stayed Unknown by construction -- 27 of 27 rows in run
+        # 20261028T192816 reported readable=0 while the identical BambooHR
+        # gap got a 150-fetch detail pass (the code even names this as "the same
+        # blind spot scan_personio has"). The feed already carries the posting
+        # URL, so the pass costs one request per row, under the same budget
+        # rule the SmartRecruiters adapter uses. It is bounded and skippable
+        # (SPONSORSCOUT_PERSONIO_DETAILS=0 restores the old behaviour) and the
+        # page shape is unverified -- see _personio_jd_text above.
+        try:
+            pers_detail_budget = [int(os.environ.get(
+                "SPONSORSCOUT_PERSONIO_DETAILS", "150"))]
+        except ValueError:
+            pers_detail_budget = [150]
         for pos in root.findall(".//position"):
             pid = (pos.findtext("id") or "").strip()
             job_url = (pos.findtext("jobUrl") or "").strip()
@@ -4078,13 +4019,42 @@ class ATSScanner:
                 pos.findtext("schedule"),
             ]))
             job_type = self.classify_job_type("", "", ctx)
-            # Personio list API carries no JD text → support stays Unknown (honest)
+            # The feed itself still carries no JD text; only a successful read
+            # of the posting page changes that, so an unreadable board keeps
+            # reporting Unknown rather than a guess (honest, as before).
+            desc = ""
+            if not job_url:
+                self._detail_state.note_transport(
+                    getattr(self._tls, "evidence_scope", ""), "no_id")
+            elif ".jobs.personio.de/" not in job_url:
+                # A feed may point at the company's own site instead. Fetching
+                # that is the career scanner's job, with its own wall
+                # detection; guessing a Personio layout on a foreign host would
+                # store the wrong text as a JD.
+                self._detail_state.note_transport(
+                    getattr(self._tls, "evidence_scope", ""),
+                    "skipped_external_url")
+            elif pers_detail_budget[0] > 0:
+                try:
+                    desc = self._personio_jd_text(self._fetch(job_url))
+                except Exception:
+                    desc = ""
+                    self._detail_state.note_transport(
+                        getattr(self._tls, "evidence_scope", ""),
+                        "detail_errors")
+                if desc:
+                    # Spent only on a usable description, as in the
+                    # SmartRecruiters adapter: a board whose pages all fail
+                    # must not walk off its whole budget on errors.
+                    pers_detail_budget[0] -= 1
+            else:
+                self._detail_state.note_transport(
+                    getattr(self._tls, "evidence_scope", ""), "budget_skipped")
             row = self.make_row(
                 target, pos.findtext("name"), job_url, location, office,
-                job_type, "", "personio_api")
+                job_type, desc, "personio_api")
             rows.append(row)
         return rows
-
     def scan_recruitee(self, target):
         host = urlparse(target["url"]).netloc
         slug = self._seed_slug(target) or (host.split(".")[0] if host else "")
@@ -4105,7 +4075,6 @@ class ATSScanner:
                 offer.get("location") or "", job_type, desc, "recruitee_api")
             rows.append(row)
         return rows
-
     def scan_workable(self, target):
         # apply.workable.com/<slug>/  → slug is the FIRST PATH segment
         path_seg = [p for p in urlparse(target["url"]).path.split("/") if p]
@@ -4140,7 +4109,6 @@ class ATSScanner:
                 ", ".join(loc_parts), job_type, desc, "workable_api")
             rows.append(row)
         return rows
-
     # ── BambooHR ─────────────────────────────────────────────────────────────
     # Added 2026-10-03. Two seed rows (Astroscale, Brain Rocket) carried
     # provider=bamboohr with no adapter behind it, so scan_target fell through
@@ -4176,6 +4144,12 @@ class ATSScanner:
         for job in openings:
             jid = str(job.get("id") or "").strip()
             if not jid:
+                # FIX P19c (2026-10-28): unlike the SmartRecruiters adapter,
+                # which still writes a listing-only row here, BambooHR has no
+                # URL to build without an id, so the posting is dropped. It was
+                # invisible: counted in neither Jobs Found nor Quarantined.
+                self._detail_state.note_transport(
+                    getattr(self._tls, 'evidence_scope', ''), 'dropped_no_id')
                 continue
             job_url = f"https://{slug}.bamboohr.com/careers/{jid}"
             loc = job.get("location") or {}
@@ -4184,6 +4158,11 @@ class ATSScanner:
             country = ""
             if budget > 0:
                 budget -= 1
+                # The decrement stays BEFORE the fetch (unlike SmartRecruiters,
+                # which spends only on a description it can use): one failing
+                # detail call must not turn a 200-posting board into 200
+                # retries inside a seed's time budget. That asymmetry is now
+                # measurable instead of silent, thanks to detail_errors below.
                 try:
                     detail = self._get_json(
                         f"https://{slug}.bamboohr.com/careers/{jid}/detail")
@@ -4195,6 +4174,8 @@ class ATSScanner:
                         loc = d_loc
                 except Exception:
                     desc, country = "", ""
+                    self._detail_state.note_transport(
+                        getattr(self._tls, 'evidence_scope', ''), 'detail_errors')
             raw_parts = [
                 clean(loc.get("city") or ats_loc.get("city") or ""),
                 clean(loc.get("state") or ats_loc.get("state")
@@ -4226,7 +4207,6 @@ class ATSScanner:
                 target, job.get("jobOpeningName"), job_url, location,
                 raw_location, job_type, desc, "bamboohr_api"))
         return rows
-
     def scan_workday(self, target):
         url = target["url"]
         parsed = urlparse(url)
@@ -4255,6 +4235,7 @@ class ATSScanner:
         except ValueError:
             detail_budget = [2000]
         rows = []
+        _empty_identity = 0
         offset = 0
         limit = 20  # Workday API rejects limit > 20 (HTTP 400)
         total = None
@@ -4269,8 +4250,10 @@ class ATSScanner:
             workers = 6
         seen = 0
         from concurrent.futures import ThreadPoolExecutor
-
+        if not hasattr(self,'_tls'):
+            self._tls=threading.local()
         def _detail(ext_path):
+            self._tls.evidence_scope=target["url"]
             try:
                 d = self._get_json(
                     f"https://{tenant}.{wd}.myworkdayjobs.com"
@@ -4278,7 +4261,6 @@ class ATSScanner:
                 return (d or {}).get("jobPostingInfo") or {}
             except Exception:
                 return None
-
         pool = ThreadPoolExecutor(max_workers=workers) if workers > 1 else None
         try:
             while True:
@@ -4292,7 +4274,6 @@ class ATSScanner:
                 jobs = data.get("jobPostings", [])
                 if not jobs:
                     break
-
                 # Decide per job, in list order, whether a detail GET is needed.
                 plan = []
                 for job in jobs:
@@ -4307,14 +4288,12 @@ class ATSScanner:
                         detail_budget[0] -= 1
                     need = bool(ext) and (want_desc or multi_site)
                     plan.append((job, ext if need else "", want_desc, multi_site))
-
                 ext_list = [p[1] for p in plan if p[1]]
                 if pool is not None and len(ext_list) > 1:
                     infos = list(pool.map(_detail, ext_list))
                 else:
                     infos = [_detail(e) for e in ext_list]
                 info_iter = iter(infos)
-
                 for job, ext, want_desc, multi_site in plan:
                     seen += 1
                     if seen % 100 == 0:
@@ -4325,6 +4304,22 @@ class ATSScanner:
                     # the site segment the link does not resolve to the posting.
                     job_url = f"https://{host}/{site}{job.get('externalPath', '')}" \
                         if job.get("externalPath") else ""
+                    if not title.strip() and not job_url:
+                        # FIX P19c (2026-10-28): Workday's CXS list occasionally
+                        # carries an entry with no title, no externalPath, no
+                        # locationsText and no requisition id. It used to be
+                        # written as a quarantine row whose own columns were all
+                        # empty, so run 20261028T192816 reported "Quarantined 3"
+                        # with two rows that could not be reviewed, and the
+                        # reason ("invalid_or_application_only_url") described a
+                        # URL that was never there. Nothing is lost by skipping
+                        # it -- there is nothing to lose -- but it stays counted
+                        # and named in this seed's diagnostics line.
+                        _empty_identity += 1
+                        self._detail_state.note_transport(
+                            getattr(self._tls, 'evidence_scope', ''),
+                            'empty_listing_item')
+                        continue
                     location = self.format_location(job.get("locationsText") or "")
                     req = ""
                     for b in job.get("bulletFields") or []:
@@ -4366,8 +4361,13 @@ class ATSScanner:
         finally:
             if pool is not None:
                 pool.shutdown(wait=True)
+        if _empty_identity:
+            self._target_notes.append(
+                f"workday listing: {_empty_identity} entr"
+                f"{'y' if _empty_identity == 1 else 'ies'} carried no title and "
+                f"no externalPath; skipped and counted as empty_listing_item "
+                f"(not quarantined - there is nothing to review)")
         return rows
-
     def browser_fallback(self, target):
         """Last-resort DOM scrape for ATS types without a public API."""
         if sync_playwright is None:
@@ -4378,7 +4378,7 @@ class ATSScanner:
             raise RuntimeError(f"browser fallback unavailable: {reason}")
         rows = []
         try:
-            with sync_playwright() as p:
+            with self._browser_sem, sync_playwright() as p:
                 # FIX P0-29: low-resource flags + block images/fonts/media and
                 # analytics hosts. Measured -44% bytes on real job boards; the
                 # DOM the extractor reads is unchanged.
@@ -4387,8 +4387,19 @@ class ATSScanner:
                 ctx = browser.new_context(viewport={"width": 1280, "height": 800})
                 install_page_resource_blocking(ctx)
                 page = ctx.new_page()
-                page.goto(target["url"], wait_until="domcontentloaded", timeout=35000)
-                page.wait_for_timeout(2500)
+                resp = page.goto(target["url"], wait_until="domcontentloaded", timeout=25000)
+                nav_status = resp.status if resp is not None else 0
+                _reason=challenge_reason(page.content() or '',title=page.title() or '',status=nav_status,
+                    frame_urls=[getattr(f,'url','')for f in (getattr(page,'frames',None)or())])
+                if _reason:
+                    browser.close()
+                    raise RuntimeError(listing_block_message(_reason))
+                page.wait_for_timeout(1800)
+                _reason=challenge_reason(page.content() or '',title=page.title() or '',status=nav_status,
+                    frame_urls=[getattr(f,'url','')for f in (getattr(page,'frames',None)or())])
+                if _reason:
+                    browser.close()
+                    raise RuntimeError(listing_block_message(_reason))
                 jobs = page.evaluate(
                     """
                     () => {
@@ -4431,7 +4442,6 @@ class ATSScanner:
                 desc, "browser_fallback", location_source="none")
             rows.append(row)
         return rows
-
     # ── Orchestration ────────────────────────────────────────────────────────
     # ── FIX P19 (2026-10-04): iCIMS + Eightfold ─────────────────────────
     # Same two boards the career scanner now handles, same request shapes,
@@ -4450,10 +4460,8 @@ class ATSScanner:
             if cand not in out:
                 out.append(cand)
         return out[:4]
-
     def scan_icims(self, target):
         """iCIMS career-site (Jibe) feed: /api/jobs?page=N&limit=100.
-
         Verified live on careers.docusign.com (2026-10-04): 255 postings,
         full JD text, 24 of them in Ireland.
         """
@@ -4470,7 +4478,6 @@ class ATSScanner:
                 break
         if not api_host:
             return []
-
         def _rows(payload):
             rows = []
             for entry in payload.get("jobs") or []:
@@ -4503,7 +4510,6 @@ class ATSScanner:
                     self.format_location(raw_loc), raw_loc, job_type, desc,
                     "icims_api"))
             return rows
-
         rows = _rows(first)
         try:
             total = int(first.get("totalCount") or first.get("count") or len(rows))
@@ -4524,10 +4530,8 @@ class ATSScanner:
             rows.extend(batch)
             page += 1
         return rows
-
     def scan_eightfold(self, target):
         """Eightfold.ai feed: /api/apply/v2/jobs?domain=<domain>&start=&num=.
-
         NOT verified against a live tenant (no Eightfold board was reachable
         from the build machine), so every unexpected shape returns [] and
         scan_target falls back to the DOM crawl used today.
@@ -4587,10 +4591,8 @@ class ATSScanner:
                 break
             start += 50
         return rows
-
     def scan_teamtailor(self, target):
         """Teamtailor career sites (custom domain or *.teamtailor.com).
-
         The site publishes a JSON Feed at /jobs.json. Each item carries a
         schema.org JobPosting (``_jobposting``) with the full HTML description
         and ``jobLocation`` (city + ISO country code). Added 2026-10-18 for
@@ -4630,8 +4632,12 @@ class ATSScanner:
                 target, title, job_url, location, raw_loc, job_type, desc,
                 "teamtailor_api"))
         return rows
-
     def scan_target(self, target):
+        url = target.get("url") or ""
+        if not url.startswith(("http://", "https://")):
+            raise ValueError(f"invalid careers URL: {url!r}")
+        if (target.get("ats_type") or "auto") == "auto":
+            target["ats_type"] = self._sniff_ats_type(url) or "auto"  # URL patterns only, no I/O
         adapters = {
             "ashby": self.scan_ashby,
             "greenhouse": self.scan_greenhouse,
@@ -4660,14 +4666,26 @@ class ATSScanner:
                 )
             except Exception:
                 static_jobs, diag = [], "static: error"
+            if getattr(diag,'block_reason',''):
+                self._detail_state.register(target['url'],target['url'])
+                self._detail_state.observe(target['url'],kind='blocked',reason=diag.block_reason,transport='static listing')
+            self._note(str(diag))
             if static_jobs:
-                print(f"   {diag} (no browser needed)")
+                print(f"   {diag}")
                 rows = []
                 for job in static_jobs:
                     rows.append(self.make_row(
                         target, job["job_title"], job["job_url"],
                         "Unknown", "", self.classify_job_type("", "", ""),
                         "", "static_html", location_source="none"))
+                if getattr(diag,'needs_dom',False):
+                    try:
+                        more=self.browser_fallback(target)
+                        rows.extend(more)
+                        if more:
+                            self._detail_state.observe(target['url'],kind='resolved',reason='normal DOM listing readable')
+                    except Exception as exc:
+                        self._note('listing incomplete: '+str(exc))
                 return rows
             # Generic / unknown board (e.g. provider=auto on a plain careers
             # site with no ATS signature): the DOM fallback still harvests
@@ -4677,38 +4695,36 @@ class ATSScanner:
                   f"— using browser DOM fallback")
             return self.browser_fallback(target)
         return adapter(target)
-
     def _note(self, message):
         """Attach a per-company diagnostic to the scan log row being built."""
         notes = getattr(self, "_target_notes", None)
         if notes is not None:
             notes.append(str(message)[:500])
-
     def _record_error(self, seed_name, phase, err_type, message, seed_url=""):
         """Append one row to the run's errors CSV (immediate, crash-safe)."""
         path = getattr(self, "_errors_csv", None)
         if not path:
             return
         try:
-            with open(path, "a", encoding="utf-8", newline="") as f:
-                csv.DictWriter(f, fieldnames=ERROR_FIELDS).writerow({
-                    "Run ID": self.run_id,
-                    "Timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-                    "Seed Name": seed_name, "Phase": phase,
-                    "Error Type": err_type, "Message": (message or "")[:2000],
-                    "Seed URL": seed_url,
-                })
+            with self._file_lock:
+                with open(path, "a", encoding="utf-8-sig", newline="") as f:
+                    csv.DictWriter(f, fieldnames=ERROR_FIELDS).writerow({
+                        "Run ID": self.run_id,
+                        "Timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                        "Seed Name": seed_name, "Phase": phase,
+                        "Error Type": err_type, "Message": (message or "")[:2000],
+                        "Seed URL": seed_url,
+                    })
         except Exception:
             pass  # error logging must never crash a scan
-
     def _ensure_output_header(self, columns, path):
         """Write the header if the file is missing/empty; otherwise verify the
         existing header matches exactly (never leave output headerless)."""
         if not os.path.exists(path) or os.path.getsize(path) == 0:
-            with open(path, "w", encoding="utf-8", newline="") as f:
+            with open(path, "w", encoding="utf-8-sig", newline="") as f:
                 csv.DictWriter(f, fieldnames=columns).writeheader()
             return
-        with open(path, encoding="utf-8") as f:
+        with open(path, encoding="utf-8-sig") as f:
             first = next(csv.reader(f), None)
         if first != list(columns):
             raise ValueError(
@@ -4716,41 +4732,28 @@ class ATSScanner:
                 f"Expected {list(columns)!r}, found {first!r}. "
                 "Use a fresh --output path or migrate the file."
             )
-
     def run(self):
         import os
         targets = self.read_seed_file()
-        # Optional whitelist (Dashboard "Rescan Companies"): keep only the
-        # requested companies so a targeted rescan stays fast.  Same semantics
-        # as the career scanner's only_companies handling.
-        if self.only_companies:
-            wanted = {c.strip().lower() for c in self.only_companies if c and c.strip()}
-            targets = [t for t in targets if str(t.get("name", "")).strip().lower() in wanted]
-            if not targets:
-                print(f"no ATS targets matched only_companies={self.only_companies}")
-                return
         if not targets:
             print("ATS scan: seed file contains no enabled targets")
             return
-        self._preflight_connectivity()
-
         base = self.output_file[:-4] if self.output_file.lower().endswith(".csv") else self.output_file
         recruiter_csv = base + "_recruiter.csv"
         quarantine_csv = base + "_quarantine.csv"
         scan_log_csv = base + "_scan_log.csv"
         errors_csv = base + "_errors.csv"
         self._errors_csv = errors_csv
-
         # Fresh run: truncate + write headers. Resume: load existing canonical
         # IDs so only NEW requisitions are appended, and verify (or write) the
         # header so output files are never left headerless.
         if not self.resume:
             for path in (self.output_file, recruiter_csv, quarantine_csv):
-                with open(path, "w", encoding="utf-8", newline="") as f:
+                with open(path, "w", encoding="utf-8-sig", newline="") as f:
                     csv.DictWriter(f, fieldnames=OUTPUT_FIELDS).writeheader()
-            with open(scan_log_csv, "w", encoding="utf-8", newline="") as f:
+            with open(scan_log_csv, "w", encoding="utf-8-sig", newline="") as f:
                 csv.DictWriter(f, fieldnames=LOG_FIELDS).writeheader()
-            with open(errors_csv, "w", encoding="utf-8", newline="") as f:
+            with open(errors_csv, "w", encoding="utf-8-sig", newline="") as f:
                 csv.DictWriter(f, fieldnames=ERROR_FIELDS).writeheader()
             seen_ids = set()
         else:
@@ -4763,21 +4766,21 @@ class ATSScanner:
             for path in (self.output_file, recruiter_csv):
                 if not os.path.exists(path):
                     continue
-                with open(path, encoding="utf-8") as f:
+                with open(path, encoding="utf-8-sig") as f:
                     reader = csv.reader(f)
                     next(reader, None)  # skip header
                     for row in reader:
                         if len(row) >= 18 and row[16]:
                             seen_ids.add(row[16])
+        ats_workers = max(1, min(len(targets), recommended_workers("company")))
+        print(
+            f"ATS scan started: {len(targets)} targets; workers={ats_workers}; "
+            f"run_id={self.run_id}; resume={self.resume} ({describe_host_budget()})"
+        )
 
-        print(f"ATS scan started: {len(targets)} targets; run_id={self.run_id}; resume={self.resume}")
-
-        for idx, target in enumerate(targets, 1):
-            # Cooperative cancellation (desktop Stop button): stop between
-            # targets so an in-flight HTTP/browser request can finish cleanly.
+        def _scan_one_ats(idx, target):
             if check_control(self.cancel_event, self.pause_event):
-                print(f"   CANCELLED: stopping before target [{idx}] {target.get('name', '?')}")
-                break
+                return
             started = time.monotonic()
             print(f"\n[{idx}/{len(targets)}] {target['name']} ({target['ats_type']})")
             error = ""
@@ -4786,6 +4789,7 @@ class ATSScanner:
                 diagnostics.append(KNOWN_BOARD_ISSUES[target["name"]])
             err_type = err_msg = ""
             self._target_notes = []
+            self._tls.evidence_scope=target["url"]
             try:
                 result = self.scan_target(target)
             except Exception as exc:
@@ -4795,55 +4799,112 @@ class ATSScanner:
                 diagnostics.append(error)
             diagnostics.extend(self._target_notes)
             if not result and not error and not self._target_notes:
-                # 2026-10-19: an empty board must say so. Without this the log
-                # showed "empty" with no reason (Cargo.one, Brain Rocket, ...).
                 diagnostics.append(
                     f"{target['ats_type']} returned 0 postings for {target['url']}")
             accepted = []
             quarantined = []
             duplicates = 0
-            for row in result:
-                cid = row["Canonical Job ID"]
-                if row["Record Status"] == "quarantine":
-                    quarantined.append(row)
-                    continue
-                if cid in seen_ids:
-                    duplicates += 1
-                    continue
-                seen_ids.add(cid)
-                accepted.append(row)
+            with self._seen_lock:
+                for row in result:
+                    cid = row["Canonical Job ID"]
+                    if row["Record Status"] == "quarantine":
+                        quarantined.append(row)
+                        continue
+                    if cid in seen_ids:
+                        duplicates += 1
+                    else:
+                        seen_ids.add(cid)
+                    # Keep the observation until final lossless source/alias
+                    # reconciliation; a later copy may carry the stronger JD.
+                    accepted.append(row)
+            _blocks=self._detail_state.scope_blocked(target['url'])
+            if _blocks:
+                _message='blocked access: '+str(len(_blocks))+' unresolved response(s); '+ '; '.join(str(b.get('reason',''))+' at '+b['url'] for b in _blocks[:4])
+                error=(error+'; ' if error else '')+_message
+                err_type,err_msg='AccessBlocked',error
+                diagnostics.append(_message)
+            # FIX P19c (2026-10-28): taken OUT of the `if accepted` block
+            # below, because the seeds that most need this line (zero rows, or
+            # details that all failed) are exactly the ones with nothing
+            # accepted. Names here are deliberately not markers that
+            # completion_status() treats as incompleteness: retrying is not the
+            # same as an unfinished scan, and a seed that retried and then
+            # succeeded still reports ok.
+            _transport = self._detail_state.transport_summary(target['url'])
+            if _transport:
+                diagnostics.append(_transport)
+            if accepted:
+                _urls=[row.get('Job URL','')for row in accepted]
+                _coverage=self._detail_state.coverage(target['url'],_urls,self.get_captured_jd)
+                diagnostics.append(self._detail_state.coverage_summary(target['url'],_urls,self.get_captured_jd))
+                if _coverage['readable']<_coverage['observed']:
+                    diagnostics.append('JD coverage incomplete: '+str(_coverage['observed']-_coverage['readable'])+' observed posting(s) without a usable full JD; Unknown is not a negative verdict')
+            for row in accepted+quarantined:
+                apply_row_geography(row)
             dest = recruiter_csv if target["source_type"] == "recruiter" else self.output_file
-            with open(dest, "a", encoding="utf-8", newline="") as f:
-                w = csv.DictWriter(f, fieldnames=OUTPUT_FIELDS)
-                for r in accepted:
-                    w.writerow({k: r.get(k, "") for k in OUTPUT_FIELDS})
-            with open(quarantine_csv, "a", encoding="utf-8", newline="") as f:
-                w = csv.DictWriter(f, fieldnames=OUTPUT_FIELDS)
-                for r in quarantined:
-                    w.writerow({k: r.get(k, "") for k in OUTPUT_FIELDS})
-            status = "error" if error and not accepted else ("ok" if accepted else "empty")
-            with open(scan_log_csv, "a", encoding="utf-8", newline="") as f:
-                csv.DictWriter(f, fieldnames=LOG_FIELDS).writerow({
-                    "Run ID": self.run_id, "Seed Name": target["name"],
-                    "Company": target["name"], "Source Type": target["source_type"],
-                    "Target Country": target.get("target_country", "Global"), "Status": status,
-                    "Provider": target["ats_type"], "Jobs Found": len(accepted),
-                    "Quarantined": len(quarantined), "Duplicates": duplicates,
-                    # FIX P0-40: was hard-coded 0 because nothing enforced scope.
-                    "Rejected Scope": sum(
-                        1 for _r in quarantined
-                        if _r.get("Quarantine Reason")
-                        == "outside_or_unproven_target_country"),
-                    "Error": error,
-                    "Diagnostics": " | ".join(diagnostics)[-4000:],
-                    "Duration Sec": round(time.monotonic() - started, 1),
-                    "Seed URL": target["url"],
-                })
+            status = completion_status(len(accepted),error,diagnostics)
+            with self._file_lock:
+                if accepted:
+                    with open(dest, "a", encoding="utf-8-sig", newline="") as f:
+                        w = csv.DictWriter(f, fieldnames=OUTPUT_FIELDS)
+                        for r in accepted:
+                            w.writerow({k: r.get(k, "") for k in OUTPUT_FIELDS})
+                if quarantined:
+                    with open(quarantine_csv, "a", encoding="utf-8-sig", newline="") as f:
+                        w = csv.DictWriter(f, fieldnames=OUTPUT_FIELDS)
+                        for r in quarantined:
+                            w.writerow({k: r.get(k, "") for k in OUTPUT_FIELDS})
+                with open(scan_log_csv, "a", encoding="utf-8-sig", newline="") as f:
+                    csv.DictWriter(f, fieldnames=LOG_FIELDS).writerow({
+                        "Run ID": self.run_id, "Seed Name": target["name"],
+                        "Company": target["name"], "Source Type": target["source_type"],
+                        "Target Country": target.get("target_country", "Global"), "Status": status,
+                        "Provider": target["ats_type"], "Jobs Found": len(accepted),
+                        "Quarantined": len(quarantined), "Duplicates": duplicates,
+                        "Rejected Scope": sum(
+                            1 for _r in quarantined
+                            if _r.get("Quarantine Reason")
+                            == "outside_or_unproven_target_country"),
+                        "Error": error,
+                        "Diagnostics": " | ".join(diagnostics)[-4000:],
+                        "Duration Sec": round(time.monotonic() - started, 1),
+                        "Seed URL": target["url"],
+                    })
             if error:
                 self._record_error(target["name"], "target", err_type, err_msg,
                                    target["url"])
-            print(f"   {status.upper()}: wrote={len(accepted)}, quarantined={len(quarantined)}, dups={duplicates}")
+            print(f"   {status.upper()}: [{target['name']}] wrote={len(accepted)}, quarantined={len(quarantined)}, dups={duplicates}")
 
+        if ats_workers <= 1 or len(targets) <= 1:
+            for idx, target in enumerate(targets, 1):
+                if check_control(self.cancel_event, self.pause_event):
+                    print(f"   CANCELLED: stopping before target [{idx}] {target.get('name', '?')}")
+                    break
+                _scan_one_ats(idx, target)
+        else:
+            import concurrent.futures as _cf
+            ats_pool = _cf.ThreadPoolExecutor(max_workers=ats_workers, thread_name_prefix="ats")
+            try:
+                futs = []
+                for idx, target in enumerate(targets, 1):
+                    if check_control(self.cancel_event, self.pause_event):
+                        break
+                    futs.append(ats_pool.submit(_scan_one_ats, idx, target))
+                pending = set(futs)
+                while pending:
+                    if self.cancel_event is not None and self.cancel_event.is_set():
+                        for _f in pending:
+                            _f.cancel()
+                        _cf.wait(pending, timeout=2.0)
+                        break
+                    done, pending = _cf.wait(pending, timeout=0.25, return_when=_cf.FIRST_COMPLETED)
+                    for _f in done:
+                        try:
+                            _f.result()
+                        except Exception as _wexc:
+                            self._record_error("?", "ats_worker", type(_wexc).__name__, str(_wexc))
+            finally:
+                ats_pool.shutdown(wait=False, cancel_futures=True)
         # FIX P0-52: make the false-positive guards auditable. If the
         # sponsored-jobs count looks low, this says whether the guards took
         # the verdicts or the JDs simply never offered sponsorship.
@@ -4855,21 +4916,14 @@ class ATSScanner:
         else:
             print("  Support FP guards downgraded 0 verdicts "
                   "(a low sponsored count is the JDs, not the guards).")
-        # W3-3 (P7) parity: an aggregator copy of an employer's own posting
-        # must not sit in both result files.
         try:
-            _dupes, _ = self._dedupe_cross_bucket(
-                self.output_file, recruiter_csv, quarantine_csv, OUTPUT_FIELDS)
-            if _dupes:
-                print(f"  Cross-source duplicates moved to quarantine: {_dupes}")
-        except Exception as _dexc:
-            print(f"  [warn] cross-source dedupe skipped: "
-                  f"{type(_dexc).__name__}: {_dexc}")
-        print(f"\nATS scan complete. Outputs:\n  Direct: {self.output_file}\n"
-              f"  Recruiters: {recruiter_csv}\n  Quarantine: {quarantine_csv}\n  Log: {scan_log_csv}\n"
-              f"  Errors: {errors_csv}")
-
-
+            merge_info = finalize_job_csvs(self.output_file,recruiter_csv,OUTPUT_FIELDS)
+            reconcile_scan_artifacts(scan_log_csv,self.output_file,quarantine_csv,self.run_id,merge_info=merge_info)
+            print(f"  Final main CSV: {merge_info['written']} jobs; {merge_info['merged']} source/alias rows merged (not quarantine)")
+        except Exception as exc:
+            print(f"  [warn] final source/count reconciliation failed: {type(exc).__name__}: {exc}")
+        print(f"\nATS scan complete. Outputs:\n  Jobs (all sources): {self.output_file}\n"
+              f"  Quarantine: {quarantine_csv}\n  Log: {scan_log_csv}\n  Errors: {errors_csv}")
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="ATS Career Portal Scanner v5")

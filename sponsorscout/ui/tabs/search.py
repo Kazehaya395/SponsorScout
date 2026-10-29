@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
 )
 
 from sponsorscout.db import database as db
+from sponsorscout.ui.async_load import AsyncLoader
 from sponsorscout.i18n import _
 
 # Canonical (untranslated) column order — this list defines the COLUMN
@@ -335,6 +336,44 @@ def _verdict_cell(value: str) -> str:
     return "?"
 
 
+class _LazyRow:
+    """Read-only view of one `sqlite3.Row`, with the experience cell on demand.
+
+    Search used to copy every matching row into a dict and build a display string
+    for it before rendering one page: 35,555 rows cost ~0.29 s of dict building
+    plus ~0.04 s of formatting, on the loader thread, for a page of 100-500.
+    The row object itself already supports `row["column"]` and the `.get()` the
+    sort keys use, so the copy was pure overhead - except for `_exp_display`,
+    which is computed here, once, only for a row that is actually sorted,
+    filtered or painted.
+    """
+
+    __slots__ = ("_row", "_exp_display")
+
+    def __init__(self, row):
+        self._row = row
+        self._exp_display = None
+
+    def __getitem__(self, key):
+        if key == "_exp_display":
+            if self._exp_display is None:
+                self._exp_display = _experience_cell(
+                    self._row["experience_required"], self._row["experience_level"],
+                    self._row["experience_min_years"])
+            return self._exp_display
+        return self._row[key]
+
+    def get(self, key, default=""):
+        try:
+            value = self[key]
+        except (IndexError, KeyError):
+            return default
+        return default if value is None else value
+
+    def keys(self):
+        return self._row.keys()
+
+
 def _row_values(row) -> list:
     """The ten display strings of one result row, in HEADERS order.
 
@@ -392,6 +431,8 @@ class SearchTab(QWidget):
     def __init__(self, db_path: str, parent=None):
         super().__init__(parent)
         self.db_path = db_path
+        self._filter_loader = AsyncLoader(self, name="search filters")
+        self._search_loader = AsyncLoader(self, name="search rows")
         # Pagination state: run_search() caches the full filtered result list
         # here and the table renders ONE page of it (bounded widget count —
         # see _render_page).
@@ -572,130 +613,81 @@ class SearchTab(QWidget):
         self.title_edit.returnPressed.connect(self.run_search)
         self.company_edit.returnPressed.connect(self.run_search)
         self.location_edit.returnPressed.connect(self.run_search)
+        # Edits invalidate an in-flight result even before the user presses
+        # Search again; an old snapshot must not overwrite newer filter intent.
+        for edit in (self.title_edit, self.company_edit, self.location_edit):
+            edit.textEdited.connect(lambda *_: self._search_loader.invalidate())
+        for combo in (self.country_combo, self.remote_combo, self.experience_combo, self.run_combo):
+            combo.currentIndexChanged.connect(lambda *_: self._search_loader.invalidate())
+        for check in (self.regex_check, self.sponsor_check, self.bluecard_check, self.reloc_check):
+            check.toggled.connect(lambda *_: self._search_loader.invalidate())
 
     # ── Data ─────────────────────────────────────────────────────────────────
-    def populate_static_filters(self):
-        """(Re)fill the Country / Remote / Experience dropdowns from the DB.
+    def populate_static_filters(self, *, refresh_search=False):
+        path = self.db_path
+        def load():
+            exp_rank = {}
+            for req, level, years in db.get_distinct_experience_specs(path):
+                display = _experience_cell(req or "", level or "", years)
+                key = _experience_sort_key(req or "", level or "", years)
+                if display not in exp_rank or key < exp_rank[display]:
+                    exp_rank[display] = key
+            experience = sorted(exp_rank, key=lambda value: (exp_rank[value], value))
+            return (db.get_distinct_job_countries(path), db.get_distinct_remote_types(path),
+                    experience, db.list_run_ids(path))
+        self._filter_loader.request(load, lambda values: self._apply_static_filters(values, refresh_search))
 
-        Each dropdown always holds the FULL unique value list of the data —
-        it is never narrowed by the current selection — so switching from
-        one value to another is always one click + Search (no All detour).
-
-        Experience options are the rendered Experience-column strings
-        (_experience_cell over the DB distinct specs), ordered like the
-        column sorts: numeric requirements, then levels, then NA.  The
-        FILTER_ALL sentinel is added untranslated in every language.
-
-        Refresh points: app._refresh_all() calls this before run_search()
-        on startup, on Refresh and after every scan finishes.
-        """
-        exp_rank = {}
-        for spec in db.get_distinct_experience_specs(self.db_path):
-            req, level, min_years = spec
-            disp = _experience_cell(req or "", level or "", min_years)
-            key = _experience_sort_key(req or "", level or "", min_years)
-            if disp not in exp_rank or key < exp_rank[disp]:
-                exp_rank[disp] = key
-        experience = sorted(exp_rank, key=lambda d: (exp_rank[d], d))
-        for combo, values in (
-            (self.country_combo, db.get_distinct_job_countries(self.db_path)),
-            (self.remote_combo, db.get_distinct_remote_types(self.db_path)),
-            (self.experience_combo, experience),
-            (self.run_combo, db.list_run_ids(self.db_path)),
-        ):
+    def _apply_static_filters(self, values, refresh_search=False):
+        for combo, items in zip((self.country_combo, self.remote_combo,
+                                 self.experience_combo, self.run_combo), values):
             current = combo.currentText()
             combo.blockSignals(True)
             combo.clear()
             combo.addItem(FILTER_ALL)
-            combo.addItems(values)
-            if current:
-                idx = combo.findText(current)
-                if idx >= 0:
-                    combo.setCurrentIndex(idx)
+            combo.addItems(items)
+            index = combo.findText(current)
+            if index >= 0:
+                combo.setCurrentIndex(index)
             combo.blockSignals(False)
+        if refresh_search:
+            self.run_search()
 
     def run_search(self):
-        # A pending page-size selection must not repaint the NEW search result
-        # with the OLD page size when the timer fires.
         self._page_size_timer.stop()
-        # Validate regex patterns up front; fall back to substring search and
-        # inform the user on an invalid pattern instead of returning nothing.
         use_regex = self.regex_check.isChecked()
         if use_regex:
-            import re as _re
-            for pat in (self.title_edit.text(), self.company_edit.text(),
-                        self.location_edit.text()):
-                if pat.strip():
+            import re
+            for pattern in (self.title_edit.text(), self.company_edit.text(), self.location_edit.text()):
+                if pattern.strip():
                     try:
-                        _re.compile(pat)
-                    except _re.error as exc:
-                        QMessageBox.warning(
-                            self, _("Invalid regular expression"),
-                            _("Regex disabled — invalid pattern:\n{error}")
-                            .format(error=str(exc)))
+                        re.compile(pattern)
+                    except re.error as exc:
+                        QMessageBox.warning(self, _("Invalid regular expression"),
+                            _("Regex disabled — invalid pattern:\n{error}").format(error=str(exc)))
                         use_regex = False
                         break
-        rows = db.search_jobs(
-            self.db_path,
-            title=self.title_edit.text().strip(),
-            company=self.company_edit.text().strip(),
-            location=self.location_edit.text().strip(),
-            country=self.country_combo.currentText(),
-            remote_filter=self.remote_combo.currentText(),
-            # Combo item 0 is the absolute FILTER_ALL literal ("All"), never
-            # translated, so SQL always receives the English sentinel it
-            # understands — Italian "Tutti" can never leak into the query.
-            # No experience_filter on purpose: the dropdown holds the RENDERED
-            # column values (see the _exp_display block below), which the SQL
-            # filter on raw experience_level cannot express — the Experience
-            # filter is applied in Python after rendering each row.
-            sponsorship_only=self.sponsor_check.isChecked(),
-            eu_blue_card_only=self.bluecard_check.isChecked(),
-            relocation_only=self.reloc_check.isChecked(),
-            regex=use_regex,
-            run_filter=self.run_combo.currentText(),
-        )
-        # db.search_jobs() returns sqlite3.Row objects (row_factory in
-        # db/database.py), which have no .get(). Convert to plain dicts so
-        # the row.get(...) calls below (Experience cell, sort key, tooltip)
-        # work; row["col"] indexing keeps working on dicts.
-        rows = [dict(r) for r in rows]
-        # Render the Experience cell once per row and keep it on the row: the
-        # table cell, the dropdown options (populate_static_filters renders
-        # _experience_cell over the DB distinct specs) and the filter below
-        # all use the same canonical, untranslated strings — display, list
-        # and filter can never drift apart, in any UI language.
-        for row in rows:
-            row["_exp_display"] = _experience_cell(
-                row.get("experience_required", ""),
-                row["experience_level"],
-                row["experience_min_years"])
-        exp_selected = self.experience_combo.currentText()
-        if exp_selected and exp_selected != FILTER_ALL:
-            rows = [r for r in rows if r["_exp_display"] == exp_selected]
-        # FIX P0-56: enforce the three verdict checkboxes in Python, against
-        # the SAME value the cell displays. The SQL side filters on its own
-        # idea of "has support", which is how a row could be returned under
-        # "Sponsor" while its Sponsor cell read "?" -- the checkbox and the
-        # column were answering different questions. Applied here, next to
-        # the Experience filter, for the same reason that one is: display and
-        # filter must come from one value, so they cannot drift.
-        for _checked, _key in ((self.sponsor_check.isChecked(), "visa_sponsorship"),
-                               (self.bluecard_check.isChecked(), "eu_blue_card_verdict"),
-                               (self.reloc_check.isChecked(), "relocation_support")):
-            if _checked:
-                rows = [r for r in rows
-                        if _verdict_cell(str(r.get(_key) or "")) == "Y"]
-        # Cache the full filtered list and render only the CURRENT page of it:
-        # the table never holds more than one page of QTableWidgetItem objects
-        # (~5k cells) — that bounded widget count is what keeps Search instant
-        # on big datasets; ◀/▶ re-render from this cache without re-querying.
+        criteria = dict(title=self.title_edit.text().strip(), company=self.company_edit.text().strip(),
+            location=self.location_edit.text().strip(), country=self.country_combo.currentText(),
+            remote_filter=self.remote_combo.currentText(), sponsorship_only=self.sponsor_check.isChecked(),
+            eu_blue_card_only=self.bluecard_check.isChecked(), relocation_only=self.reloc_check.isChecked(),
+            regex=use_regex, run_filter=self.run_combo.currentText())
+        experience = self.experience_combo.currentText()
+        path = self.db_path
+        def load():
+            rows = [_LazyRow(row) for row in db.search_jobs(path, **criteria)]
+            if experience and experience != FILTER_ALL:
+                rows = [r for r in rows if r['_exp_display'] == experience]
+            # The three verdict checkboxes are deliberately NOT re-filtered here.
+            # search_jobs() already applies them (visa verdict / blue-card /
+            # relocation boolean), and repeating the test in Python on a second
+            # definition is what used to make a row match the checkbox while its
+            # cell showed "?" - or vanish after SQL had kept it.
+            return rows
+        self._search_loader.request(load, self._apply_search)
+
+    def _apply_search(self, rows):
         self._filtered_rows = rows
         self._page = 0
-        # A new result set invalidates the measured widths (different jobs,
-        # different text), so the columns are measured again — once per search,
-        # not once per page. Widths the user dragged by hand are a layout
-        # preference and survive the search.
         self._fitted_widths.clear()
         self._render_page()
 

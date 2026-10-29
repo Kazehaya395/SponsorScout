@@ -37,10 +37,42 @@ from sponsorscout.application import seed_manager
 from sponsorscout.scanning.ats import ats_scanner as ats_module
 from sponsorscout.scanning.career import career_scanner as career_module
 from sponsorscout.scanning.common import recommended_workers
+from sponsorscout.core.activity import ingestion_task
+from sponsorscout.core.job_identity import posting_identity
 from sponsorscout.core.integrity import check_integrity
 from sponsorscout.core.location_country import country_from_location
+from sponsorscout.core.location_evidence import row_geography
 from sponsorscout.core import persistence
 from sponsorscout.db import database as db
+
+
+def _extract_category(title: str, text: str = "") -> str:
+    try:
+        from sponsorscout.insights.terms import classify_category
+        return classify_category(title, text)
+    except Exception:
+        return "Other"
+
+def _extract_domain(industry: str) -> str:
+    try:
+        from sponsorscout.insights.terms import classify_domain
+        return classify_domain(industry)
+    except Exception:
+        return "Unknown"
+
+def _extract_all_terms(title: str, loc: str, exp: str, text: str, ind: str, pre_skills: str = "") -> list[tuple[str, str]]:
+    try:
+        from sponsorscout.insights.terms import extract_terms
+        res = extract_terms(title, loc, exp, text, ind)
+        terms = res.get("terms", [])
+        if pre_skills:
+            for s in pre_skills.split(";"):
+                s = s.strip()
+                if s and ("skill", s) not in terms:
+                    terms.append(("skill", s))
+        return terms
+    except Exception:
+        return []
 
 logger = logging.getLogger(__name__)
 
@@ -121,7 +153,7 @@ def _as_verdict(value) -> str:
         return "Y"
     if low in ("n", "no", "false", "0"):
         return "N"
-    if low == "unknown":
+    if low in ("unknown", "possible", "maybe"):
         return "Unknown"
     return ""
 
@@ -244,33 +276,8 @@ def _remote_type(row: dict) -> str:
 
 
 def _job_country(row: dict) -> str:
-    """The job's country, derived ONLY from the posting's own location text.
-
-    BUGFIX: this used to fall back to the seed's ``Target Country``, which is a
-    SCOPING input (the country the user asked us to look for), not evidence
-    about this posting. Leaking it in meant every job whose location text could
-    not be parsed silently inherited the seed's country and was displayed, and
-    filtered on, as if it had been observed -- which is precisely how an
-    Eindhoven posting ends up labelled "India" in the Search tab's Country
-    column. A country we could not read is Unknown, and Unknown is honest;
-    the UI renders it as such.
-
-    Returns "" when the location text names no country.
-    """
-    loc = _norm_location(row.get("Job Location"))
-    if loc:
-        country = country_from_location(loc)
-        if country:
-            return country
-    # F6 fix: Raw Location is the better evidence when Job Location is Unknown
-    # -- the raw string often holds "Kuala Lumpur, MY" where the cleaned one
-    # was dropped.
-    raw_loc = _norm_location(row.get("Raw Location"))
-    if raw_loc and raw_loc != loc:
-        country = country_from_location(raw_loc)
-        if country:
-            return country
-    return ""
+    """Observed posting country, with normalization provenance preserved."""
+    return row_geography(row)[1]
 
 
 def _exp_min_years(value) -> float | None:
@@ -326,7 +333,8 @@ def _exp_required(value) -> str:
     return raw
 
 
-def _row_to_job(row: dict, *, source_subtype: str = "direct", run_id: str) -> dict | None:
+def _row_to_job(row: dict, *, source_subtype: str = "direct", run_id: str,
+                jd_lookup=None) -> dict | None:
     """Map one 39-column scanner output row to an ``upsert_job`` dict.
 
     Wrapper around ``_row_to_job_unverified`` that then applies the
@@ -335,8 +343,11 @@ def _row_to_job(row: dict, *, source_subtype: str = "direct", run_id: str) -> di
     can DEMOTE a verdict is obvious and separately testable.
     """
     job = _row_to_job_unverified(row, source_subtype=source_subtype,
-                                 run_id=run_id)
+                                 run_id=run_id, jd_lookup=jd_lookup)
     if job is None:
+        return None
+    from sponsorscout.core.job_identity import administrative_action
+    if administrative_action(job.get('url',''),job.get('title','')):
         return None
     job, violations = check_integrity(job)
     if violations:
@@ -351,7 +362,7 @@ def _row_to_job(row: dict, *, source_subtype: str = "direct", run_id: str) -> di
 
 
 def _row_to_job_unverified(row: dict, *, source_subtype: str = "direct",
-                           run_id: str) -> dict | None:
+                           run_id: str, jd_lookup=None) -> dict | None:
     """Raw 39-column scanner output row -> ``upsert_job`` dict (no guards)."""
     url = str(row.get("Job URL") or "").strip()
     title = str(row.get("Job Title") or "").strip()
@@ -376,21 +387,31 @@ def _row_to_job_unverified(row: dict, *, source_subtype: str = "direct",
         history = int(row.get("Sponsorship History Score") or 0)
     except (TypeError, ValueError):
         history = 0
+    # A merged main CSV carries direct and recruiter rows. The row is the
+    # authority, not the name of the file being ingested.
+    if str(row.get('Source Type') or '').strip().casefold() == 'recruiter':
+        source_subtype = 'recruiter'
     industry = str(row.get("Industry Type") or "").strip()
     if industry.lower() == "unknown":
         industry = ""
+    desc = str(row.get("Raw Description") or "").strip()
+    if not desc and callable(jd_lookup):
+        try:
+            desc = str(jd_lookup(url) or "").strip()
+        except Exception:
+            desc = ""
     return {
         "external_id": str(row.get("Canonical Job ID") or "").strip(),
         "title": title,
         "company": company,
         "country": _job_country(row),
-        "location": _norm_location(row.get("Job Location")),
+        "location": row_geography(row)[0],
         "url": url,
         "ats_source": str(row.get("Provider") or "").strip(),
         "source_type": "verified",
         "source_subtype": source_subtype,
         "source_name": str(row.get("Seed Name") or "").strip(),
-        "description": "",
+        "description": desc,
         "trust_score": 80,
         "freshness_score": 0,
         "sponsorship_score": derive_sponsorship_score(visa, confidence, history),
@@ -415,13 +436,17 @@ def _row_to_job_unverified(row: dict, *, source_subtype: str = "direct",
         "run_id": run_id,
         "industry": industry,
         "raw_location": str(row.get("Raw Location") or "").strip(),
-        "country_source": "auto",
+        "country_source": "job_location" if _job_country(row) else "none",
         # FIX P0-30: scanner-extracted experience columns (additive),
         # canonicalised to the app vocabulary here (see _EXP_LEVEL_CANON).
         "experience_level": _exp_level(row.get("Experience Level")),
         "experience_required": _exp_required(row.get("Experience Required")),
         "experience_min_years": _exp_min_years(row.get("Experience Min Years")),
         "experience_source": str(row.get("Experience Source") or "").strip(),
+        # Keep scan lightweight: Insights extracts category/domain/skills from
+        # SQLite JDs as a separate operation outside the scan loop.
+        "category": str(row.get("Category") or "").strip() or "Other",
+        "domain": str(row.get("Domain") or "").strip() or "Unknown",
     }
 
 
@@ -531,14 +556,14 @@ def _read_csv_window(path: Path, start_offset: int) -> tuple[list[str] | None, s
 def _ingest_output_csv(db_path, path: Path, run_id: str, source_subtype: str,
                        seen_canonical: set,
                        seen_fuzzy: set | None = None,
-                       skip_box: list | None = None) -> tuple[int, int]:
+                       skip_box: list | None = None,
+                       jd_lookup=None, failure_sink: list | None = None) -> tuple[int, int]:
     """Ingest accepted job rows from one scanner output CSV.
 
-    Returns (ingested, duplicates).  Duplicates are rows whose canonical job
-    ID was already ingested in this run (mirror URLs across scanners/files),
-    plus rows with an empty canonical ID whose (company, title, country)
-    fuzzy key was already seen (G3 fallback). Commits in batches of 500
-    rows instead of once per row (F11).
+    Returns (ingested, duplicates) for this run's trusted posting identities.
+    Repeated identities still upsert stronger evidence; same-title distinct
+    requisitions are never a merge criterion. Optional failure_sink exposes
+    each final-pass write/mapping failure to the run summary (not silent OK).
 
     ``skip_box`` enables incremental tailing: pass a one-element list and the
     reader resumes from the byte offset recorded by the previous pass, writing
@@ -593,9 +618,6 @@ def _ingest_output_csv(db_path, path: Path, run_id: str, source_subtype: str,
                 values = (values + [""] * len(fieldnames))[:len(fieldnames)]
             row = dict(zip(fieldnames, values))
             cid = str(row.get("Canonical Job ID") or "").strip()
-            if cid and cid in seen_canonical:
-                duplicates += 1
-                continue
             # BUGFIX (B11): a per-row mapping failure must cost exactly ONE
             # row, not the rest of the file.  This call was unguarded, so a
             # single bad row (a NameError/TypeError inside the mapper) escaped
@@ -608,8 +630,10 @@ def _ingest_output_csv(db_path, path: Path, run_id: str, source_subtype: str,
             # ("Download Scan Log") instead of invisible.
             try:
                 job = _row_to_job(row, source_subtype=source_subtype,
-                                  run_id=run_id)
-            except Exception:
+                                  run_id=run_id, jd_lookup=jd_lookup)
+            except Exception as exc:
+                if failure_sink is not None:
+                    failure_sink.append({'url':str(row.get('Job URL') or ''),'error':str(exc),'stage':'mapping'})
                 logger.exception("Row mapping failed for %s",
                                  row.get("Job URL"))
                 events.append((
@@ -618,25 +642,19 @@ def _ingest_output_csv(db_path, path: Path, run_id: str, source_subtype: str,
                     "Row mapping failed: " + str(row.get("Job URL") or "")[:200]))
                 continue
             if job is None:
+                if failure_sink is not None:
+                    failure_sink.append({'url':str(row.get('Job URL') or ''),'error':'Accepted CSV row could not be mapped','stage':'mapping'})
                 events.append((
                     "warning", "ingest",
                     str(row.get("Company Name") or row.get("Seed Name") or ""),
                     "Skipped row (no valid URL / unparsable): "
                     + str(row.get("Job Title") or "")[:120]))
                 continue
-            # G3 fuzzy fallback: only for rows WITHOUT a canonical ID.
-            # Rows with an ID keep trusting it — the same title+city can
-            # legitimately be distinct openings at one company.
-            if not cid:
-                fuzzy = (
-                    " ".join(str(job.get("company") or "").lower().split()),
-                    re.sub(r"\W+", "", str(job.get("title") or "").lower()),
-                    str(job.get("country") or ""),
-                )
-                if fuzzy in seen_fuzzy:
-                    duplicates += 1
-                    continue
-                seen_fuzzy.add(fuzzy)
+            # Same-title requisitions are distinct. An observed URL/posting
+            # identity can count as a merge, but still UPSERT it to preserve
+            # stronger JDs, evidence and source markers from later phases.
+            identity = posting_identity(job['url'])
+            already_seen = identity in seen_canonical
             # Collect the company registry record the first time this run sees
             # it.  The write itself happens AFTER the job loop commits (see
             # below): save_company() commits internally, and calling it here
@@ -647,15 +665,19 @@ def _ingest_output_csv(db_path, path: Path, run_id: str, source_subtype: str,
                 company_records[company_name] = _company_record(row, job)
             try:
                 persistence.upsert_job(conn, job, commit=False)
-            except Exception:
+            except Exception as exc:
+                if failure_sink is not None:
+                    failure_sink.append({'url':job.get('url',''),'error':str(exc),'stage':'persistence'})
                 logger.exception("Failed to upsert job %s", job.get("url"))
                 events.append((
                     "error", "ingest", job.get("company", ""),
                     f"Failed to ingest job {job.get('url')}"))
                 continue
-            if cid:
-                seen_canonical.add(cid)
-            ingested += 1
+            seen_canonical.add(identity)
+            if already_seen:
+                duplicates += 1
+            else:
+                ingested += 1
             pending += 1
             if pending >= 500:
                 conn.commit()
@@ -692,14 +714,14 @@ def _ingest_scan_log(db_path, path: Path, run_id: str, scanner: str) -> tuple[in
     """Copy one scanner's per-run scan-log CSV into the scan_log table.
 
     Returns ``(row_count, status_counts)`` where ``status_counts`` maps
-    ``ok``/``empty``/``error`` target counts (``partial`` counts as ``ok``
-    since it produced jobs) for the scan_runs summary columns.
+    Successful, empty, partial and error targets are separate. Retained and
+    merged rows preserve the final source-artifact reconciliation.
     """
     if not path or not path.exists():
-        return 0, {"ok": 0, "empty": 0, "error": 0}
+        return 0, {"ok":0,"empty":0,"error":0,"partial":0,"merged":0,"retained":0}
     with open(path, "r", encoding="utf-8-sig", newline="") as f:
         rows = list(csv.DictReader(f))
-    status_counts = {"ok": 0, "empty": 0, "error": 0}
+    status_counts = {"ok":0,"empty":0,"error":0,"partial":0,"merged":0,"retained":0}
     if rows:
         db.record_scan_log_rows(db_path, run_id, scanner, rows)
         # Elevate per-company failures into the event timeline so hidden errors
@@ -709,12 +731,16 @@ def _ingest_scan_log(db_path, path: Path, run_id: str, scanner: str) -> tuple[in
         for row in rows:
             status = str(row.get("Status") or row.get("status") or "").lower()
             err = (row.get("Error") or row.get("error") or "").strip()
-            if status == "empty":
+            status_counts['merged'] += int(row.get('Jobs Merged') or 0)
+            status_counts['retained'] += int(row.get('Jobs Retained',row.get('Jobs Found',0)) or 0)
+            if status == 'partial':
+                status_counts['partial'] += 1
+            elif status == "empty":
                 status_counts["empty"] += 1
             elif status == "error" or (err and status not in ("ok", "partial")):
                 status_counts["error"] += 1
             else:
-                # "ok" and "partial" both produced jobs for the target.
+                # Only a genuinely complete successful target counts as OK.
                 status_counts["ok"] += 1
             if status in ("error", "failed", "partial") or err:
                 events.append((
@@ -828,6 +854,17 @@ class _ScanProgress:
                     stripped = line.strip()
                     if stripped.startswith(tracker.PREFIX):
                         continue  # never count our own tick lines
+                    # A company-start line changes the activity label, not
+                    # the completed-company count. 0% on the first company is
+                    # honest progress, but must not read as "Starting scan...".
+                    activity = re.match(r"\[(\d+)/(\d+)\]\s+(.+)", stripped)
+                    if activity:
+                        detail = activity.group(3)
+                        phase = "career" if " -> " in detail else "ats"
+                        done = (tracker.base_ats + tracker._ats_done
+                                + tracker.base_career + tracker._career_done)
+                        ticks.append(f"{tracker.PREFIX} {done}/{tracker.total}:{phase}:Scanning {detail}")
+                        continue
                     upper = stripped.upper()
                     if ("WROTE=" not in upper):
                         continue
@@ -964,7 +1001,8 @@ class _LiveIngester(threading.Thread):
                  csv_specs: list[tuple[Path, str]],
                  seen_canonical: set,
                  interval: float = 5.0,
-                 progress: ProgressFn | None = None):
+                 progress: ProgressFn | None = None,
+                 jd_lookup=None):
         super().__init__(name="LiveIngester", daemon=True)
         self.db_path = db_path
         self.run_id = run_id
@@ -972,7 +1010,8 @@ class _LiveIngester(threading.Thread):
         self.seen_canonical = seen_canonical
         self.interval = interval
         self.progress = progress or _noop_progress
-        self._stop = threading.Event()
+        self.jd_lookup = jd_lookup
+        self._stop_event = threading.Event()
         # Per-CSV byte offsets so each cycle reads and parses ONLY the rows
         # appended since the previous poll.  Previously the poller re-read the
         # entire (constantly growing) CSV every interval and skipped already
@@ -983,19 +1022,19 @@ class _LiveIngester(threading.Thread):
         self._offsets: dict[str, list[int]] = {}
 
     def stop(self):
-        self._stop.set()
+        self._stop_event.set()
 
     def run(self):
         ingested_so_far = 0
         last_reported = 0
-        while not self._stop.wait(self.interval):
+        while not self._stop_event.wait(self.interval):
             try:
                 for path, subtype in self.csv_specs:
                     box = self._offsets.setdefault(str(path), [0])
                     ingested, _dups = _ingest_output_csv(
                         self.db_path, path, self.run_id,
                         source_subtype=subtype, seen_canonical=self.seen_canonical,
-                        skip_box=box)
+                        skip_box=box, jd_lookup=self.jd_lookup)
                     ingested_so_far += ingested
                 # Throttle: the 5s poller used to emit the same count dozens
                 # of times per company (e.g. ~200 identical Hays lines),
@@ -1017,6 +1056,7 @@ def _normalize_names(names) -> list[str]:
     return [c.strip() for c in (names or []) if c and c.strip()]
 
 
+@ingestion_task
 def run_scan(method: str = "full",
              db_path=None,
              cancel_event: threading.Event | None = None,
@@ -1070,10 +1110,11 @@ def run_scan(method: str = "full",
     # Keep the desktop responsive while a long scan competes for CPU.
     lower_process_priority()
 
-    # Reconcile bundled seeds with the user's mutable copies: append any
-    # companies added to the bundled defaults that the user copy is missing
-    # (existing / user-added rows are never modified or removed).
-    added = seed_manager.merge_bundled_seeds(log_fn=progress)
+    # Read the user's seed exactly as saved. Only a first-install missing-file
+    # copy is allowed here; seed reconciliation/upgrades belong to Data Management,
+    # never to the Scan button's critical path.
+    if not seed_manager.user_ats_path().exists() or not seed_manager.user_career_path().exists():
+        seed_manager.ensure_user_seeds()
 
     # Make sure the schema (incl. scan_runs/scan_log + evidence columns) exists.
     try:
@@ -1105,70 +1146,71 @@ def run_scan(method: str = "full",
         "errors": phase_errors,
     }
 
-    n_ats = _count_seed_rows(seed_manager.user_ats_path())
-    n_career = _count_seed_rows(seed_manager.user_career_path())
-    # Resume (Stop-as-checkpoint): companies finished in the stopped run
-    # are excluded before scanning starts — the scanners never revisit
-    # them, and their rows are already in jobs via live ingestion.
+    # Read only names/enabled flags for scope and progress, once per enabled
+    # phase. This is CSV loading, not a seed validity/upgrade/audit sweep.
+    def _scope_rows(path):
+        with open(path, encoding="utf-8-sig", newline="") as fh:
+            sample = fh.read(4096)
+            fh.seek(0)
+            delimiter = "\t" if sample.count("\t") > sample.count(",") else ","
+            rows = []
+            seen = set()
+            for r in csv.DictReader(fh, delimiter=delimiter):
+                seed = (r.get("seed_name") or r.get("name") or "").strip()
+                if not seed or seed.startswith("#"):
+                    continue
+                if (r.get("enabled") or "true").strip().lower() in {"0", "false", "no", "disabled"}:
+                    continue
+                name = (r.get("canonical_name") or seed).strip()
+                key = (seed.casefold(), (r.get("target_country") or "Global").strip().casefold(),
+                       (r.get("careers_url") or "").strip().casefold())
+                if key in seen:
+                    continue
+                seen.add(key)
+                rows.append((seed, name))
+            return rows
+
+    ats_sel = _normalize_names(only_ats if only_ats is not None else only_companies)
+    career_sel = _normalize_names(only_career if only_career is not None else only_companies)
+    wanted_ats = ({c.lower() for c in ats_sel}
+                  if only_ats is not None or only_companies is not None else None)
+    wanted_career = ({c.lower() for c in career_sel}
+                     if only_career is not None or only_companies is not None else None)
+    if not run_ats:
+        wanted_ats = set()
+    if not run_career:
+        wanted_career = set()
+    ats_names = _scope_rows(seed_manager.user_ats_path()) if run_ats and wanted_ats != set() else []
+    career_names = _scope_rows(seed_manager.user_career_path()) if run_career and wanted_career != set() else []
+    if wanted_ats is not None:
+        ats_names = [(seed, name) for seed, name in ats_names
+                     if {seed.lower(), name.lower()} & wanted_ats]
+    if wanted_career is not None:
+        career_names = [(seed, name) for seed, name in career_names
+                        if {seed.lower(), name.lower()} & wanted_career]
+    full_ats, full_career = len(ats_names), len(career_names)
     skip_ats: set[str] = set()
     skip_career: set[str] = set()
     if resume_from:
         try:
-            _done = db.get_completed_scan_companies(db_path, resume_from)
-            skip_ats = set(_done.get("ats", set()))
-            skip_career = set(_done.get("career", set()))
+            completed = db.get_completed_scan_companies(db_path, resume_from)
+            skip_ats = set(completed.get("ats", set()))
+            skip_career = set(completed.get("career", set()))
         except Exception:
             logger.exception("Could not load resume checkpoint %s", resume_from)
-            skip_ats = set()
-            skip_career = set()
     skip_names = skip_ats | skip_career
-    seed_note = ""
-    total_added = added.get("ats", 0) + added.get("career", 0)
-    if total_added:
-        seed_note = f" (seed update: +{total_added} new companies)"
-
-    # ── Custom scan scope ────────────────────────────────────────────────────
-    # Per-phase whitelists and phase toggles.  ``None`` = no filter (full
-    # phase); an empty set means "phase disabled / nothing selected" — the
-    # phase is skipped with a progress note, never an error.
-    ats_sel = _normalize_names(only_ats)
-    career_sel = _normalize_names(only_career)
-    shared_sel = _normalize_names(only_companies)
-    wanted_ats: set[str] | None = None
-    wanted_career: set[str] | None = None
-    if not run_ats:
-        wanted_ats = set()
-    elif ats_sel or shared_sel:
-        wanted_ats = {c.lower() for c in (ats_sel or shared_sel)}
-    if not run_career:
-        wanted_career = set()
-    elif career_sel or shared_sel:
-        wanted_career = {c.lower() for c in (career_sel or shared_sel)}
-    run_method = ("custom"
-                  if (only_ats is not None or only_career is not None
-                      or not run_ats or not run_career) else method)
+    ats_remaining = [seed for seed, name in ats_names
+                     if not {seed.lower(), name.lower()} & skip_ats]
+    career_remaining = [seed for seed, name in career_names
+                        if not {seed.lower(), name.lower()} & skip_career]
+    n_ats, n_career = len(ats_remaining), len(career_remaining)
+    scan_only_ats = ats_remaining if wanted_ats is not None or skip_ats else None
+    scan_only_career = career_remaining if wanted_career is not None or skip_career else None
+    run_method = ("custom" if (only_ats is not None or only_career is not None
+                              or not run_ats or not run_career) else method)
     summary["method"] = run_method
-
-    def _remaining(path, names: set[str] | None, skip: set[str]) -> int:
-        count = 0
-        for r in seed_manager.read_seed_rows(path)["rows"]:
-            name = (r.get("name") or "").strip()
-            if not name:
-                continue
-            low = name.lower()
-            if names is not None and low not in names:
-                continue
-            if low in skip:
-                continue
-            count += 1
-        return count
-
-    if skip_names or wanted_ats is not None or wanted_career is not None:
-        # Remaining-to-scan after resume-skip and/or per-phase subset filter.
-        n_ats = _remaining(seed_manager.user_ats_path(), wanted_ats,
-                           skip_ats)
-        n_career = _remaining(seed_manager.user_career_path(), wanted_career,
-                              skip_career)
+    seed_note = (f" (resuming {resume_from}: skipping {len(skip_names)} finished companies)"
+                 if resume_from and skip_names else "")
     # Structured PROGRESS: lines for the UI progress bar (one tick per
     # finished company).  Wrapped outside the event tee so ticks land in
     # the run timeline too.  base_* offsets resume runs so the bar
@@ -1176,8 +1218,6 @@ def run_scan(method: str = "full",
     # 0; _ScanProgress clamps each phase so a subset can never overflow.
     # NOTE: the offset applies only to resume skips — a pure subset scan
     # (no resume_from) keeps base 0 so its bar spans just the subset.
-    full_ats = _count_seed_rows(seed_manager.user_ats_path())
-    full_career = _count_seed_rows(seed_manager.user_career_path())
     progress = _ScanProgress(
         n_ats, n_career,
         base_ats=max(0, full_ats - n_ats) if skip_names else 0,
@@ -1189,6 +1229,21 @@ def run_scan(method: str = "full",
     # company, so tail them into the DB while the scan runs. This makes the
     # Dashboard's Refresh button show live numbers mid-scan. The final bulk
     # ingest below re-upserts everything (idempotent), so counts stay exact.
+    active_scanners: dict[str, object | None] = {"ats": None, "career": None}
+
+    def _lookup_captured_jd(job_url: str) -> str:
+        if not job_url:
+            return ""
+        best = ""
+        for key in ("ats", "career"):
+            inst = active_scanners.get(key)
+            getter = getattr(inst, "get_captured_jd", None)
+            if callable(getter):
+                txt = getter(job_url)
+                if txt and len(txt) > len(best):
+                    best = txt
+        return best
+
     seen_canonical: set = set()
     live = _LiveIngester(
         db_path, run_id,
@@ -1200,64 +1255,10 @@ def run_scan(method: str = "full",
         ],
         seen_canonical=seen_canonical,
         progress=progress,
+        jd_lookup=_lookup_captured_jd,
     )
     live.start()
 
-    # Resume: the scanners each accept an only_companies whitelist, so
-    # feed them exactly the remaining companies.  ``None`` means "scan
-    # everything" — pass the computed remaining lists only when resuming.
-    resume_only_ats: list[str] | None = None
-    resume_only_career: list[str] | None = None
-    if skip_names:
-        try:
-            ats_names = [
-                (r.get("name") or "").strip()
-                for r in seed_manager.read_seed_rows(
-                    seed_manager.user_ats_path())["rows"]]
-            career_names = [
-                (r.get("name") or "").strip()
-                for r in seed_manager.read_seed_rows(
-                    seed_manager.user_career_path())["rows"]]
-            if wanted_ats is not None:
-                ats_names = [n for n in ats_names if n.lower() in wanted_ats]
-            if wanted_career is not None:
-                career_names = [n for n in career_names
-                                if n.lower() in wanted_career]
-            resume_only_ats = [n for n in ats_names
-                               if n and n.lower() not in skip_ats]
-            resume_only_career = [n for n in career_names
-                                  if n and n.lower() not in skip_career]
-        except Exception:
-            logger.exception("Could not compute resume company list")
-            resume_only_ats = None
-            resume_only_career = None
-    # Effective whitelist per phase: explicit subset, resume remainder, or
-    # their intersection when both are given.
-    if resume_only_ats is not None or resume_only_career is not None:
-        if wanted_ats is not None:
-            _rset = {n.lower() for n in (resume_only_ats or [])}
-            scan_only_ats = [c for c in (ats_sel or shared_sel)
-                             if c and c.strip().lower() in _rset]
-        else:
-            scan_only_ats = list(resume_only_ats or [])
-        if wanted_career is not None:
-            _rset = {n.lower() for n in (resume_only_career or [])}
-            scan_only_career = [c for c in (career_sel or shared_sel)
-                                if c and c.strip().lower() in _rset]
-        else:
-            scan_only_career = list(resume_only_career or [])
-    else:
-        scan_only_ats = (list(ats_sel) if ats_sel
-                         else (list(shared_sel) if shared_sel else None))
-        scan_only_career = (list(career_sel) if career_sel
-                            else (list(shared_sel) if shared_sel else None))
-    if resume_from and skip_names and (scan_only_ats or scan_only_career
-                                       or (scan_only_ats is None
-                                           and scan_only_career is None)):
-        _skipped = len(skip_names)
-        _note = (f" (resuming {resume_from}: skipping "
-                 f"{_skipped} finished companies)")
-        seed_note = f"{seed_note}{_note}" if seed_note else _note
     progress(f"Scan {run_id} started: method={run_method}, "
              f"ATS companies={n_ats}, career companies={n_career}{seed_note}")
 
@@ -1271,10 +1272,12 @@ def run_scan(method: str = "full",
             scanner = ats_module.ATSScanner(
                 seed_file=str(seed_manager.user_ats_path()),
                 output_file=str(ats_out),
+                skip_preflight=True,
                 cancel_event=cancel_event,
                 pause_event=pause_event,
                 only_companies=scan_only_ats,
             )
+            active_scanners["ats"] = scanner
             scanner.run_id = run_id
             ats_module.progress_cb = progress
             scanner.run()
@@ -1288,7 +1291,7 @@ def run_scan(method: str = "full",
     else:
         progress("No ATS seed rows — skipping ATS phase")
 
-    # 2 ─ Career crawl (browser-heavy) ----------------------------------------
+    # 2 ─ Career crawl (browser-heavy, starts immediately with zero extra test launch) ─
     if wanted_career is not None and not run_career:
         progress("Career phase disabled — skipping career crawl")
     elif wanted_career is not None and not n_career:
@@ -1299,51 +1302,32 @@ def run_scan(method: str = "full",
         # Cancelled during ATS with nothing produced: honour the stop fully.
         cancelled = True
     else:
-        # Pre-flight: one browser-availability check for the whole career
-        # phase. Without it a packaged build missing the bundled `_playwright`
-        # browsers used to emit the raw Playwright "Executable doesn't exist"
-        # banner for every single company. Fail fast with one clear warning.
+        # Instant zero-process Python import check (<0.05 ms — never spawns a
+        # dummy Chromium test browser before scanning starts).
         try:
-            from sponsorscout.services.browser_fetcher import (
-                _ensure_playwright_browsers,
-                _playwright_import_error,
-            )
-            if not _ensure_playwright_browsers():
-                _pw_err = _playwright_import_error()
-                if _pw_err:
-                    _hint = (
-                        "the Playwright package is NOT importable in this build "
-                        f"({_pw_err}); reinstall the full installer package."
-                    )
-                else:
-                    _hint = (
-                        "the Chromium binary is missing from this installation; "
-                        "reinstall the full installer package or run "
-                        "'playwright install chromium'."
-                    )
+            from sponsorscout.services.browser_fetcher import _playwright_import_error
+            _pw_err = _playwright_import_error()
+            if _pw_err:
                 progress(
                     "WARNING: Chromium browser is not available — JS-rendered "
                     "career portals (provider=auto / custom career pages) will "
-                    f"return 0 jobs because {_hint}"
+                    "return 0 jobs because the Playwright package is NOT importable "
+                    f"in this build ({_pw_err}); reinstall the full installer package."
                 )
-        except Exception:  # pragma: no cover - pre-flight must not kill scans
-            logger.exception("Browser pre-flight check failed")
+        except Exception:  # pragma: no cover - import check must never kill scans
+            logger.exception("Playwright import check failed")
         try:
             scanner = career_module.CareerPortalScanner(
                 input_csv=str(seed_manager.user_career_path()),
                 output_csv=str(career_out),
                 detail_scan=detail,
+                skip_preflight=True,
                 cancel_event=cancel_event,
                 pause_event=pause_event,
                 only_companies=scan_only_career,
-                # FIX RUNTIME-2 (run 20261016T140013): None lets the scanner
-                # size COMPANY concurrency from the I/O profile while a
-                # semaphore caps resident Chromium SESSIONS from the browser
-                # profile. Passing recommended_workers("browser") here made a
-                # 2-core box run companies one at a time (108 seeds at ~1.3x
-                # serial speed) although most seeds never open a browser.
                 max_workers=None,
             )
+            active_scanners["career"] = scanner
             scanner.run_id = run_id
             career_module.progress_cb = progress
             scanner.execute_crawler()
@@ -1372,18 +1356,21 @@ def run_scan(method: str = "full",
     # (rows already ingested live are simply upserted again, idempotently).
     seen_canonical: set = set()
     ingested_total = dup_total = log_rows_total = 0
-    targets_ok = targets_empty = targets_error = 0
+    targets_ok = targets_empty = targets_error = targets_partial = merged_total = 0
+    final_ingest_failures = []
     for csv_base, scanner_label in ((ats_csv, "ats"), (career_csv, "career")):
         if csv_base is None:
             continue
         try:
             ingested, dups = _ingest_output_csv(
                 db_path, csv_base, run_id,
-                source_subtype="direct", seen_canonical=seen_canonical)
+                source_subtype="direct", seen_canonical=seen_canonical,
+                jd_lookup=_lookup_captured_jd,failure_sink=final_ingest_failures)
             rec_ing, rec_dups = _ingest_output_csv(
                 db_path, csv_base.with_name(csv_base.stem + "_recruiter.csv"),
                 run_id, source_subtype="recruiter",
-                seen_canonical=seen_canonical)
+                seen_canonical=seen_canonical,
+                jd_lookup=_lookup_captured_jd,failure_sink=final_ingest_failures)
             log_rows, status_counts = _ingest_scan_log(
                 db_path, csv_base.with_name(csv_base.stem + "_scan_log.csv"),
                 run_id, scanner_label)
@@ -1403,9 +1390,12 @@ def run_scan(method: str = "full",
         targets_ok += status_counts["ok"]
         targets_empty += status_counts["empty"]
         targets_error += status_counts["error"]
+        targets_partial += status_counts['partial']
+        merged_total += status_counts['merged']
         summary["artifacts"][scanner_label] = {
             "jobs": str(csv_base),
-            "recruiter": str(csv_base.with_name(csv_base.stem + "_recruiter.csv")),
+            "recruiter": (str(csv_base.with_name(csv_base.stem + '_recruiter.csv'))
+                          if csv_base.with_name(csv_base.stem + '_recruiter.csv').exists() else ''),
             "quarantine": str(csv_base.with_name(csv_base.stem + "_quarantine.csv")),
             "scan_log": str(csv_base.with_name(csv_base.stem + "_scan_log.csv")),
             "errors": str(csv_base.with_name(csv_base.stem + "_errors.csv")),
@@ -1419,8 +1409,27 @@ def run_scan(method: str = "full",
         logger.exception("Failed to sum quarantined rows")
         quarantined_total = 0
 
+    # Persist real blocked targets for the dedicated tab. This contains no
+    # visible-browser action and does not hold up other targets during a scan.
+    from sponsorscout.core.blocked_portals import blocked_portals_from_summary
+    summary['blocked_portals'] = blocked_portals_from_summary(summary)
+    summary['queue_persisted'] = not bool(summary['blocked_portals'])
+    if summary['blocked_portals']:
+        try:
+            db.enqueue_blocked_portals(db_path,summary['blocked_portals'],run_id=run_id)
+            summary['queue_persisted'] = True
+        except Exception as exc:
+            logger.warning('Could not save blocked portal queue: %s',exc)
+            summary['queue_error'] = str(exc)
+
+    summary['ingestion_failures'] = final_ingest_failures
+    if final_ingest_failures:
+        phase_errors.append(f"Final ingestion: {len(final_ingest_failures)} accepted row(s) could not be saved; see scan events and ingestion_failures")
+
     summary["ingested"] = ingested_total
     summary["duplicates"] = dup_total
+    summary['merged'] = merged_total+dup_total
+    summary['targets_partial'] = targets_partial
     summary["quarantined"] = quarantined_total
     summary["log_rows"] = log_rows_total
     summary["cancelled"] = cancelled
@@ -1430,7 +1439,7 @@ def run_scan(method: str = "full",
         summary["status"] = "error"
     elif cancelled:
         summary["status"] = "cancelled"
-    elif phase_errors or targets_error > 0:
+    elif phase_errors or targets_error>0 or targets_partial>0:
         # F9 fix: dead/error targets make the run partial, not completed.
         summary["status"] = "partial"
     else:
@@ -1448,7 +1457,8 @@ def run_scan(method: str = "full",
         db.finish_scan_run(
             db_path, run_id,
             targets_ok=targets_ok, targets_empty=targets_empty,
-            targets_error=targets_error,
+            targets_error=targets_error,targets_partial=targets_partial,
+            jobs_merged=merged_total+dup_total,
             jobs_found=ingested_total, jobs_quarantined=quarantined_total,
             jobs_duplicates=dup_total, status=summary["status"],
             error=_err_text[:2000],
@@ -1470,7 +1480,7 @@ def run_scan(method: str = "full",
     progress(f"Scan {run_id} finished: status={summary['status']}, "
              f"ingested={ingested_total}, duplicates={dup_total}, "
              f"quarantined={quarantined_total}, "
-             f"targets ok/empty/error={targets_ok}/{targets_empty}/{targets_error}")
+             f"targets ok/empty/partial/error={targets_ok}/{targets_empty}/{targets_partial}/{targets_error}")
     # Flush the final lines into the run timeline.
     try:
         progress.flush()

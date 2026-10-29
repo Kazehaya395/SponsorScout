@@ -62,7 +62,6 @@ GreenFlux,https://greenflux.recruitee.com/,recruitee,greenflux,direct_employer,N
 HousingAnywhere,https://job-boards.greenhouse.io/housinganywhere,greenhouse,housinganywhere,direct_employer,Netherlands,job_location,Unknown,,,,added 2026-09 batch; scores unset
 Virtuagym,https://jobs.virtuagym.com/jobs,recruitee,virtuagym,direct_employer,Netherlands,job_location,Unknown,,,,added 2026-09 batch; scores unset
 Wolters Kluwer,https://wk.wd3.myworkdayjobs.com/External,workday,wk/External,direct_employer,Netherlands,job_location,Unknown,,,,added 2026-09 batch; scores unset; fixed 2026-10-03: board_slug must be <tenant>/<site>
-Catawiki,https://job-boards.greenhouse.io/catawiki,greenhouse,catawiki,direct_employer,Global,global,E-Commerce,75,85,60,moved 2026-10-03 from career seed to ATS seed: this is a real greenhouse API board
 Smartly.io,https://job-boards.greenhouse.io/smartlyio,greenhouse,smartlyio,direct_employer,Finland,seed_url,Unknown,,,,added 2026-09 batch; scores unset; moved 2026-10-03 from career seed to ATS seed: this is a real greenhouse API board
 Broadcom,https://broadcom.wd1.myworkdayjobs.com/External_Career,workday,broadcom/External_Career,direct_employer,Global,job_location,Unknown,,,,VMware portfolio posts here post-acquisition (B7)
 Zauber,https://jobs.ashbyhq.com/zauber,ashby,zauber,direct_employer,Germany,job_location,AI / Logistics,,,,"Zauber Technology GmbH, Berlin (Ashby board); scores unset (2026-10-17 fill from job listings)"

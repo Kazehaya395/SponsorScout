@@ -1,87 +1,86 @@
-"""Qt-side scan orchestration.
+"""Cooperative background-thread manager for scanner runs.
 
-Thin wrapper around ``scanning.pipeline.run_scan``: runs the campaign in a
-worker thread and streams progress to the UI through Qt signals (safe to
-emit from a non-Qt thread — Qt queues cross-thread signal deliveries).
+Decouples the desktop UI event loop from the blocking scanner loops
+(Greenhouse/Lever HTTP requests and Playwright browser automations).  Emits
+Qt signals for real-time progress and final ingestion summaries.
 """
 
 from __future__ import annotations
 
+import logging
+import os
 import threading
 import time
 from typing import Optional
 
-from PySide6.QtCore import QObject, Signal
+try:
+    from PySide6.QtCore import QObject, Signal
+except ImportError:
+    class QObject:
+        pass
+    class Signal:
+        def __init__(self, *args, **kwargs):
+            pass
+        def emit(self, *args, **kwargs):
+            pass
+        def connect(self, *args, **kwargs):
+            pass
+
+
+logger = logging.getLogger(__name__)
 
 
 class ScanCoordinator(QObject):
-    """Owns the background scan thread; the UI talks only to this object."""
+    """Run `pipeline.run_scan` inside a managed daemon thread.
 
-    #: One chunk of scan log output (what the CLI scripts print).  Chunks are
-    #: newline-joined batches, not single lines — see ``_PROGRESS_*`` below.
+    Signals:
+      * `progress(str)`: streamed scanner log lines (ready for QPlainTextEdit)
+      * `progress_tick(int, int, str, str)`: `(done, total, phase, current_company)`
+      * `finished(dict)`: summary dictionary returned by `run_scan`
+      * `state_changed(str)`: `"idle" | "running" | "paused" | "stopping"`
+    """
+
     progress = Signal(str)
-    #: Structured scan progress for the visual progress bar: ``(done, total,
-    #: phase, label)`` where phase is ``""``/``"ats"``/``"career"``.  Emitted
-    #: from the worker thread alongside ``progress`` (same flush, no new
-    #: threads/timers); the UI slot only touches a QProgressBar + one label.
     progress_tick = Signal(int, int, str, str)
-    #: Emitted once when the scan thread ends; carries the pipeline summary.
     finished = Signal(dict)
-    #: Control state: ``"idle" | "running" | "paused" | "stopping"``.
-    #: pause()/resume()/stop() emit it immediately (UI thread), start() emits
-    #: "running" and the worker emits "idle" when the campaign ends, so the
-    #: Tools tab never has to poll the thread to know what the buttons do.
     state_changed = Signal(str)
 
-    # Progress batching.  The scanners emit a line per company, per page and
-    # per 100 detail checks; forwarding every line as its own queued Qt signal
-    # floods the GUI thread (and the log widget) on long scans, which is what
-    # made the window feel frozen.  Instead the worker joins lines into a
-    # single chunk, rate-limited to PROGRESS_FLUSH_SEC / PROGRESS_FLUSH_LINES.
-    PROGRESS_FLUSH_SEC = 0.15
-    PROGRESS_FLUSH_LINES = 40
+    # UI updates are batched to prevent flooding Qt, but flush frequently so
+    # the user sees output immediately when a scan begins.
+    PROGRESS_FLUSH_SEC = 0.05
+    PROGRESS_FLUSH_LINES = 10
 
     def __init__(self, db_path: str | None = None):
         super().__init__()
         self.db_path = db_path
         self._cancel = threading.Event()
-        # In-memory pause: set = suspend at the next control gate, clear =
-        # continue.  Distinct from _cancel so Pause never ends the run, which
-        # is what made the old single "Pause" button (a stop) so expensive to
-        # undo — it forced a DB checkpoint lookup plus a brand-new thread.
         self._pause = threading.Event()
         self._thread: Optional[threading.Thread] = None
-        self._state = "idle"
-
-    # ── Public API (main thread) ─────────────────────────────────────────────
-    def is_running(self) -> bool:
-        return self._thread is not None and self._thread.is_alive()
+        self._state: str = "idle"
 
     def state(self) -> str:
+        """Current scan-control state without touching the worker or database."""
         return self._state
+
+    def is_running(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
 
     def is_paused(self) -> bool:
         return self._pause.is_set()
 
-    def _emit_state(self, state: str) -> None:
-        self._state = state
-        self.state_changed.emit(state)
+    def _emit_state(self, new_state: str):
+        self._state = new_state
+        self.state_changed.emit(new_state)
 
-    def pause(self) -> None:
-        """Suspend the scan in place.
-
-        Workers block at the next ``check_control`` gate; browsers stay open
-        and the run keeps its identity, so :meth:`resume` continues instantly
-        with no database round-trip.  No-op if no scan is running or it is
-        already paused.
-        """
+    def pause(self):
+        """Cooperative in-memory pause."""
         if not self.is_running() or self._pause.is_set():
             return
         self._pause.set()
         self._emit_state("paused")
 
-    def resume(self) -> None:
-        """Undo :meth:`pause`.  No-op when nothing is paused."""
+    def resume(self):
+        """Continue an in-memory paused run."""
         if not self._pause.is_set():
             return
         self._pause.clear()
@@ -89,28 +88,10 @@ class ScanCoordinator(QObject):
 
     def start(self, method: str = "full", resume_from: str | None = None,
               scan_scope: dict | None = None) -> bool:
-        """Start a scan campaign. False if a scan is already running.
-
-        The app uses a single scan mode (``"full"``): ATS boards + career
-        pages + per-job detail-page enrichment, so every job is extracted
-        with full detail.  ``"quick"`` remains available to the dev CLI
-        (ATS/career crawl without the detail-page enrichment pass).
-
-        ``resume_from``: run_id of a stopped run — only its unfinished
-        companies are scanned (Stop-as-checkpoint); the progress bar is
-        offset so it continues from the checkpoint.
-
-        ``scan_scope``: optional custom-scan scope dict with optional keys
-        ``run_ats`` (bool), ``run_career`` (bool), ``ats`` (list of ATS
-        company names), ``career`` (list of career company names).
-        ``None`` means a full scan of every seeded company.
-        """
+        """Start a scan campaign. False if a scan is already running."""
         if self.is_running():
             return False
-        # A previous run may have left STOP set, or PAUSE stuck because the
-        # user paused and then closed/stopped the campaign; a new campaign
-        # must always begin with both control flags clear, or the very first
-        # gate would abort/suspend the fresh scan.
+
         self._cancel.clear()
         self._pause.clear()
         self._emit_state("running")
@@ -118,28 +99,53 @@ class ScanCoordinator(QObject):
         def worker():
             from sponsorscout.scanning import pipeline
 
-            # Rate-limited progress pump (see constants above).
             pending: list[str] = []
             lock = threading.Lock()
-            last = [0.0]
+            dispatch_lock = threading.Lock()
+            last = [time.monotonic()]
+            stop_flusher = threading.Event()
 
             def flush_progress():
-                with lock:
-                    chunk = "\n".join(pending)
-                    pending.clear()
-                    last[0] = time.monotonic()
-                if chunk:
-                    for _line in chunk.splitlines():
-                        _tick = _parse_progress_tick(_line)
-                        if _tick is not None:
-                            _done, _total, _phase, _label = _tick
-                            self.progress_tick.emit(_done, _total, _phase, _label)
+                # Serialize drain+emit across worker and timer, preserving log
+                # order and monotonic progress even during concurrent flushes.
+                with dispatch_lock:
+                    with lock:
+                        if not pending:
+                            return
+                        chunk = "\n".join(pending)
+                        pending.clear()
+                        last[0] = time.monotonic()
+                    for line in chunk.splitlines():
+                        tick = _parse_progress_tick(line)
+                        if tick is not None:
+                            self.progress_tick.emit(*tick)
                     self.progress.emit(chunk)
 
+            def _periodic_flush():
+                while not stop_flusher.wait(0.08):
+                    with lock:
+                        has_pending = bool(pending) and (
+                            time.monotonic() - last[0]
+                        ) >= self.PROGRESS_FLUSH_SEC
+                    if has_pending:
+                        flush_progress()
+
+            flusher = threading.Thread(
+                target=_periodic_flush, name="ScanProgressFlusher", daemon=True
+            )
+            flusher.start()
+
             def on_progress(message):
+                msg_s = str(message)
+                stripped = msg_s.lstrip()
+                immediate = stripped.startswith((
+                    "PROGRESS:", "Scan ", "ATS ", "Career ", "No ATS", "No career",
+                    "v7 scan", "host (", "[", "OK", "EMPTY", "ERROR", "PARTIAL",
+                )) or "WROTE=" in stripped
                 with lock:
-                    pending.append(str(message))
-                    due = (len(pending) >= self.PROGRESS_FLUSH_LINES
+                    pending.append(msg_s)
+                    due = (immediate
+                           or len(pending) >= self.PROGRESS_FLUSH_LINES
                            or (time.monotonic() - last[0]) >= self.PROGRESS_FLUSH_SEC)
                 if due:
                     flush_progress()
@@ -159,17 +165,18 @@ class ScanCoordinator(QObject):
                     run_career=bool(scope.get("run_career", True))
                     if scope else True,
                 )
-            except Exception as exc:  # defensive: never kill the thread silently
+            except Exception as exc:
+                logger.exception("Scan worker thread crashed")
                 summary = {
                     "run_id": "", "method": method, "status": "error",
                     "cancelled": False, "ingested": 0, "duplicates": 0,
                     "log_rows": 0, "artifacts": {},
                     "errors": [f"{type(exc).__name__}: {exc}"],
                 }
-            flush_progress()
-            # A campaign that is over is never "paused": clearing the flag
-            # here stops a Pause pressed as the last company finished from
-            # leaking into the next run's Pause/Resume button state.
+            finally:
+                stop_flusher.set()
+                flusher.join(timeout=0.3)
+                flush_progress()
             self._pause.clear()
             self._emit_state("idle")
             self.finished.emit(summary)
@@ -179,46 +186,39 @@ class ScanCoordinator(QObject):
         return True
 
     def stop(self):
-        """Cooperative stop: scanners check this between control gates.
-
-        A pending pause is cleared first so Stop always wins — otherwise a
-        Stop pressed while paused would queue behind the pause and look
-        ignored.  The run keeps its DB checkpoint, so the separate Resume
-        button can still continue it later (even after an app restart).
-        """
+        """Cooperative stop: scanners check this between control gates."""
         self._pause.clear()
         self._cancel.set()
         if self.is_running():
             self._emit_state("stopping")
 
 
-#: Prefix for machine-readable progress lines.  The pipeline emits e.g.
-#: ``PROGRESS: 12/208:career:About You`` alongside the human-readable log;
-#: the UI strips these from the log widget and drives the QProgressBar.
 PROGRESS_PREFIX = "PROGRESS:"
 
 
 def _parse_progress_tick(line: str):
-    """Parse a ``PROGRESS: done/total:phase:label`` line.
-
-    Returns ``(done, total, phase, label)`` or ``None`` when the line is
-    ordinary log output.  Pure string ops (no regex) — called per log line
-    inside the already rate-limited progress flush, so cost is negligible.
-    """
+    """Parse a `PROGRESS: done/total:phase:label` line."""
     try:
         text = str(line).strip()
     except Exception:
         return None
     if not text.startswith(PROGRESS_PREFIX):
         return None
-    rest = text[len(PROGRESS_PREFIX):].strip()
-    try:
-        counts, _, tail = rest.partition(":")
-        done_s, _, total_s = counts.partition("/")
-        done, total = int(done_s.strip()), int(total_s.strip())
-        phase, _, label = tail.partition(":")
-        if total <= 0 or done < 0:
-            return None
-        return (min(done, total), total, phase.strip(), label.strip())
-    except (ValueError, AttributeError):
+    body = text[len(PROGRESS_PREFIX):].strip()
+    parts = body.split(":", 3)
+    if len(parts) < 3:
         return None
+    counts = parts[0].split("/", 1)
+    if len(counts) != 2:
+        return None
+    try:
+        done = int(counts[0])
+        total = int(counts[1])
+    except ValueError:
+        return None
+    if total <= 0:
+        return None
+    done = min(done, total)
+    phase = parts[1]
+    label = parts[2] if len(parts) >= 3 else ""
+    return done, total, phase, label

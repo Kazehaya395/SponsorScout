@@ -74,7 +74,11 @@ class _FakeCxs:
 
 
 def _bare():
-    return cs.CareerPortalScanner.__new__(cs.CareerPortalScanner)
+    from sponsorscout.scanning.detail_state import DetailRequestState
+    obj = cs.CareerPortalScanner.__new__(cs.CareerPortalScanner)
+    obj.config = cs.ProductionScannerConfig
+    obj._detail_state = DetailRequestState()
+    return obj
 
 
 def test_workday_jd_reads_cxs_and_keeps_line_breaks():

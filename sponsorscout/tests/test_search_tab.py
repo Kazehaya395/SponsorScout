@@ -65,7 +65,18 @@ def _make_tab(db_path):
     assert app is not None
 
     from sponsorscout.ui.tabs.search import SearchTab
-    return SearchTab(db_path)
+    from sponsorscout.tests._qt_support import application,wait_loaders
+    application()
+    class AwaitedSearchTab(SearchTab):
+        # Existing rendering/filter assertions now await the production async
+        # API; this wait adapter is test-only, never an application fallback.
+        def populate_static_filters(self, **kwargs):
+            super().populate_static_filters(**kwargs)
+            wait_loaders(self)
+        def run_search(self):
+            super().run_search()
+            wait_loaders(self)
+    return AwaitedSearchTab(db_path)
 
 
 def _combo_values(combo):

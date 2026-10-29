@@ -6,8 +6,9 @@ per-run scan history view backed by the scan_runs / scan_log tables.
 """
 
 import threading
+import logging
 
-from PySide6.QtCore import QStandardPaths, Qt, QUrl, Signal
+from PySide6.QtCore import QStandardPaths, Qt, QThread, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QFileDialog, QGroupBox,
@@ -20,9 +21,12 @@ from PySide6.QtWidgets import (
 from sponsorscout import paths
 from sponsorscout.application import seed_manager
 from sponsorscout.application.scan_coordinator import ScanCoordinator
-from sponsorscout.core.dedup import dedup_companies_in_db, dedup_jobs_in_db
+from sponsorscout.core.maintenance import preview_cleanup,cleanup_database
 from sponsorscout.db import database as db
+from sponsorscout.ui.async_load import AsyncLoader
 from sponsorscout.i18n import _
+
+logger = logging.getLogger(__name__)
 
 # Canonical column order (defines the indexes); only the visible labels are
 # translated — see _header_labels().
@@ -618,6 +622,8 @@ class ToolsTab(QWidget):
 
     scan_started = Signal()       # emitted at the beginning of start_scan
     scan_finished = Signal(dict)
+    blocked_portals_changed = Signal()
+    assisted_tab_requested = Signal()
     data_changed = Signal()        # jobs/companies data may have changed
     status_message = Signal(str)
     _freshness_done = Signal(str)  # marshals worker results to the UI thread
@@ -636,6 +642,10 @@ class ToolsTab(QWidget):
     def __init__(self, db_path: str, parent=None):
         super().__init__(parent)
         self.db_path = db_path
+        self._review_busy = False
+        self._queue_writer = AsyncLoader(self, read_only=False, name='blocked queue persistence')
+        self._blocked_notice_runs = set()
+        self._blocked_notice_pending = set()
         self.coordinator = ScanCoordinator(db_path=db_path)
         self.coordinator.progress.connect(self._on_scan_progress)
         self.coordinator.progress_tick.connect(self._on_scan_progress_tick)
@@ -724,6 +734,29 @@ class ToolsTab(QWidget):
                   self.pause_btn, self.stop_btn, self.scan_status):
             row.addWidget(w)
         row.addStretch(1)
+        self.turbo_cb = QCheckBox(_("High-Performance Mode (Multi-Threaded Parallel Browsers)"))
+        self.turbo_cb.setToolTip(_(
+            "Leverage additional CPU cores and RAM on capable PCs (>4 cores, >8 GB RAM) to run more parallel "
+            "background browsers and scan threads while keeping desktop headroom lag-free."
+        ))
+        self.turbo_cb.setStyleSheet("""
+            QCheckBox {
+                color: #1F2937;
+                font-weight: 600;
+                font-size: 12px;
+                spacing: 6px;
+            }
+        """)
+        try:
+            from sponsorscout.scanning import common as _scan_common
+            if _scan_common.is_strict_low_spec():
+                self.turbo_cb.setToolTip(_(
+                    "Conservative CPU/RAM protection is active on <=4-core / <=8 GB hardware so your PC stays responsive."
+                ))
+            self.turbo_cb.toggled.connect(_scan_common.set_high_performance)
+        except Exception:
+            pass
+        row.addWidget(self.turbo_cb)
         lay.addLayout(row)
         # ── Visual scan progress (cheap: one setValue per company tick) ──
         prow = QHBoxLayout()
@@ -783,7 +816,7 @@ class ToolsTab(QWidget):
         self._quality_box = box
         lay = QHBoxLayout(box)
         self._add_section_help(box, _("Data Quality description"))
-        self.dedup_btn = QPushButton(_("Run Dedup"))
+        self.dedup_btn = QPushButton(_("Review alias merges"))
         self.dedup_btn.clicked.connect(self._run_dedup)
         self.stale_btn = QPushButton(_("Clear Stale Data"))
         self.stale_btn.clicked.connect(self._clear_stale_data)
@@ -791,10 +824,13 @@ class ToolsTab(QWidget):
         self.clear_scan_btn.clicked.connect(self._clear_scan_data)
         self.quarantine_btn = QPushButton(_("Review Quarantine"))
         self.quarantine_btn.clicked.connect(self._review_quarantine)
+        self.data_review_btn = QPushButton(_("Review data quality"))
+        self.data_review_btn.clicked.connect(self._review_data_quality)
         lay.addWidget(self.dedup_btn)
         lay.addWidget(self.stale_btn)
         lay.addWidget(self.clear_scan_btn)
         lay.addWidget(self.quarantine_btn)
+        lay.addWidget(self.data_review_btn)
         lay.addStretch(1)
         return box
 
@@ -822,9 +858,12 @@ class ToolsTab(QWidget):
 
     def _set_scan_running_ui(self, phase_text: str):
         """Shared button/label setup when a scan campaign starts or resumes."""
+        self.scan_started.emit()
         self.scan_btn.setEnabled(False)
         self.custom_btn.setEnabled(False)
         self.resume_btn.setEnabled(False)
+        if hasattr(self, "turbo_cb"):
+            self.turbo_cb.setEnabled(False)
         self.pause_btn.setEnabled(True)
         self.pause_btn.setText(_("Pause"))
         self.pause_btn.setToolTip(_(PAUSE_BTN_TOOLTIP))
@@ -894,6 +933,8 @@ class ToolsTab(QWidget):
 
 # ── Scanner control ──────────────────────────────────────────────────────
     def start_scan(self):
+        if getattr(self,'_assisted_busy',False) or getattr(self,'_review_busy',False):
+            return
         if self.coordinator.is_running():
             QMessageBox.information(self, _("SponsorScout"),
                                     _("A scan is already running."))
@@ -904,9 +945,13 @@ class ToolsTab(QWidget):
         self.scan_log.clear()
         self._set_scan_running_ui(_("Starting scan…"))
         self.status_message.emit(_("Scan started"))
+        import os
+        os.environ["SPONSORSCOUT_HIGH_PERFORMANCE"] = "1" if getattr(self, "turbo_cb", None) and self.turbo_cb.isChecked() else "0"
         self.coordinator.start(SCAN_METHOD)
 
     def start_custom_scan(self):
+        if getattr(self,'_assisted_busy',False) or getattr(self,'_review_busy',False):
+            return
         """Open the picker dialog and start a scoped scan with it."""
         if self.coordinator.is_running():
             QMessageBox.information(self, _("SponsorScout"),
@@ -932,6 +977,8 @@ class ToolsTab(QWidget):
         self.scan_log.clear()
         self._set_scan_running_ui(_("Starting custom scan…"))
         self.status_message.emit(_("Custom scan started"))
+        import os
+        os.environ["SPONSORSCOUT_HIGH_PERFORMANCE"] = "1" if getattr(self, "turbo_cb", None) and self.turbo_cb.isChecked() else "0"
         self.coordinator.start(SCAN_METHOD, scan_scope=scope)
 
     def resume_scan(self):
@@ -941,6 +988,8 @@ class ToolsTab(QWidget):
         scan starts when the result arrives — Resume never blocks the UI,
         even while a previous scan still holds the database.
         """
+        if getattr(self,'_assisted_busy',False) or getattr(self,'_review_busy',False):
+            return
         if self.coordinator.is_running():
             QMessageBox.information(self, _("SponsorScout"),
                                     _("A scan is already running."))
@@ -955,7 +1004,7 @@ class ToolsTab(QWidget):
         applies the result as a silent probe.  Safe to call from __init__,
         tab entry (showEvent) and the moment a scan finishes.
         """
-        if self.coordinator.is_running():
+        if self.coordinator.is_running() or getattr(self,'_assisted_busy',False):
             return
         self._start_resume_lookup(arm_dialog=False)
 
@@ -968,9 +1017,13 @@ class ToolsTab(QWidget):
         """
         self._resume_lookup_seq += 1
         seq = self._resume_lookup_seq
+        if getattr(self,'_assisted_busy',False) or getattr(self,'_review_busy',False):
+            return
         self._resume_dialog_armed = arm_dialog
         if arm_dialog:
             self.resume_btn.setEnabled(False)
+            if hasattr(self, "turbo_cb"):
+                self.turbo_cb.setEnabled(False)
             self.scan_phase.setText(_("Looking up the last stopped scan…"))
 
         def worker():
@@ -990,8 +1043,8 @@ class ToolsTab(QWidget):
             seq, kind, data = payload
         except (TypeError, ValueError):  # pragma: no cover - defensive
             return
-        if seq != self._resume_lookup_seq:
-            return  # a newer lookup already replaced this one
+        if seq != self._resume_lookup_seq or getattr(self,'_assisted_busy',False):
+            return  # superseded lookup or explicit assisted worker owns controls
         arm_dialog = self._resume_dialog_armed
         self._resume_dialog_armed = False
         if not arm_dialog:
@@ -1016,7 +1069,7 @@ class ToolsTab(QWidget):
 
     def _apply_resume_probe(self, checkpoint):
         """Silent probe result: only enable/disable Resume + its tooltip."""
-        if self.coordinator.is_running():
+        if self.coordinator.is_running() or getattr(self,'_assisted_busy',False):
             return
         self.resume_btn.setEnabled(bool(checkpoint))
         if checkpoint:
@@ -1032,6 +1085,8 @@ class ToolsTab(QWidget):
             self.resume_btn.setToolTip(_(RESUME_BTN_TOOLTIP))
 
     def _begin_checkpoint_resume(self, checkpoint: dict):
+        if getattr(self,'_assisted_busy',False) or getattr(self,'_review_busy',False):
+            return
         """Start a checkpoint continuation from an already-fetched lookup."""
         remaining = (len(checkpoint["remaining_ats"])
                      + len(checkpoint["remaining_career"]))
@@ -1056,6 +1111,8 @@ class ToolsTab(QWidget):
         except Exception:
             self.scan_bar.setValue(0)
         self.status_message.emit(_("Resuming scan"))
+        import os
+        os.environ["SPONSORSCOUT_HIGH_PERFORMANCE"] = "1" if getattr(self, "turbo_cb", None) and self.turbo_cb.isChecked() else "0"
         self.coordinator.start(SCAN_METHOD,
                                resume_from=checkpoint["run_id"])
 
@@ -1068,6 +1125,8 @@ class ToolsTab(QWidget):
         # FIX UI-7: name the DNS re-crawl phase and put the bar in busy mode
         # until the next tick or the run finishing restores it.
         low = str(chunk).lower()
+        if '[count snapshot]' in low or 'finalizing scan results' in low:
+            self.scan_phase.setText(_("Finalizing scan results..."))
         if "[dns retry]" in low and "re-crawl" in low:
             import re as _re
             _m = _re.search(r"(\d+)\s+host", str(chunk))
@@ -1107,6 +1166,8 @@ class ToolsTab(QWidget):
     def _on_scan_finished(self, summary: dict):
         self.scan_btn.setEnabled(True)
         self.custom_btn.setEnabled(True)
+        if hasattr(self, "turbo_cb"):
+            self.turbo_cb.setEnabled(True)
         self.pause_btn.setEnabled(False)
         self.pause_btn.setText(_("Pause"))
         self.stop_btn.setEnabled(False)
@@ -1124,6 +1185,8 @@ class ToolsTab(QWidget):
             f"--- {status}: ingested={summary.get('ingested', 0)}, "
             f"duplicates={summary.get('duplicates', 0)}, "
             f"quarantined={summary.get('quarantined', 0)} ---")
+        self.scan_log.appendPlainText(_("Partial targets: {partial}; source/alias rows merged: {merged}").format(
+            partial=summary.get('targets_partial',0),merged=summary.get('merged',0)))
         try:
             self._retry_busy = False
             self.scan_bar.setRange(0, 1000)
@@ -1132,38 +1195,65 @@ class ToolsTab(QWidget):
                     _("Cancelled — partial progress shown."))
             elif status in ("completed", "partial"):
                 self.scan_bar.setValue(self.scan_bar.maximum())
-                self.scan_phase.setText(_("Finished."))
+                self.scan_phase.setText(_("Finished — partial results retained.") if status=='partial' else _("Finished."))
         except Exception:
             pass
         self.refresh()
         self._refresh_resume_button()
-        self.data_changed.emit()
+        # One completion signal: data_changed would synchronously invoke the
+        # main-window refresh a second time before the notice.
         self.scan_finished.emit(summary)
-        self._offer_blocked_portals(summary)
         self.status_message.emit(_("Scan finished: ") + status)
+        self._offer_blocked_portals(summary)
 
     def _offer_blocked_portals(self, summary: dict):
-        """After a finished run, offer to open bot-blocked portals in the browser.
-
-        The scanner does not get past bot protection. The user decides whether
-        to search those portals by hand in their own default browser.
-        """
-        from sponsorscout.core.blocked_portals import (
-            blocked_portals_from_summary, open_in_default_browser)
+        """One truthful finish notice; all persistence belongs to workers."""
+        from sponsorscout.core.blocked_portals import blocked_portals_from_summary
         blocked = blocked_portals_from_summary(summary)
         if not blocked:
             return
-        names = "\n".join(f"- {b['seed_name'] or b['url']}" for b in blocked)
-        answer = QMessageBox.question(
-            self, _("Blocked portals"),
-            _("These portals block automated access, so the scan could not read them:")
-            + "\n\n" + names + "\n\n"
-            + _("Open them in your default browser to search manually?"),
-            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
-        if answer != QMessageBox.Yes:
+        key = str(summary.get('run_id') or tuple(sorted(row['url'] for row in blocked)))
+        if key in self._blocked_notice_runs or key in self._blocked_notice_pending:
             return
-        for b in blocked:
-            open_in_default_browser(b["url"])
+        if summary.get('queue_persisted') is True:
+            self._show_blocked_notice(key, blocked, '')
+            return
+        self._blocked_notice_pending.add(key)
+        path, run_id = self.db_path, str(summary.get('run_id') or '')
+        def save():
+            db.enqueue_blocked_portals(path, blocked, run_id=run_id)
+        self._queue_writer.request(save,
+            lambda _value: self._show_blocked_notice(key, blocked, ''),
+            lambda exc: self._show_blocked_notice(key, blocked, str(exc)))
+
+    def _show_blocked_notice(self, key, blocked, queue_error):
+        self._blocked_notice_pending.discard(key)
+        if key in self._blocked_notice_runs:
+            return
+        self._blocked_notice_runs.add(key)
+        self.blocked_portals_changed.emit()  # queue tab refresh is asynchronous
+        names = "\n".join('- ' + (row.get('seed_name') or row['url']) for row in blocked)
+        box = QMessageBox(self)
+        box.setWindowTitle(_("Blocked portals"))
+        notice = (_("These portals were blocked, but their queue could not be saved: {error}. Add the URLs from this run's artifacts manually in Assisted Ingestion.").format(error=queue_error)
+                  if queue_error else _("These portals were blocked. They have been added to Assisted Ingestion. Use that tab to scan them when you are ready."))
+        box.setText(notice+"\n\n"+names)
+        box.setStandardButtons(QMessageBox.Ok)
+        view = box.addButton(_("View Assisted Ingestion"),QMessageBox.ActionRole)
+        box.setDefaultButton(QMessageBox.Ok)
+        box.exec()  # nested Qt loop stays responsive; no SQL/full refresh before it
+        if box.clickedButton() == view:
+            self.assisted_tab_requested.emit()
+
+    def set_assisted_running(self, running: bool):
+        self._assisted_busy = bool(running)
+        scanning = self.coordinator.is_running()
+        for button in (self.scan_btn,self.custom_btn):
+            button.setEnabled(not running and not scanning)
+        if running:
+            self.resume_btn.setEnabled(False)
+        else:
+            self._refresh_resume_button()
 
     def _view_run_log(self):
         row = self.runs_table.currentRow()
@@ -1260,8 +1350,9 @@ class ToolsTab(QWidget):
         """Fill the run table (GUI thread only; rows come from the worker)."""
         self.runs_table.setRowCount(0)
         for r in rows:
-            (run_id, method, started, _fin, status, _err, _ok, _empty,
-             n_err, jobs, quarantined, dups, _ats, _career) = r[:14]
+            run_id,method,started,status,_err,n_err,jobs,quarantined,dups = (
+                r[key] for key in ('run_id','method','started_at','status','error',
+                                  'targets_error','jobs_found','jobs_quarantined','jobs_duplicates'))
             row_idx = self.runs_table.rowCount()
             self.runs_table.insertRow(row_idx)
             # Resume chain: child rows carry "resumed_from:<parent>" and
@@ -1288,25 +1379,52 @@ class ToolsTab(QWidget):
                     row_idx, col, QTableWidgetItem(str(val if val is not None else "")))
 
     # ── Data-quality actions (ported from the original Tools tab) ───────────
+    def _review_data_quality(self):
+        if self.coordinator.is_running() or getattr(self,'_assisted_busy',False) or self._review_busy:
+            QMessageBox.information(self,_("Review data quality"),_("Finish ingestion before reviewing existing data."))
+            return
+        from sponsorscout.ui.data_review import DataReviewDialog
+        dialog=DataReviewDialog(self.db_path,self)
+        def busy(value):
+            self._review_busy=value
+            self.scan_btn.setEnabled(not value)
+            self.custom_btn.setEnabled(not value)
+            self.resume_btn.setEnabled(not value)
+        dialog.busy_changed.connect(busy)
+        dialog.changed.connect(self.data_changed.emit)
+        dialog.exec()
+        dialog.deleteLater()
+        self._refresh_resume_button()
+
+
     def _review_quarantine(self):
         QuarantineDialog(self.db_path, self).exec()
         self.data_changed.emit()
 
     def _run_dedup(self):
+        if self.coordinator.is_running() or getattr(self,'_assisted_busy',False):
+            QMessageBox.information(self,_("Existing-data cleanup"),_("Finish ingestion before reviewing existing-data merges."))
+            return
         try:
-            conn = db.get_connection(self.db_path)
-            try:
-                jd = dedup_jobs_in_db(conn)
-                cd = dedup_companies_in_db(conn)
-            finally:
-                conn.close()
-            QMessageBox.information(
-                self, _("Dedup complete"),
-                _("Removed {jobs} duplicate job(s) and {companies} duplicate "
-                  "company entry(ies).").format(jobs=jd, companies=cd))
+            preview = preview_cleanup(self.db_path)
+            if not preview['merge_rows']:
+                QMessageBox.information(self,_("Existing-data cleanup"),
+                    _("No safe alias merges found. Conflicting manual-country groups: {count}.").format(count=len(preview['conflicts'])))
+                return
+            question = _("Merge {rows} duplicate alias rows in {groups} trusted posting groups? A full SQLite backup and audit are saved first. Manual-country conflicts are skipped; applications are unchanged.").format(
+                rows=preview['merge_rows'],groups=len(preview['groups']))
+            if QMessageBox.question(self,_("Existing-data cleanup"),question,
+                                    QMessageBox.Yes|QMessageBox.No,QMessageBox.No)!=QMessageBox.Yes:
+                return
+            result = cleanup_database(self.db_path,confirm=True)
+            message = _("Merged {count} alias rows.\nBackup: {backup}\nAudit: {audit}").format(
+                count=result['merged'],backup=result['backup'],audit=result['audit'])
+            if result.get('audit_warning'):
+                message += '\n'+str(result['audit_warning'])
+            QMessageBox.information(self,_("Existing-data cleanup"),message)
             self.data_changed.emit()
         except Exception as exc:
-            QMessageBox.critical(self, _("Error"), str(exc))
+            QMessageBox.critical(self,_("Error"),str(exc))
 
     def _clear_scan_data(self):
         """Wipe ALL scanned data (jobs, scan history, scan logs) from the DB.
@@ -1505,10 +1623,11 @@ class ToolsTab(QWidget):
         self.scan_log.setPlaceholderText(_("Scan output appears here…"))
         self.view_log_btn.setText(_("View Per-Company Log"))
         self.download_log_btn.setText(_("Download Scan Log"))
-        self.dedup_btn.setText(_("Run Dedup"))
+        self.dedup_btn.setText(_("Review alias merges"))
         self.stale_btn.setText(_("Clear Stale Data"))
         self.clear_scan_btn.setText(_("Clear Scan Data"))
         self.quarantine_btn.setText(_("Review Quarantine"))
+        self.data_review_btn.setText(_("Review data quality"))
         self.fresh_btn.setText(_("Run"))
         self.runs_table.setHorizontalHeaderLabels(_runs_header_labels())
 

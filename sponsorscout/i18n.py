@@ -64,6 +64,11 @@ def get_locale_name(locale: str) -> str:
 
 LANGUAGES: dict[str, dict[str, str]] = {
     "en": {
+        'Action needed: access denied on page %d; no CAPTCHA was confirmed. Retry in Chromium or stop.': 'Action needed: access denied on page %d; no CAPTCHA was confirmed. Retry in Chromium or stop.',
+        "Finalizing scan results...": "Finalizing scan results...",
+        'Action needed: bot verification appeared on page %d — please solve the check in the Chromium window to continue...': 'Action needed: bot verification appeared on page %d — please solve the check in the Chromium window to continue...',
+        'Action needed: please solve the human-verification check in the Chromium window...': 'Action needed: please solve the human-verification check in the Chromium window...',
+        'Harvesting page %d — %d jobs ingested (%d new, %d refreshed)...': 'Harvesting page %d — %d jobs ingested (%d new, %d refreshed)...',
         # ── Header ─────────────────────────────────────────────────────
         "Verified sponsorship-focused jobs from official career pages and ATS boards":
             "Verified sponsorship-focused jobs from official career pages and ATS boards",
@@ -442,7 +447,7 @@ LANGUAGES: dict[str, dict[str, str]] = {
         "Scan": "Scan",
         "Finished.": "Finished.",
         "Cancelled — partial progress shown.": "Cancelled — partial progress shown.",
-        "Data Quality description": "Remove duplicate jobs/companies, clear expired (stale) jobs, or wipe all scanned data.",
+        "Data Quality description": "Review trusted posting aliases with a backup and audit before merging; explicitly clear expired jobs or scanned data.",
         "Freshness Check description": "Re-verify saved jobs against their live pages and mark expired listings.",
         "{n} row(s) promoted into jobs.": "{n} row(s) promoted into jobs.",
         "{n} already in jobs (updated).": "{n} already in jobs (updated).",
@@ -461,6 +466,106 @@ LANGUAGES: dict[str, dict[str, str]] = {
     # ITALIAN TRANSLATIONS
     # ═══════════════════════════════════════════════════════════════════
     "it": {
+        'Action needed: access denied on page %d; no CAPTCHA was confirmed. Retry in Chromium or stop.': 'Azione richiesta: accesso negato alla pagina %d; nessun CAPTCHA confermato. Riprova in Chromium o interrompi.',
+        "Finalizing scan results...": "Finalizzazione dei risultati della scansione...",
+        'Action needed: bot verification appeared on page %d — please solve the check in the Chromium window to continue...': 'Azione richiesta: verifica anti-bot alla pagina %d — completa il controllo nella finestra Chromium per continuare...',
+        'Action needed: please solve the human-verification check in the Chromium window...': 'Azione richiesta: completa la verifica umana nella finestra Chromium...',
+        'Harvesting page %d — %d jobs ingested (%d new, %d refreshed)...': 'Raccolta pagina %d — %d offerte acquisite (%d nuove, %d aggiornate)...',
+        # ── F-26 (2026-10-22): entries recovered from the docstring splice ──
+        "Launch Assisted Browser and Ingest": "Avvia browser assistito e acquisisci",
+        "Load and Ingest": "Carica e acquisisci",
+        "Error: %s": "Errore: %s",
+        "Pages read: %d. Pagination stopped because: %s": "Pagine lette: %d. Paginazione interrotta perché: %s",
+        "Categorised: %d / %d (%s%%) | With Skills: %d (%s%%)": "Classificati: %d / %d (%s%%) | Con competenze: %d (%s%%)",
+        "Successfully re-analysed %d jobs with updated granular categories and skills!": "Rianalizzati con successo %d lavori con categorie e competenze dettagliate!",
+        "Re-Analyse Database Skills": "Rianalizza competenze nel database",
+        "Refresh Insights": "Aggiorna Approfondimenti",
+        "Refreshing Insights...": "Aggiornamento Approfondimenti...",
+        "Extract skills, domains, and categories from saved job descriptions in SQLite and refresh charts": "Estrai competenze, settori e categorie dalle descrizioni salvate in SQLite e aggiorna i grafici",
+        "Conservative CPU/RAM protection is active on <=4-core / <=8 GB hardware so your PC stays responsive.": "La protezione conservativa CPU/RAM è attiva su hardware <=4 core / <=8 GB per mantenere il PC reattivo.",
+        "Leverage additional CPU cores and RAM on capable PCs (>4 cores, >8 GB RAM) to run more parallel background browsers and scan threads while keeping desktop headroom lag-free.": "Sfrutta core CPU e RAM aggiuntivi sui PC più potenti (>4 core, >8 GB RAM) per eseguire più browser e thread paralleli senza rallentare il sistema.",
+        "%d of the harvested jobs were already in the database - they were refreshed, not duplicated.": "%d delle offerte raccolte erano già presenti nel database: sono state aggiornate, non duplicate.",
+        "AI Prompt Kit": "Kit Prompt IA",
+        "Action": "Azione",
+        "Categorised: %d / %d (%.1f%%) | With Skills: %d (%.1f%%)": "Categorizzate: %d / %d (%.1f%%) | Con competenze: %d (%.1f%%)",
+        "Category": "Categoria",
+        "Clear Filter (Show All)": "Rimuovi filtro (Mostra tutto)",
+        "Click any slice or legend item to filter the dashboard by this category": "Fai clic su uno spicchio o una voce della legenda per filtrare la bacheca per questa categoria",
+        "Click any slice or legend item to filter the dashboard by this industry sector": "Fai clic su uno spicchio o una voce della legenda per filtrare la bacheca per questo settore industriale",
+        "Click center to clear filter": "Fai clic al centro per rimuovere il filtro",
+        "Click to filter dashboard": "Fai clic per filtrare la bacheca",
+        "Click to unfilter": "Fai clic per rimuovere il filtro",
+        "Employer Domain": "Settore del datore di lavoro",
+        "Employer Industry Domain (Hiring Company Sector)": "Settore industriale del datore di lavoro (Settore azienda)",
+        "Failed: ": "Errore: ",
+        "Filtered": "Filtrate",
+        "Filtered by %s: %s": "Filtrato per %s: %s",
+        "Harvested 0 jobs. Verification may not have been completed.": "0 offerte raccolte. La verifica potrebbe non essere stata completata.",
+        "High-Performance Mode (Multi-Threaded Parallel Browsers)": "Modalità Alte Prestazioni (Browser paralleli multi-thread)",
+        "In-Demand Soft & Professional Skills": "Competenze trasversali e professionali più richieste",
+        "In-Demand Technical Skills & Tools": "Competenze tecniche e strumenti più richiesti",
+        "Ingestion Error": "Errore di acquisizione",
+        "Ingestion Incomplete": "Acquisizione incompleta",
+        "Ingestion completed, but 0 jobs were harvested. Please ensure the human verification was completed and job listings were visible before the browser window closed.": "Acquisizione completata, ma sono state raccolte 0 offerte. Assicurati che la verifica umana sia stata completata e che gli annunci fossero visibili prima della chiusura del browser.",
+        "Ingestion completed: %d jobs were harvested but every one of them was already in the database, so 0 new rows were added. The existing rows were refreshed.": "Acquisizione completata: sono state raccolte %d offerte ma erano tutte già presenti nel database, quindi sono state aggiunte 0 nuove righe. Le righe esistenti sono state aggiornate.",
+        "Interactive browser opened. Please complete the human-verification / captcha if prompted in the Chromium window...": "Browser interattivo aperto. Completa la verifica umana / captcha se richiesto nella finestra di Chromium...",
+        "Job Role / Category Distribution (Functional Profession)": "Distribuzione per ruolo / categoria professionale",
+        "Jobs by Granular Category (All Categories)": "Offerte per categoria dettagliata (Tutte le categorie)",
+        "Jobs by Granular Category": "Offerte per categoria dettagliata",
+        " (All Categories)": " (Tutte le categorie)",
+        " (Filtered: %s)": " (Filtrato: %s)",
+        "Skill": "Competenza",
+        "Other": "Altro",
+        "Reloc Yes": "Trasfer. Sì",
+        "Source:": "Fonte:",
+        "Target URL": "URL di destinazione",
+        "Total": "Totale",
+        "Total Jobs": "Offerte totali",
+        "Visa ?": "Visto ?",
+        "Visa Yes": "Visto Sì",
+        "e.g. Robert Walters IE": "es. Robert Walters IE",
+        "https://www.robertwalters.ie/jobs.html": "https://www.robertwalters.ie/jobs.html",
+        "Please provide the portal careers URL.": "Fornisci l'URL delle carriere del portale.",
+        "Please specify a portal URL.": "Specifica un URL del portale.",
+        "Missing URL": "URL mancante",
+        "Ingestion Complete": "Acquisizione completata",
+        "Successfully harvested and ingested %d jobs directly into the database!": "Acquisite e inserite con successo %d offerte direttamente nel database!",
+        "Launching interactive browser session... solve any captcha when prompted.": "Avvio sessione browser interattiva... risolvi il captcha se richiesto.",
+        "Load & Ingest": "Carica e acquisisci",
+        "Recently Blocked / Known Bot-Guarded Portals": "Portali recentemente bloccati / protetti da bot",
+        "Launch Assisted Browser & Ingest": "Avvia browser assistito e acquisisci",
+        "Portal Careers URL:": "URL carriera del portale:",
+        "Company / Seed Name:": "Nome azienda / seed:",
+        "Launch Assisted Ingestion for Portal": "Avvia acquisizione assistita per portale",
+        "Certain portals enforce Cloudflare, PerimeterX, or bot verification (e.g. 'Press & Hold'). Use this tab to open an interactive Chromium window, complete human verification, and automatically harvest all vacancy pages directly into SponsorScout's database.": "Alcuni portali impongono Cloudflare, PerimeterX o verifiche bot (es. 'Premi e tieni premuto'). Usa questa scheda per aprire una finestra interattiva di Chromium, completare la verifica umana e acquisire automaticamente tutte le offerte direttamente nel database di SponsorScout.",
+        "Assisted Browser Ingestion": "Acquisizione con browser assistito",
+        "Re-Analysis Failed": "Rianalisi fallita",
+        "Successfully re-analyzed %d jobs with updated granular categories and skills!": "Rianalizzati con successo %d lavori con categorie e competenze dettagliate!",
+        "Re-Analysis Complete": "Rianalisi completata",
+        "Extract updated skills and granular categories across all existing jobs in the database": "Estrai competenze aggiornate e categorie granulari su tutti i lavori esistenti nel database",
+        "Re-Analyze Database Skills": "Rianalizza competenze nel database",
+        "Top In-Demand Skills & Tools (From Titles & JDs)": "Competenze e strumenti più richiesti (da titoli e descrizioni)",
+        "Jobs by Granular Category (From Job Title)": "Lavori per categoria dettagliata (dal titolo)",
+        "Assisted Ingestion": "Acquisizione assistita",
+        "* Insights reflect scanned job portals in SponsorScout's database, not the entire employment market.": "* Gli approfondimenti riflettono i portali scansionati nel database di SponsorScout, non l'intero mercato del lavoro.",
+        "No data available": "Nessun dato disponibile",
+        "Sponsorship by Category": "Sponsorizzazioni per categoria",
+        "Employer Domains (From Seed Industry)": "Settori dei datori di lavoro (dal settore seed)",
+        "Top In-Demand Skills (From Job Descriptions)": "Competenze più richieste (dalle descrizioni)",
+        "Jobs by Category (From Job Title)": "Lavori per categoria (dal titolo del lavoro)",
+        "Categorized: %d / %d (%s%%) | With Skills: %d (%s%%)": "Classificati: %d / %d (%s%%) | Con competenze: %d (%s%%)",
+        "Coverage: --": "Copertura: --",
+        "Aggregators / Agencies Only": "Solo aggregatori / agenzie",
+        "Direct Employers Only": "Solo datori di lavoro diretti",
+        "All Sources": "Tutte le fonti",
+        "All Countries": "Tutti i paesi",
+        "Filters & Coverage": "Filtri e Copertura",
+        "Insights": "Approfondimenti",
+        "Assisted ingestion finished: %d job(s) added directly to Search tab.": "Acquisizione assistita completata: %d offerte aggiunte direttamente alla scheda Cerca.",
+        "Assisted Ingestion Complete": "Acquisizione assistita completata",
+        "Open in External Browser": "Apri nel browser esterno",
+        "In-App Assisted Ingest": "Acquisizione assistita integrata",
+        "Would you like to resolve them using the in-app assisted browser?": "Vuoi risolverli utilizzando il browser assistito integrato?",
         # ── Header ─────────────────────────────────────────────────────
         "Verified sponsorship-focused jobs from official career pages and ATS boards":
             "Lavori verificati da pagine carriera ufficiali e bacheche ATS - Per Hamliee ❤ !!",
@@ -882,7 +987,7 @@ LANGUAGES: dict[str, dict[str, str]] = {
         "Scan": "Scansione",
         "Finished.": "Finita.",
         "Cancelled — partial progress shown.": "Annullata — avanzamento parziale mostrato.",
-        "Data Quality description": "Rimuovi lavori/aziende duplicati, cancella lavori scaduti (obsoleti) o elimina tutti i dati scansionati.",
+        "Data Quality description": "Esamina gli alias affidabili degli annunci con backup e audit prima delle unioni; cancella esplicitamente i lavori scaduti o i dati scansionati.",
         "Freshness Check description": "Riverifica i lavori salvati rispetto alle loro pagine live e segna le scadute.",
 
         # ── Complete UI coverage (tools/data/apps/dashboard + dialogs) ──
@@ -1062,9 +1167,155 @@ LANGUAGES: dict[str, dict[str, str]] = {
 }
 
 
+# Approved 2026-10-24 follow-up: persistent explicit queue, incremental Insights
+# and backed-up existing-data maintenance. Placeholders remain identical.
+_FOLLOWUP_IT = {
+    "Blocked portals from your scans": "Portali bloccati dalle tue scansioni",
+    "Cancel refresh": "Annulla aggiornamento",
+    "Cancelling refresh... Saved batches are retained.": "Annullamento aggiornamento... I lotti salvati vengono conservati.",
+    "Career Portal": "Portale carriere",
+    "Company or portal name": "Nome dell'azienda o del portale",
+    "Could not load blocked queue: {error}": "Impossibile caricare la coda dei portali bloccati: {error}",
+    "Could not save queue outcome: {error}": "Impossibile salvare l'esito nella coda: {error}",
+    "Direct employer": "Datore di lavoro diretto",
+    "Dismissed": "Ignorato",
+    "Existing-data cleanup": "Pulizia dei dati esistenti",
+    "Failed": "Non riuscito",
+    "Failed: {error}": "Non riuscito: {error}",
+    "Finish ingestion before reviewing existing-data merges.": "Termina l'acquisizione prima di esaminare le unioni dei dati esistenti.",
+    "Finished — partial results retained.": "Terminato — risultati parziali conservati.",
+    "Insights error: {error}": "Errore Approfondimenti: {error}",
+    "Insights up to date. Updated {count} jobs.": "Approfondimenti aggiornati. Aggiornate {count} offerte.",
+    "Interrupted — retry explicitly": "Interrotto — riprova esplicitamente",
+    "Manually requested assisted scan": "Scansione assistita richiesta manualmente",
+    "Merge {rows} duplicate alias rows in {groups} trusted posting groups? A full SQLite backup and audit are saved first. Manual-country conflicts are skipped; applications are unchanged.": "Unire {rows} righe di alias duplicati in {groups} gruppi di annunci con identità affidabile? Prima vengono salvati un backup SQLite completo e un registro di audit. I conflitti fra paesi corretti manualmente vengono ignorati; le candidature non cambiano.",
+    "Merged {count} alias rows.\nBackup: {backup}\nAudit: {audit}": "Unite {count} righe di alias.\nBackup: {backup}\nAudit: {audit}",
+    "No safe alias merges found. Conflicting manual-country groups: {count}.": "Nessuna unione sicura di alias trovata. Gruppi con paesi manuali in conflitto: {count}.",
+    "Opening interactive browser. Complete human verification if requested.": "Apertura del browser interattivo. Completa la verifica umana se richiesta.",
+    "Partial": "Parziale",
+    "Partial targets: {partial}; source/alias rows merged: {merged}": "Portali parziali: {partial}; righe di fonte/alias unite: {merged}",
+    "Pending": "In attesa",
+    "Please provide a valid HTTP or HTTPS portal URL.": "Inserisci un URL HTTP o HTTPS valido del portale.",
+    "Processed {done} / {total} jobs": "Elaborate {done} / {total} offerte",
+    "Re-extract all saved jobs? Previously committed results remain visible during the rebuild.": "Riestrarre tutte le offerte salvate? I risultati già confermati restano visibili durante la ricostruzione.",
+    "Re-extract every saved job. Normal refresh processes only new or changed inputs.": "Riestrae ogni offerta salvata. L'aggiornamento normale elabora solo gli input nuovi o modificati.",
+    "Reason / Phase": "Motivo / Fase",
+    "Rebuild Insights": "Ricostruisci Approfondimenti",
+    "Rebuild all": "Ricostruisci tutto",
+    "Recruiter / agency": "Recruiter / agenzia",
+    "Refresh cancelled. Committed batches are saved.": "Aggiornamento annullato. I lotti confermati sono salvati.",
+    "Refresh queue": "Aggiorna coda",
+    "Regular scans never open an interactive browser. Real verification-blocked portals from ATS and Career scans appear below and survive restart. Choose a portal explicitly, then complete any human verification in Chromium.": "Le scansioni normali non aprono mai un browser interattivo. I portali realmente bloccati da verifiche durante le scansioni ATS e Career compaiono qui sotto e restano dopo il riavvio. Scegli esplicitamente un portale, poi completa la verifica umana in Chromium.",
+    "Resolved": "Risolto",
+    "Review alias merges": "Esamina unioni di alias",
+    "Running": "In corso",
+    "Saved {count} new jobs; refreshed {duplicates}. Pages read: {pages}. {reason}": "Salvate {count} nuove offerte; aggiornate {duplicates}. Pagine lette: {pages}. {reason}",
+    "Show resolved portals": "Mostra portali risolti",
+    "Stop assisted ingestion": "Ferma acquisizione assistita",
+    "Stopping assisted ingestion... Saved jobs are retained.": "Arresto acquisizione assistita... Le offerte salvate vengono conservate.",
+    "Stopping background work. Saved batches are retained; close again when it finishes.": "Arresto delle attività in background. I lotti salvati vengono conservati; chiudi di nuovo al termine.",
+    "Stopping scan. Close the application again after the scan has stopped.": "Arresto scansione. Chiudi nuovamente l'applicazione dopo il termine della scansione.",
+    "These portals were blocked. They have been added to Assisted Ingestion. Use that tab to scan them when you are ready.": "Questi portali erano bloccati. Sono stati aggiunti ad Acquisizione Assistita. Usa quella scheda per scansionarli quando sei pronto.",
+    "View Assisted Ingestion": "Vai ad Acquisizione Assistita",
+    "Waiting for ingestion; {done} / {total} processed": "In attesa dell'acquisizione; elaborate {done} / {total}",
+    "{count} queued portals": "{count} portali in coda",
+    "{jobs} jobs / {pages} pages": "{jobs} offerte / {pages} pagine",
+    "Database write failed: {error}. Saved jobs are retained.": "Scrittura nel database non riuscita: {error}. Le offerte salvate vengono conservate."
+}
+_FOLLOWUP_IT["These portals were blocked, but their queue could not be saved: {error}. Add the URLs from this run's artifacts manually in Assisted Ingestion."] = 'Questi portali erano bloccati, ma non è stato possibile salvare la coda: {error}. Aggiungi manualmente in Acquisizione Assistita gli URL presenti nei file di questa esecuzione.'
+LANGUAGES['it'].update(_FOLLOWUP_IT)
+LANGUAGES['en'].update({key:key for key in _FOLLOWUP_IT})
+
+
 def _(text: str) -> str:
     """Translate a string to the current locale.
 
     Falls back to English (the key itself) if the string is not translated.
     """
     return LANGUAGES.get(_locale, {}).get(text, text)
+
+
+def retranslate_widget_literals(root):
+    """Update static labels without rebuilding a tab or touching input/worker state.
+
+    Table data and editable text are not rewritten. Dynamic progress/results
+    remain intact until the next progress event, already in the new locale.
+    """
+    from PySide6.QtWidgets import QWidget,QLabel,QPushButton,QCheckBox,QGroupBox
+    reverse={value:key for mapping in LANGUAGES.values() for key,value in mapping.items()}
+    keys=set().union(*(mapping.keys() for mapping in LANGUAGES.values()))
+    def translated(text):
+        # The English mapping is intentionally sparse (keys are the default).
+        key=text if text in keys else reverse.get(text)
+        return _(key) if key is not None else text
+    for widget in root.findChildren(QWidget):
+        if isinstance(widget,QGroupBox):
+            widget.setTitle(translated(widget.title()))
+        elif isinstance(widget,(QLabel,QPushButton,QCheckBox)):
+            widget.setText(translated(widget.text()))
+        if widget.toolTip():
+            widget.setToolTip(translated(widget.toolTip()))
+
+
+# Approved shared geography/pagination and explicit data-review strings.
+_COUNTRY_PAGING_IT = {'Observed {total} valid vacancies: {count} new, {duplicates} refreshed. Listing pages/batches: {pages}; browser read passes: {loads}. Country resolved: {resolved}; unresolved: {unknown}. {reason}': 'Osservate {total} offerte valide: {count} nuove, {duplicates} aggiornate. Pagine/lotti letti: {pages}; passaggi di lettura browser: {loads}. Paese risolto: {resolved}; non risolto: {unknown}. {reason}', 'Review data quality': 'Esamina qualità dati', 'Preview only until you confirm. Only unresolved observed countries and confirmed non-job actions are proposed. Manual countries and saved applications are protected. No rows or scan history are deleted.': 'Solo anteprima fino alla conferma. Proposte limitate a paesi osservati non risolti e azioni non lavorative confermate. Paesi manuali e candidature salvate sono protetti. Nessuna riga o cronologia viene eliminata.', 'Optional company filter (blank = all)': 'Filtro azienda facoltativo (vuoto = tutte)', 'Current Country': 'Paese attuale', 'Proposed Country': 'Paese proposto', 'Preview': 'Anteprima', 'Apply reviewed changes': 'Applica modifiche esaminate', 'Loading preview...': 'Caricamento anteprima...', 'Country fills: {countries}; non-job exclusions: {excluded}; protected: {protected}; still unresolved: {unknown}.': 'Paesi da completare: {countries}; azioni non lavorative da escludere: {excluded}; protetti: {protected}; ancora non risolti: {unknown}.', 'Apply exactly this preview? A full SQLite backup, SHA256 and audit are saved before changes. Non-job records are hidden from active search, not deleted. Historical counters and applications stay unchanged.': 'Applicare esattamente questa anteprima? Prima delle modifiche vengono salvati backup SQLite completo, SHA256 e audit. I record non lavorativi sono nascosti nella ricerca attiva, non eliminati. Contatori storici e candidature restano invariati.', 'Confirm data review': 'Conferma revisione dati', 'Saving backup and applying reviewed changes...': 'Salvataggio backup e applicazione delle modifiche esaminate...', 'Changed {count} records. Backup: {backup}\nAudit: {audit}': 'Modificati {count} record. Backup: {backup}\nAudit: {audit}', 'Review not applied: {error}': 'Revisione non applicata: {error}', 'Finish ingestion before reviewing existing data.': 'Termina l’acquisizione prima di esaminare i dati esistenti.', 'Data review is applying. Wait for the backup/audit result before closing.': 'Revisione dati in corso. Attendi il risultato di backup/audit prima di chiudere.', 'Resolving country evidence {done}/{total}; saved vacancies are retained.': 'Risoluzione evidenze del paese {done}/{total}; le offerte salvate restano conservate.', 'Fill missing country': 'Completa paese mancante', 'Exclude non-job action': 'Escludi azione non lavorativa', 'Protected': 'Protetto', 'Still unresolved': 'Ancora non risolto'}
+for _key, _value in _COUNTRY_PAGING_IT.items():
+    LANGUAGES["en"].setdefault(_key, _key)
+    LANGUAGES["it"][_key] = _value
+
+LANGUAGES["en"].setdefault("Close", "Close")
+LANGUAGES["it"]["Close"] = "Chiudi"
+LANGUAGES["en"].setdefault("Reason", "Reason")
+LANGUAGES["it"]["Reason"] = "Motivo"
+
+
+# Human-cleared full-JD support integration, no classifier-rule retuning.
+_SESSION_SUPPORT_IT = {'Reading full job descriptions {done}/{total}; saved vacancies are retained.': 'Lettura delle descrizioni complete {done}/{total}; le offerte salvate restano conservate.', 'JD text: {readable}/{total} readable; reused: {reused}; blocked: {blocked}; failed/thin/empty: {unreadable}; budget skipped: {skipped}. Readable without support evidence: {unknown}.': 'Testo JD: {readable}/{total} leggibili; riutilizzate: {reused}; bloccate: {blocked}; errori/brevi/vuote: {unreadable}; saltate per budget: {skipped}. Leggibili senza evidenza di supporto: {unknown}.', 'Action needed: job-detail verification at {url} — please solve the check in Chromium or stop.': 'Azione richiesta: verifica nei dettagli offerta {url} — risolvi il controllo in Chromium o interrompi.', 'Action needed: job-detail access was denied at {url}. Inspect Chromium or stop; no CAPTCHA was confirmed.': 'Azione richiesta: accesso negato ai dettagli {url}. Controlla Chromium o interrompi; nessun CAPTCHA confermato.'}
+for _key, _value in _SESSION_SUPPORT_IT.items():
+    LANGUAGES["en"].setdefault(_key, _key)
+    LANGUAGES["it"][_key] = _value
+
+
+# Explicit Assisted transport and scoped unread-JD continuation.
+_ASSISTED_RESUME_IT = {'Direct HTTP did not provide a JD; continuing in the existing Chromium detail tab within shared limits.': 'La richiesta HTTP non ha fornito una JD; continuo nella scheda dettagli Chromium esistente entro i limiti condivisi.', 'Resume unread JDs': 'Riprendi JD non lette', 'Continue the saved batch for this exact portal URL; keep fresh proven JDs and do not crawl listing pages again.': 'Continua il lotto salvato per questo URL portale esatto; conserva le JD recenti verificate senza rileggere le pagine elenco.', 'Resumed JD enrichment for {total} saved vacancies. No listing pages were crawled. {reason}': 'Arricchimento JD ripreso per {total} offerte salvate. Nessuna pagina elenco visitata. {reason}', 'Detail transport: HTTP requests {http}; HTTP access walls {walls}; browser attempts {browser}; preferred-browser reads {preferred}; browser retries {retries}.': 'Trasporto dettagli: richieste HTTP {http}; blocchi accesso HTTP {walls}; tentativi browser {browser}; letture browser preferite {preferred}; nuovi tentativi browser {retries}.', 'Resume checkpoint could not be saved: {error}': 'Impossibile salvare il punto di ripresa: {error}', 'Saved JD batch does not match this database and exact portal URL.': 'Il lotto JD salvato non corrisponde a questo database e URL portale esatto.', 'Saved JD batch is empty or invalid. Run Assisted listing ingestion first.': 'Il lotto JD salvato è vuoto o non valido. Esegui prima l’acquisizione assistita dell’elenco.', 'Saved JD batch contains an invalid posting identity.': 'Il lotto JD salvato contiene un’identità offerta non valida.', 'Saved JD batch contains duplicate posting URLs.': 'Il lotto JD salvato contiene URL offerta duplicati.', 'No saved JD batch for this exact portal URL. Run Assisted listing ingestion first.': 'Nessun lotto JD salvato per questo URL portale esatto. Esegui prima l’acquisizione assistita dell’elenco.', 'The saved run CSV is unavailable. Run Assisted listing ingestion first.': 'Il CSV dell’esecuzione salvata non è disponibile. Esegui prima l’acquisizione assistita dell’elenco.', 'This saved run has no auditable JD coverage. Run Assisted listing ingestion first.': 'L’esecuzione salvata non ha copertura JD verificabile. Esegui prima l’acquisizione assistita dell’elenco.'}
+for _key,_value in _ASSISTED_RESUME_IT.items():
+    LANGUAGES['en'].setdefault(_key,_key)
+    LANGUAGES['it'][_key]=_value
+
+
+# Current visible clearance and explicit recorded-state continuation.
+_ASSISTED_VISIBLE_IT = {'Saved listing is already complete. Use Resume unread JDs.': 'L’elenco salvato è già completo. Usa Riprendi JD non lette.', 'No auditable observed listing continuation is saved. Start a fresh listing run; no page URL was guessed.': 'Non è salvato alcuno stato osservato verificabile per continuare l’elenco. Avvia una nuova acquisizione; nessun URL di pagina è stato ipotizzato.', 'Resume listing collection': 'Riprendi raccolta elenco', 'Continue only from an actually recorded listing URL; this is separate from unread JD continuation.': 'Continua solo da un URL elenco realmente registrato; questa azione è distinta dalla ripresa delle JD non lette.', 'Saved batch:': 'Lotto salvato:', 'Latest saved batch': 'Ultimo lotto salvato', 'Load saved batches': 'Carica lotti salvati', 'Verification is performed by you in Chromium; Continue only requests a fresh content check.': 'La verifica viene eseguita da te in Chromium; Continua richiede solo un nuovo controllo del contenuto.', 'Show verification browser': 'Mostra browser verifica', 'Continue after verification': 'Continua dopo verifica', 'Save partial and close': 'Salva parziale e chiudi', 'Listing complete': 'Elenco completo', 'Listing incomplete': 'Elenco incompleto', '{run}: {rows} saved jobs / {pages} pages — {state}': '{run}: {rows} offerte salvate / {pages} pagine — {state}', 'Could not load saved batches: {error}': 'Impossibile caricare i lotti salvati: {error}', 'Checking current visible content; a button click does not certify verification.': 'Controllo del contenuto attualmente visibile; un clic non certifica il superamento della verifica.', 'Saving partial results and closing the verification session...': 'Salvataggio dei risultati parziali e chiusura della sessione di verifica...', 'Awaiting your verification in Chromium. You may continue checking this page or save partial results.': 'In attesa della tua verifica in Chromium. Puoi ricontrollare questa pagina o salvare i risultati parziali.', 'Current content check finished; authentic primary content is still required.': 'Controllo del contenuto terminato; è comunque necessario il contenuto principale autentico.', 'Listing collection continued from recorded state; earlier pages were not restarted.': 'Raccolta elenco ripresa dallo stato registrato; le pagine precedenti non sono state riavviate.', 'Accepted clearance transitions: {cleared}; deferred by an access gate: {deferred}. A detector timeout is not a claim that you did not solve a check.': 'Transizioni di verifica accettate: {cleared}; rinviate per blocco di accesso: {deferred}. Un timeout del rilevatore non significa che tu non abbia risolto la verifica.'}
+_ASSISTED_VISIBLE_IT['Listing continuation left the selected portal filters; out-of-scope rows were not accepted.']='La continuazione dell’elenco ha lasciato i filtri del portale selezionato; le righe fuori ambito non sono state accettate.'
+for _key,_value in _ASSISTED_VISIBLE_IT.items():
+    LANGUAGES['en'].setdefault(_key,_key)
+    LANGUAGES['it'][_key]=_value
+
+
+# Issue 2026-10-26: honest partial JD coverage and neutral idle controls.
+_ASSISTED_ISSUE_2026_10_26_IT = {
+    "JD text: {readable}/{total} readable; not attempted: {unattempted}; reused: {reused}; blocked: {blocked}; failed/thin/empty: {unreadable}; budget skipped: {skipped}; deferred/protected: {protected}. Readable JDs with Unknown support verdict: {unknown}.": "Testo JD: {readable}/{total} leggibili; non tentate: {unattempted}; riutilizzate: {reused}; bloccate: {blocked}; errori/brevi/vuote: {unreadable}; saltate per budget: {skipped}; rinviate/protette: {protected}. JD leggibili con verdetto di supporto sconosciuto: {unknown}.",
+    "Verification controls are inactive.": "Controlli di verifica non attivi.",
+    "Ingestion Partial": "Acquisizione parziale",
+    "Some full job descriptions were not read. Use Resume unread JDs to continue; no Unknown support verdict has been converted to No.": "Alcune descrizioni complete non sono state lette. Usa Riprendi JD non lette per continuare; nessun verdetto di supporto sconosciuto è stato convertito in No.",
+    "assisted browser closed during JD enrichment; {count} JDs unattempted; resume explicitly": "browser assistito chiuso durante l'arricchimento JD; {count} JD non tentate; riprendi esplicitamente",
+}
+for _key, _value in _ASSISTED_ISSUE_2026_10_26_IT.items():
+    LANGUAGES["en"].setdefault(_key, _key)
+    LANGUAGES["it"][_key] = _value
+
+# Phase B performance reporting (Issue 001, 2026-10-27).
+_ASSISTED_PHASE_B_KEY = "Performance: up to {tabs} parallel detail tabs; {prefetched} JDs pre-navigated; HTTP re-probe cleared {cleared} origin(s)."
+LANGUAGES["en"].setdefault(_ASSISTED_PHASE_B_KEY, _ASSISTED_PHASE_B_KEY)
+LANGUAGES["it"][_ASSISTED_PHASE_B_KEY] = "Prestazioni: fino a {tabs} schede dettaglio parallele; {prefetched} JD pre-navigate; il re-probe HTTP ha ripristinato {cleared} origine/i."
+
+
+# Issue 002 screenshot fixes (2026-10-27): honest dashboard labels/tooltips.
+_ISSUE_002_DASHBOARD_KEYS = {
+    "Top Employers by Sponsor Score": "Principali datori di lavoro per punteggio sponsor",
+    "Max Sponsor Score": "Punteggio sponsor massimo",
+    "Counts jobs with an explicit Yes visa-sponsorship verdict. Unknown is not No; unread JDs stay Unknown.": "Conta le offerte con verdetto esplicito Sì per la sponsorship del visto. Sconosciuto non significa No; le JD non lette restano Sconosciute.",
+    "Counts jobs with an explicit Yes EU Blue Card verdict. Unknown is not No; unread JDs stay Unknown.": "Conta le offerte con verdetto esplicito Sì per la Carta Blu UE. Sconosciuto non significa No; le JD non lette restano Sconosciute.",
+}
+for _key, _value in _ISSUE_002_DASHBOARD_KEYS.items():
+    LANGUAGES["en"].setdefault(_key, _key)
+    LANGUAGES["it"][_key] = _value

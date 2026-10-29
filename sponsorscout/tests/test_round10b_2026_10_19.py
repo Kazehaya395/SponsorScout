@@ -139,8 +139,10 @@ def test_job_country_never_uses_the_seed_target_country():
 
 def test_job_country_column_is_in_the_output_schema_and_filled():
     assert '"Job Location", "Job Country", "Raw Location"' in SRC
-    assert SRC.count('_r["Job Country"] = _job_country_from_record(_r)') >= 2
+    # Direct/recruiter finalization is now shared, not two copied loops.
+    assert SRC.count('_r["Job Country"] = _job_country_from_record(_r)') >= 1
     assert SRC.count('rec["Job Country"] = _job_country_from_record(rec)') >= 1
+    assert 'finalize_job_csvs(' in SRC
 
 
 def test_seed_target_country_is_not_changed_by_this_round():
@@ -196,12 +198,15 @@ def test_real_job_list_is_not_flagged_as_challenge():
 
 def test_browser_path_raises_on_challenge_instead_of_empty():
     # The seed-load branch must consult the detector before reading cards.
+    # 2026-10-28: the wording is decided by listing_block_message(), which only
+    # claims a bot-protection wall when the response actually carried challenge
+    # evidence. A bare 403 on the listing is reported as an access failure.
     i = SRC.index("_challenge = self._bot_challenge_reason(page)")
     window = SRC[i:i + 300]
-    assert 'raise RuntimeError(f"blocked by bot protection: {_challenge}")' in window
+    assert "raise RuntimeError(listing_block_message(_challenge))" in window
 
 
-def test_static_403_is_labelled_as_bot_protection(monkeypatch):
+def test_static_403_is_access_denial_not_proven_bot_protection(monkeypatch):
     import urllib.error
     from sponsorscout.scanning.career import career_scanner as mod
 
@@ -212,7 +217,9 @@ def test_static_403_is_labelled_as_bot_protection(monkeypatch):
     jobs, diag = mod.fetch_static_jobs("https://www.robertwalters.de/en/jobs.html",
                                        timeout_sec=3)
     assert jobs == []
-    assert "HTTP 403" in diag and "bot protection likely" in diag
+    assert "HTTP 403" in diag and "access blocked" in diag
+    assert diag.block_reason=="HTTP 403 access blocked (human verification not confirmed)"
+    assert "bot protection likely" not in diag
 
 
 # ── Non-English role titles (Elior Italia, run 20261019T195804) ───────────────

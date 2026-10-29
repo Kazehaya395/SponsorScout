@@ -135,6 +135,9 @@ def test_leading_block_separator_is_dropped():
 
 def test_workable_jd_uses_job_api(monkeypatch):
     scanner = cs.CareerPortalScanner.__new__(cs.CareerPortalScanner)
+    from sponsorscout.scanning.detail_state import DetailRequestState
+    scanner.config = cs.ProductionScannerConfig
+    scanner._detail_state = DetailRequestState()
     payload = {"description": "<p>Consultant role.</p>", "requirements": "<ul><li>Degree</li></ul>",
                "benefits": "", "location": {"city": "Munich", "region": "Bavaria", "country": "Germany"}}
 

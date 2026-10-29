@@ -264,8 +264,10 @@ def test_history_refresh_ignores_superseded_replies(db_path, monkeypatch):
     # Keep the test hermetic: the real method starts a checkpoint lookup
     # thread, which is not what this test is about.
     monkeypatch.setattr(tab, "_refresh_resume_button", lambda: None)
-    row = ("r1", "full", "2026-01-01T10:00:00", "", "completed", "", 3, 0, 0,
-           7, 1, 2, 1, 1)
+    # The real query returns named SQLite aliases, not the obsolete14tuple.
+    row = dict(run_id="r1",method="full",started_at="2026-01-01T10:00:00",
+        status="completed",error="",targets_error=0,targets_partial=3,
+        jobs_found=7,jobs_quarantined=1,jobs_duplicates=2,jobs_merged=11)
 
     tab._on_refresh_done((tab._refresh_seq + 1, [row]))  # stale → ignored
     assert tab.runs_table.rowCount() == 0

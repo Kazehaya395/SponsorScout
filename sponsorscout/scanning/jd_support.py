@@ -235,7 +235,7 @@ class JDSupportDetector:
         r"\b(visa|visas|work permit|work permits|work authorization|work authorisation|"
         r"authorized to work|authorised to work|legally authorized to work|legally authorised to work|"
         r"immigration|h-?1b|h1b|tier\s*2|blue card|blue-card|blaue karte|carta blu|"
-        r"highly skilled migrant|skilled worker|aufenthaltstitel|permesso di soggiorno|"
+        r"highly skilled migrant|skilled worker(?:[\s-]+(?:visa|sponsorship|route|permit|scheme|stream))|aufenthaltstitel|permesso di soggiorno|"
         r"sponsorship"
         # ── Added: the most common way a European ad states the requirement ──
         # "right to work" / "eligible to work" are the standard UK and IE
@@ -257,7 +257,7 @@ class JDSupportDetector:
         r"|right to work|eligible to work|eligibility to work"
         r"|residence permit|settlement visa"
         r"|aufenthaltserlaubnis|anmeldung|anmeldebescheinigung"
-        r"|verblijfsvergunning|wwft|wetten\s+overplichting"
+        r"|verblijfsvergunning|wetten\s+overplichting"
         r"|carte\s+de\s+s[ée]jour|titre\s+de\s+s[ée]jour|permis\s+de\s+s[ée]jour"
         r"|permiso\s+de\s+residencia"
         r"|visum\w*|arbeitserlaubnis|blauen karte|blaue karte"          # DE
@@ -273,7 +273,7 @@ class JDSupportDetector:
         r"|kennismigrant\w*|hooggekwalificeerde\s+migrant\w*"
         r"|tewerkstellingsvergunning|gecombineerde\s+vergunning|\bgvva\b"
         r"|visum\w*|werkvergunning|arbeidsvergunning|blauwe kaart|sponsoring"  # NL
-        r"|visa\w*|permis de travail|carte bleue|parrainage|immigration|sponsorisons?|"
+        r"|visas?|permis de travail|carte bleue|parrainage|immigration|sponsorisons?|"
         r"sponsorisent|parrainons|parraine"  # FR
         r"|visad\w*|permiso de trabajo|tarjeta azul|patrocin\w*|inmigración"  # ES
         # FIX P0-59: "sponsorship" (the noun) was a concept but "sponsor"
@@ -330,7 +330,7 @@ class JDSupportDetector:
         r"reimbursed|arrange|arranges|arranged|handle|handles|handled|sponsor|sponsors|"
         r"sponsored|sponsoring|include|includes|included|including|available|is offered|"
         r"is provided|will be provided|is included|granted|we will|receive|receives|"
-        r"received|get|gets|enjoy|enjoys)\b",
+        r"received|get|gets|enjoy|enjoys|consider|considers|considered|considering)\b",
         re.I,
     )
     # FIX W-1 (2026-10-04): the cue list carried the long forms of *be* and
@@ -380,7 +380,7 @@ class JDSupportDetector:
         r"\b(case[- ]by[- ]case|subject to|may be|might be|could be|depending on|"
         r"at (our|the|company's|their) discretion|negotiable|on request|if applicable|"
         r"not guaranteed|can be discussed|at discretion|on a case|reviewed on|"
-        r"limited to|restricted to|only for)\b",
+        r"limited to|restricted to|only for|consider|considers|considered|considering)\b",
         re.I,
     )
     SCOPE = re.compile(
@@ -579,7 +579,8 @@ class JDSupportDetector:
         if concept_re is self.RELOCATION_CONCEPTS and re.search(
             r"\b(relocat(?:e|ing|ion)?\s+(?:vehicles?|cars?|equipment|machines?|systems?|"
             r"offices?|data centers?|assets?)|(?:install|upgrade|fleet|vehicle)\b.{0,35}"
-            r"\brelocat|relocation\s+(?:engineer|specialist|coordinator|project))\b",
+            r"\brelocat|relocation\s+(?:engineer|specialist|coordinator|project|officer|manager|lead))\b|"
+            r"\b(?:ambulance|aircraft|facility|tenant|service|office|building|plant|farm)\s+relocation\b",
             sentence, re.I,
         ):
             return VERDICT_UNKNOWN, 0.0, ["non-candidate-relocation-context"]

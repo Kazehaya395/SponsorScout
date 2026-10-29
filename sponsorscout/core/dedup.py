@@ -32,7 +32,7 @@ def job_fingerprint(title: str, company: str, location: str = "", url: str = "")
         _normalize_for_fingerprint(title),
         _normalize_for_fingerprint(company),
         _normalize_for_fingerprint(location),
-        (normalized_url or "").strip().lower(),
+        (normalized_url or "").strip(),
     ])
     return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
@@ -63,44 +63,15 @@ def _delete_in_chunks(conn, table: str, ids: list[int], chunk: int = 500) -> Non
 
 
 def dedup_jobs(jobs: list[dict]) -> list[dict]:
-    """Remove duplicate jobs from a list using URL + title+company fingerprint."""
-    seen_urls = set()
-    seen_fingerprints = set()
-    out = []
-    for job in jobs:
-        url = normalize_url(job.get("url", ""))
-        fp = job_fingerprint(job.get("title", ""), job.get("company", ""), job.get("location", ""), url)
-        if url in seen_urls or fp in seen_fingerprints:
-            continue
-        seen_urls.add(url)
-        seen_fingerprints.add(fp)
-        out.append(job)
-    return out
+    """Trusted observed identities only; merge sources instead of losing them."""
+    from sponsorscout.core.job_identity import merge_job_rows
+    return merge_job_rows(jobs)[0]
 
 
 def dedup_jobs_in_db(conn) -> int:
-    """Find and mark duplicate jobs in the database. Returns number of dupes removed."""
-    rows = conn.execute(
-        "SELECT id, url, title, company, location FROM jobs WHERE is_expired = 0 ORDER BY id ASC"
-    ).fetchall()
-
-    seen_urls: dict[str, int] = {}
-    seen_fps: dict[str, int] = {}
-    dupe_ids = []
-
-    for row in rows:
-        url = normalize_url(row["url"])
-        fp = job_fingerprint(row["title"], row["company"], row["location"], url)
-
-        if url in seen_urls or fp in seen_fps:
-            dupe_ids.append(row["id"])
-        else:
-            seen_urls[url] = row["id"]
-            seen_fps[fp] = row["id"]
-
-    if dupe_ids:
-        _delete_in_chunks(conn, "jobs", dupe_ids)
-    return len(dupe_ids)
+    """Explicit compatibility API; backup + audit before trusted alias merges."""
+    from sponsorscout.core.maintenance import cleanup_connection
+    return int(cleanup_connection(conn)['merged'])
 
 
 def dedup_companies_in_db(conn) -> int:

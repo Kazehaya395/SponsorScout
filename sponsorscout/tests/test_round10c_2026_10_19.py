@@ -89,8 +89,8 @@ def test_loop_photographer_is_a_valid_title(title, url):
     assert _career().is_valid_job_title(title, "LOOP", url)
 
 
-def test_loop_proactive_application_stays_rejected():
-    assert not _career().is_valid_job_title(
+def test_loop_proactive_application_stays_accepted_per_evergreen_contract():
+    assert _career().is_valid_job_title(
         "Proactive Application", "LOOP",
         "https://www.agentur-loop.com/careers/proactive-application")
 

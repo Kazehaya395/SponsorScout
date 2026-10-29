@@ -680,5 +680,12 @@ def country_from_location(location: str, fallback: str = "") -> str:
         if re.search(r"\b%s\b" % re.escape(alias), work):
             return COUNTRY_NAMES[alias]
 
-    # ── 8. Nothing matched → use HQ country as fallback ──────────────────────
+    # Offline geographic evidence from the observed location, never the
+    # company/host/seed. Global homonyms are retained, not population-ranked.
+    from sponsorscout.core.place_index import country_from_place_components
+    resolved = country_from_place_components(parts or [stripped])
+    if resolved:
+        return resolved
+    # Legacy optional fallback remains API-compatible. Scan writers/mapper/
+    # persistence deliberately do not supply a seed/HQ fallback.
     return fallback
