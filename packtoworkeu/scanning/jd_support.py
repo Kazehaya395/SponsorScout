@@ -128,7 +128,7 @@ _LABEL_FIELD_RES = {
         r")\s*:", re.I),
     "relocation": re.compile(
         r"(?<![A-Za-z])("
-        r"relocation\s+(?:assistance|support|package|allowance|benefit|offered|"
+        r"expat(?:riate)?\s+packages?|relocation\s+(?:assistance|support|package|allowance|benefit|offered|"
         r"provided|eligible)|relocation|umzugs?(?:hilfe|unterst\u00fctzung|pauschale)?|"
         r"verhuis(?:kosten|vergoeding|kostenvergoeding)?|"
         r"indennit\u00e0\s+di\s+trasferimento|trasferimento|"
@@ -324,6 +324,12 @@ class JDSupportDetector:
         # FIX P66 (B3): the 30% ruling is the Dutch expat tax facility and is
         # advertised as a relocation benefit in nearly every NL posting.
         r"|\b30\s*%?\s*[-\u2013]?\s*(?:ruling|regeling|tax\s+ruling)\b"
+        # 2026-11-14 (user keyword audit): "expat package" is advertised as a
+        # relocation benefit verbatim on many international postings but was
+        # no concept at all -- "Expat package included for this role" scored
+        # Unknown. Bare `expat` (a scope word) deliberately stays out; the
+        # benefit noun must follow.
+        r"|\bexpat(?:riate)?s?\s+(?:packages?|benefits?|allowances?)\b"
         r"|\bverhuis\w*|\bverhuiz\w*|relocatie"  # NL (verhuis- compounds + verhuizen verb)
         r"|\brelocalis\w*|\bdéménag\w*|\bréinstall\w*|frais de déménagement"  # FR
         r"|\breubic\w*|\btraslad\w*|\bmudanz\w*|ayuda de reubicación|gastos de reubicación"  # ES
@@ -390,6 +396,17 @@ class JDSupportDetector:
         r"limited to|restricted to|only for|consider|considers|considered|considering)\b",
         re.I,
     )
+    # 2026-11-14 (user keyword audit): "international talent/hires" is a
+    # hiring-audience phrase, not an offer -- it is deliberately NOT added
+    # to VISA_CONCEPTS, where any positive verb ("we support international
+    # talent") would manufacture a sponsorship Yes. Instead it surfaces on
+    # its own as a low-confidence evidence mention (sentence_verdict),
+    # so the phrase is visible/auditable but can never decide a verdict;
+    # genuine offers still arrive via the real concepts (sponsor/visa/
+    # permit) in the same or another sentence.
+    _INTERNATIONAL_TALENT_RE = re.compile(
+        r"\binternational\s+(?:talent|hires|hiring|candidates|applicants)\b", re.I)
+
     SCOPE = re.compile(
         r"\b(for|to|towards|covering|regarding|concerning|in the case of)\b.{0,20}"
         r"\b(international|foreign|overseas|non-eu|non eu|expat|expatriate|"
@@ -423,7 +440,7 @@ class JDSupportDetector:
         r"(?:a|an|the|our|your|plus|incl\.?|including|with)?\s*"
         r"(?:full|fully\s+paid|generous|competitive|attractive|complete|"
         r"international|domestic|global|partial)?\s*"
-        r"(?:relocation|re-location|moving|umzugs?|verhuis|verhuiz\w*|"
+        r"(?:relocation|re-location|moving|expat(?:riate)?|umzugs?|verhuis|verhuiz\w*|"
         r"d\u00e9m\u00e9nagement|reubicaci\u00f3n|traslado|trasferimento)"
         r"[\s\-]*"
         r"(?:package|packages|assistance|allowance|support|bonus|budget|"
@@ -702,6 +719,9 @@ class JDSupportDetector:
         sentence = _norm_apostrophes(sentence)
         concept_match = concept_re.search(sentence)
         if not concept_match:
+            if (concept_re is self.VISA_CONCEPTS
+                    and self._INTERNATIONAL_TALENT_RE.search(sentence)):
+                return VERDICT_UNKNOWN, 0.2, ["international-talent-mention"]
             return None
         if (concept_re is self.RELOCATION_CONCEPTS
                 and self._EMPTY_RELOCATION_LABEL_RE.fullmatch(sentence)):

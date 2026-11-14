@@ -554,3 +554,9 @@ Doist,https://www.todoist.com/careers#open-roles,auto,0,direct_employer,Global,g
 Shopify,https://www.shopify.com/careers,auto,0,direct_employer,Global,global,E-Commerce,85,95,95,0
 # ----- EUROPE / regional (1) -----,,,,,,,,,,,
 Ikea Italia,https://jobs.ikea.com/en/search-jobs?k=&l=&orgIds=22908,auto,0,direct_employer,Europe,job_location,Retail/Furniture,25,70,60,0
+# ----- ADDED 2026-11-14 - EU Job Portals sheet (new portals only; duplicates skipped) -----,,,,,,,,,,,
+VP,https://www.pflegehilfe.org/karriere,auto,0,direct_employer,Germany,seed_url,Healthcare / Care Services,70,85,45,Added 2026-11-14 (EU portals sheet)
+wearedevelopers,https://www.wearedevelopers.com/en/jobs,auto,0,recruiter,Global,global,Developer Jobs / Tech Community,70,85,40,Added 2026-11-14 (EU portals sheet)
+Avigna Sweden,https://careers.avigna.se/,auto,0,direct_employer,Sweden,seed_url,IT Consulting,70,85,45,Added 2026-11-14 (EU portals sheet); Dover ATS iframe - no ATS adapter - career crawl
+GMV,https://gmv.csod.com/ux/ats/careersite/4/home?c=gmv&lang=en-US,auto,0,direct_employer,Global,global,Aerospace / Tech,70,85,45,Added 2026-11-14 (EU portals sheet); Cornerstone CSOD - no ATS adapter - career crawl
+Dynatrace,https://careers.dynatrace.com/jobs/,auto,0,direct_employer,Global,global,Software / Observability,70,85,45,Added 2026-11-14 (EU portals sheet)
